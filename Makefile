@@ -34,7 +34,7 @@ install:
 	npm install
 
 dev:
-	npm run tauri dev
+	WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run tauri dev
 
 dev-frontend:
 	npm run dev
