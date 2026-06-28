@@ -6,10 +6,15 @@ import "./App.css";
 function App() {
   const [greetMsg, setGreetMsg] = useState("");
   const [name, setName] = useState("");
+  const [displayContents, setDisplayContents] = useState("");
 
   async function greet() {
     // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
     setGreetMsg(await invoke("greet", { name }));
+  }
+  async function display() {
+    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+    setDisplayContents(await invoke("display"));
   }
 
   return (
@@ -44,6 +49,17 @@ function App() {
         <button type="submit">Greet</button>
       </form>
       <p>{greetMsg}</p>
+
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          display();
+        }}
+      >
+        <button type="submit">Display</button>
+      </form>
+      <p>{displayContents}</p>
     </main>
   );
 }
