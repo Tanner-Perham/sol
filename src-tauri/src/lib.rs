@@ -7,7 +7,7 @@ fn greet(name: &str) -> String {
 
 #[tauri::command]
 fn display() -> String {
-    let file_path = "./test.md";
+    let file_path = "../test.md";
     println!("In file {file_path}");
 
     let contents = fs::read_to_string(file_path)
@@ -15,7 +15,12 @@ fn display() -> String {
 
     println!("With text:\n{contents}");
 
-    format!("{contents}")
+    let parser = pulldown_cmark::Parser::new(&contents);
+
+    let mut html_output = String::new();
+    pulldown_cmark::html::push_html(&mut html_output, parser);
+
+    format!("{html_output}")
 }
 
 
