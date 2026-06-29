@@ -721,3 +721,40 @@ html, body, #root {
   color: var(--text-muted);
 }
 
+/* Split Pane Layout */
+.pane-split {
+  box-sizing: border-box;
+}
+
+.editor-pane {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  background-color: var(--bg-dark);
+}
+
+.editor-pane:focus-within,
+.editor-pane.active {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 8px var(--accent-glow);
+  outline: none;
+}
+
+/* Animations */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.95);
+  }
+}
+
+
