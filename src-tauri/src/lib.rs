@@ -1,12 +1,6 @@
 use std::fs;
 use std::path::Path;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 #[tauri::command]
 fn display() -> String {
     let file_path = "../test.md";
@@ -37,12 +31,12 @@ fn write_markdown_file(path: String, content: String) -> Result<(), String> {
 
 #[tauri::command]
 fn get_workspace_path() -> String {
-    "/Users/grumblyghost/Projects/sol/sol".to_string()
+    "..".to_string()
 }
 
 #[tauri::command]
 fn list_workspace_files() -> Result<Vec<String>, String> {
-    let dir = "/Users/grumblyghost/Projects/sol/sol";
+    let dir = "..";
     let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
     let mut files = Vec::new();
     for entry in entries.flatten() {
@@ -64,7 +58,7 @@ fn list_workspace_files() -> Result<Vec<String>, String> {
 #[tauri::command]
 fn create_markdown_file(name: String) -> Result<String, String> {
     let name_clean = if name.ends_with(".md") { name } else { format!("{}.md", name) };
-    let path = Path::new("/Users/grumblyghost/Projects/sol/sol").join(&name_clean);
+    let path = Path::new("..").join(&name_clean);
     if path.exists() {
         return Err("File already exists".to_string());
     }
@@ -79,7 +73,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            greet,
             display,
             read_markdown_file,
             write_markdown_file,
