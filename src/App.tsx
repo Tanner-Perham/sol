@@ -541,9 +541,67 @@ function App() {
     }
   }, []);
 
-  const onDocChange = useCallback((_paneId: string, _content: string) => {
-    // Handled in registerState
-  }, []);
+  const saveTimeoutRef = useRef<any>(null);
+
+  const onDocChange = useCallback((paneId: string, content: string) => {
+    const currentLayout = layoutRef.current;
+    const leaf = findLeafNode(currentLayout, paneId);
+    if (!leaf || !leaf.activeFile) return;
+
+    const fileName = leaf.activeFile;
+
+    // 1. Sync content in-memory to all other panes displaying this file
+    const leafIds = getLeafPaneIds(currentLayout);
+    leafIds.forEach((otherPaneId) => {
+      if (otherPaneId === paneId) return;
+
+      const otherLeaf = findLeafNode(currentLayout, otherPaneId);
+      if (otherLeaf && otherLeaf.activeFile === fileName) {
+        const otherView = editorViewsRef.current.get(otherPaneId);
+        if (otherView && otherView.state.doc.toString() !== content) {
+          otherView.dispatch({
+            changes: { from: 0, to: otherView.state.doc.length, insert: content }
+          });
+        }
+      }
+    });
+
+    // 2. Mark all panes displaying this file as dirty
+    leafIds.forEach((pId) => {
+      const pLeaf = findLeafNode(currentLayout, pId);
+      if (pLeaf && pLeaf.activeFile === fileName) {
+        paneStatesRef.current.set(pId, { isDirty: true, wordCount: computeWordCount(content) });
+        if (pId === activePaneIdRef.current) {
+          setIsDirty(true);
+          setWordCount(computeWordCount(content));
+        }
+      }
+    });
+
+    // 3. Trigger debounced save
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(async () => {
+      const filePath = `${workspacePath}/${fileName}`;
+      try {
+        await invoke("write_markdown_file", { path: filePath, content });
+
+        // Auto-save completed: Mark all panes displaying this file as clean
+        const latestLayout = layoutRef.current;
+        const latestLeafIds = getLeafPaneIds(latestLayout);
+        latestLeafIds.forEach((pId) => {
+          const pLeaf = findLeafNode(latestLayout, pId);
+          if (pLeaf && pLeaf.activeFile === fileName) {
+            paneStatesRef.current.set(pId, { isDirty: false, wordCount: computeWordCount(content) });
+            if (pId === activePaneIdRef.current) {
+              setIsDirty(false);
+            }
+          }
+        });
+      } catch (err) {
+        console.error("Auto-save failed", err);
+      }
+    }, 300);
+  }, [workspacePath]);
 
   const onVimModeChange = useCallback((mode: string) => {
     setVimModeName(mode);
@@ -722,6 +780,7 @@ function App() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
       if (prefixTimeoutRef.current) clearTimeout(prefixTimeoutRef.current);
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
   }, []);
 
