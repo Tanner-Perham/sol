@@ -20,6 +20,7 @@ function App() {
   const [files, setFiles] = useState<string[]>([]);
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [activeFileContent, setActiveFileContent] = useState("");
+  const [tabs, setTabs] = useState<string[]>([]);
   const [isDirty, setIsDirty] = useState(false);
   const [wordCount, setWordCount] = useState(0);
   const [vimMode, setVimMode] = useState(true);
@@ -67,6 +68,19 @@ function App() {
 
   // Open a file
   const openFile = async (fileName: string, wsPath?: string) => {
+    if (activeFile === fileName) return;
+
+    // Auto-save current active file if it is dirty
+    if (activeFile && isDirty && editorViewRef.current) {
+      const currentContent = editorViewRef.current.state.doc.toString();
+      const currentActiveFilePath = `${workspacePath}/${activeFile}`;
+      try {
+        await invoke("write_markdown_file", { path: currentActiveFilePath, content: currentContent });
+      } catch (err) {
+        console.error("Failed to auto-save file on switch", err);
+      }
+    }
+
     const currentWS = wsPath || workspacePath;
     const filePath = `${currentWS}/${fileName}`;
     try {
@@ -75,8 +89,47 @@ function App() {
       setActiveFileContent(content);
       setIsDirty(false);
       setWordCount(computeWordCount(content));
+
+      // Add to tabs
+      setTabs((prevTabs) => {
+        if (prevTabs.includes(fileName)) {
+          return prevTabs;
+        }
+        return [...prevTabs, fileName];
+      });
     } catch (err) {
       console.error("Failed to read file", err);
+    }
+  };
+
+  // Close a tab
+  const closeTab = async (fileName: string) => {
+    // Auto-save if the closed tab is the active one and is dirty
+    if (activeFile === fileName && isDirty && editorViewRef.current) {
+      const currentContent = editorViewRef.current.state.doc.toString();
+      const currentActiveFilePath = `${workspacePath}/${fileName}`;
+      try {
+        await invoke("write_markdown_file", { path: currentActiveFilePath, content: currentContent });
+      } catch (err) {
+        console.error("Failed to auto-save file on close", err);
+      }
+    }
+
+    const closedIdx = tabs.indexOf(fileName);
+    const newTabs = tabs.filter((t) => t !== fileName);
+    setTabs(newTabs);
+
+    if (activeFile === fileName) {
+      if (newTabs.length > 0) {
+        const nextActiveIdx = Math.min(closedIdx, newTabs.length - 1);
+        const nextActiveFile = newTabs[nextActiveIdx];
+        await openFile(nextActiveFile);
+      } else {
+        setActiveFile(null);
+        setActiveFileContent("");
+        setIsDirty(false);
+        setWordCount(0);
+      }
     }
   };
 
@@ -127,6 +180,19 @@ function App() {
     });
   }, []);
 
+  // Refs to avoid stale closures in global keydown listener
+  const tabsRef = useRef(tabs);
+  const activeFileRef = useRef(activeFile);
+  const openFileRef = useRef(openFile);
+  const closeTabRef = useRef(closeTab);
+  const saveFileRef = useRef(saveFile);
+
+  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  useEffect(() => { activeFileRef.current = activeFile; }, [activeFile]);
+  useEffect(() => { openFileRef.current = openFile; }, [openFile]);
+  useEffect(() => { closeTabRef.current = closeTab; }, [closeTab]);
+  useEffect(() => { saveFileRef.current = saveFile; }, [saveFile]);
+
   // Global key listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -139,7 +205,7 @@ function App() {
       // Ctrl+S to save
       if (e.key === "s" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        saveFile();
+        saveFileRef.current();
         return;
       }
 
@@ -163,11 +229,51 @@ function App() {
         setFocusedComponent(prev => (prev === "editor" ? "sidebar" : "editor"));
         return;
       }
+
+      // Alt + [1-9] to switch tabs
+      if (e.altKey && e.key >= "1" && e.key <= "9") {
+        e.preventDefault();
+        const idx = parseInt(e.key, 10) - 1;
+        const currentTabs = tabsRef.current;
+        if (idx < currentTabs.length) {
+          openFileRef.current(currentTabs[idx]);
+        }
+        return;
+      }
+
+      // Alt + H / L or Alt + ArrowLeft / ArrowRight to cycle tabs
+      if (e.altKey && (e.key.toLowerCase() === "h" || e.key.toLowerCase() === "l" || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        const currentTabs = tabsRef.current;
+        const currentActive = activeFileRef.current;
+        if (currentTabs.length <= 1 || !currentActive) return;
+
+        const idx = currentTabs.indexOf(currentActive);
+        if (idx !== -1) {
+          let nextIdx;
+          if (e.key.toLowerCase() === "h" || e.key === "ArrowLeft") {
+            nextIdx = (idx - 1 + currentTabs.length) % currentTabs.length;
+          } else {
+            nextIdx = (idx + 1) % currentTabs.length;
+          }
+          openFileRef.current(currentTabs[nextIdx]);
+        }
+        return;
+      }
+
+      // Alt + W to close current tab
+      if (e.altKey && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        if (activeFileRef.current) {
+          closeTabRef.current(activeFileRef.current);
+        }
+        return;
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [saveFile]);
+  }, []);
 
   // Handle focus switching
   useEffect(() => {
@@ -424,14 +530,75 @@ function App() {
         </aside>
 
         <main className="app-main">
+          {tabs.length > 0 && (
+            <div className="editor-tabs">
+              {tabs.map((tab, idx) => {
+                const isActive = activeFile === tab;
+                const isTabDirty = isActive && isDirty;
+                return (
+                  <div
+                    key={tab}
+                    className={`editor-tab ${isActive ? "active" : ""}`}
+                    onClick={() => openFile(tab)}
+                    onAuxClick={(e) => {
+                      if (e.button === 1) {
+                        e.preventDefault();
+                        closeTab(tab);
+                      }
+                    }}
+                    title={`${tab} (Alt+${idx + 1})`}
+                  >
+                    <span className="tab-name">{tab.replace(/\.md$/, "")}</span>
+                    {isTabDirty && <span className="tab-dirty-dot" title="Unsaved changes" />}
+                    <button
+                      className="tab-close-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeTab(tab);
+                      }}
+                      title="Close tab"
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div className="editor-wrapper" onClick={() => setFocusedComponent("editor")}>
-            <div
-              key={activeFile}
-              ref={editorContainer}
-              className="editor-inner"
-            />
+            {activeFile ? (
+              <div
+                key={activeFile}
+                ref={editorContainer}
+                className="editor-inner"
+              />
+            ) : (
+              <div className="editor-empty-state">
+                <svg className="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="9" y1="15" x2="15" y2="15" />
+                  <line x1="12" y1="12" x2="12" y2="18" />
+                </svg>
+                <h3>No documents open</h3>
+                <p>Select a document from the sidebar, or create a new one to begin writing.</p>
+                <div className="empty-state-shortcuts">
+                  <div className="shortcut-row">
+                    <span className="shortcut-label">Create New File</span>
+                    <kbd className="kbd-shortcut">+</kbd>
+                  </div>
+                  <div className="shortcut-row">
+                    <span className="shortcut-label">Toggle Sidebar</span>
+                    <kbd className="kbd-shortcut">Ctrl + \</kbd>
+                  </div>
+                  <div className="shortcut-row">
+                    <span className="shortcut-label">Switch Tabs</span>
+                    <kbd className="kbd-shortcut">Alt + H/L</kbd>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-
         </main>
       </div>
 
