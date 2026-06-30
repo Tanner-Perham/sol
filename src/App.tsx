@@ -92,6 +92,7 @@ function App() {
   const [showHidden, setShowHidden] = useState(false);
   const [creatingNode, setCreatingNode] = useState<{ type: "file" | "dir"; parentPath: string } | null>(null);
   const [newInputName, setNewInputName] = useState("");
+  const [pathToHighlight, setPathToHighlight] = useState<string | null>(null);
   
   // Layout state
   const [layout, setLayout] = useState<PaneNode>({
@@ -403,6 +404,17 @@ function App() {
       }
     }
   }, [activeFile, visibleItems]);
+
+  // Focus and select a newly created folder once it appears in visibleItems
+  useEffect(() => {
+    if (pathToHighlight) {
+      const idx = visibleItems.findIndex(item => item.path === pathToHighlight);
+      if (idx !== -1) {
+        setSidebarSelectedIndex(idx);
+        setPathToHighlight(null);
+      }
+    }
+  }, [visibleItems, pathToHighlight]);
 
   const triggerTreeReload = useCallback(() => {
     if (reloadTreeRef.current) clearTimeout(reloadTreeRef.current);
@@ -1063,6 +1075,8 @@ function App() {
         }
         const tree = await invoke<FileNode[]>("get_file_tree");
         setFileTree(tree);
+        setPathToHighlight(relativePath);
+        setFocusedComponent("sidebar");
       }
     } catch (err) {
       console.error("Failed to create item", err);
@@ -1123,6 +1137,17 @@ function App() {
     );
   };
 
+  const getTargetParentPath = (): string => {
+    const currentItem = visibleItems[sidebarSelectedIndex];
+    if (!currentItem) return "";
+    if (currentItem.isDir) {
+      return currentItem.path;
+    } else {
+      const lastSlashIdx = currentItem.path.lastIndexOf("/");
+      return lastSlashIdx !== -1 ? currentItem.path.substring(0, lastSlashIdx) : "";
+    }
+  };
+
   return (
     <div className="app-container fade-in">
       <header className="app-header">
@@ -1158,11 +1183,19 @@ function App() {
               <button
                 className="btn-header-action"
                 onClick={() => {
+                  const targetPath = getTargetParentPath();
                   inputFocusedRef.current = false;
-                  setCreatingNode({ type: "file", parentPath: "" });
+                  setCreatingNode({ type: "file", parentPath: targetPath });
                   setNewInputName("untitled.md");
+                  if (targetPath) {
+                    setExpandedPaths(prev => {
+                      const next = new Set(prev);
+                      next.add(targetPath);
+                      return next;
+                    });
+                  }
                 }}
-                title="New File (Root)"
+                title="New File"
               >
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
@@ -1174,11 +1207,19 @@ function App() {
               <button
                 className="btn-header-action"
                 onClick={() => {
+                  const targetPath = getTargetParentPath();
                   inputFocusedRef.current = false;
-                  setCreatingNode({ type: "dir", parentPath: "" });
+                  setCreatingNode({ type: "dir", parentPath: targetPath });
                   setNewInputName("untitled");
+                  if (targetPath) {
+                    setExpandedPaths(prev => {
+                      const next = new Set(prev);
+                      next.add(targetPath);
+                      return next;
+                    });
+                  }
                 }}
-                title="New Folder (Root)"
+                title="New Folder"
               >
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
