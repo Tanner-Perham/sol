@@ -126,6 +126,7 @@ function App() {
   const reloadTreeRef = useRef<any>(null);
   const prevActiveFileRef = useRef<string | null>(null);
   const inputFocusedRef = useRef(false);
+  const sidebarVimBufferRef = useRef<string>("");
 
   // Tree helpers
   const findFirstMdFile = (nodes: FileNode[]): string | null => {
@@ -993,16 +994,72 @@ function App() {
   const handleSidebarKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (creatingNode) return;
 
+    const buffer = sidebarVimBufferRef.current;
+
+    // Check if it's a digit prefix (counts)
+    if (/^[1-9]$/.test(e.key) || (e.key === "0" && buffer.length > 0 && /^\d+$/.test(buffer))) {
+      e.preventDefault();
+      sidebarVimBufferRef.current += e.key;
+      return;
+    }
+
+    const parseCount = (): number => {
+      const match = buffer.match(/^(\d+)/);
+      return match ? parseInt(match[1], 10) : 1;
+    };
+
+    // Handle `g` key (gg)
+    if (e.key === "g") {
+      e.preventDefault();
+      if (buffer.endsWith("g")) {
+        const count = parseCount();
+        if (buffer.match(/^\d+/)) {
+          // [count]gg -> go to line [count] (index count - 1)
+          setSidebarSelectedIndex(Math.max(0, Math.min(count - 1, visibleItems.length - 1)));
+        } else {
+          // gg -> go to first line (index 0)
+          setSidebarSelectedIndex(0);
+        }
+        sidebarVimBufferRef.current = "";
+      } else {
+        sidebarVimBufferRef.current += "g";
+      }
+      return;
+    }
+
+    // Handle `G` key
+    if (e.key === "G") {
+      e.preventDefault();
+      const count = parseCount();
+      if (buffer.match(/^\d+/)) {
+        // [count]G -> go to line [count] (index count - 1)
+        setSidebarSelectedIndex(Math.max(0, Math.min(count - 1, visibleItems.length - 1)));
+      } else {
+        // G -> go to last line
+        setSidebarSelectedIndex(visibleItems.length - 1);
+      }
+      sidebarVimBufferRef.current = "";
+      return;
+    }
+
     switch (e.key) {
       case "j":
       case "ArrowDown":
         e.preventDefault();
-        setSidebarSelectedIndex((i) => Math.min(i + 1, visibleItems.length - 1));
+        {
+          const count = parseCount();
+          setSidebarSelectedIndex((i) => Math.min(i + count, visibleItems.length - 1));
+          sidebarVimBufferRef.current = "";
+        }
         break;
       case "k":
       case "ArrowUp":
         e.preventDefault();
-        setSidebarSelectedIndex((i) => Math.max(i - 1, 0));
+        {
+          const count = parseCount();
+          setSidebarSelectedIndex((i) => Math.max(i - count, 0));
+          sidebarVimBufferRef.current = "";
+        }
         break;
       case "h":
       case "ArrowLeft":
@@ -1027,6 +1084,7 @@ function App() {
               }
             }
           }
+          sidebarVimBufferRef.current = "";
         }
         break;
       case "l":
@@ -1050,6 +1108,7 @@ function App() {
               setFocusedComponent("editor");
             }
           }
+          sidebarVimBufferRef.current = "";
         }
         break;
       case "Enter":
@@ -1070,13 +1129,16 @@ function App() {
               setFocusedComponent("editor");
             }
           }
+          sidebarVimBufferRef.current = "";
         }
         break;
       case "Escape":
         e.preventDefault();
         setFocusedComponent("editor");
+        sidebarVimBufferRef.current = "";
         break;
       default:
+        sidebarVimBufferRef.current = "";
         break;
     }
   };
