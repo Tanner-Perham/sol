@@ -1,5 +1,73 @@
 use std::fs;
 use std::path::Path;
+use notify::{Watcher, RecommendedWatcher, RecursiveMode};
+use tauri::{Emitter, Manager};
+
+#[allow(dead_code)]
+struct WatcherState(RecommendedWatcher);
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct FileNode {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub children: Vec<FileNode>,
+}
+
+fn build_tree(dir: &Path, base: &Path) -> Result<Vec<FileNode>, String> {
+    let mut nodes = Vec::new();
+    if !dir.exists() {
+        return Ok(nodes);
+    }
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        if name.is_empty() {
+            continue;
+        }
+
+        let relative_path = path.strip_prefix(base)
+            .map_err(|e| e.to_string())?
+            .to_str()
+            .unwrap_or("")
+            .to_string();
+
+        let is_dir = path.is_dir();
+        let mut children = Vec::new();
+        if is_dir {
+            children = build_tree(&path, base)?;
+            children.sort_by(|a, b| {
+                match (a.is_dir, b.is_dir) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                }
+            });
+        }
+
+        nodes.push(FileNode {
+            name,
+            path: relative_path,
+            is_dir,
+            children,
+        });
+    }
+
+    nodes.sort_by(|a, b| {
+        match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+
+    Ok(nodes)
+}
 
 #[tauri::command]
 fn display() -> String {
@@ -62,24 +130,57 @@ fn create_markdown_file(name: String) -> Result<String, String> {
     if path.exists() {
         return Err("File already exists".to_string());
     }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     fs::write(&path, "").map_err(|e| e.to_string())?;
     path.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "Failed to convert path to string".to_string())
 }
 
+#[tauri::command]
+fn get_file_tree() -> Result<Vec<FileNode>, String> {
+    let base = Path::new("..");
+    build_tree(base, base)
+}
+
+#[tauri::command]
+fn create_directory(path: String) -> Result<(), String> {
+    let full_path = Path::new("..").join(&path);
+    if full_path.exists() {
+        return Err("Directory or file already exists".to_string());
+    }
+    fs::create_dir_all(&full_path).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(_event) = res {
+                    let _ = app_handle.emit("workspace-changed", ());
+                }
+            }).map_err(|e| e.to_string())?;
+            
+            watcher.watch(Path::new(".."), RecursiveMode::Recursive).map_err(|e| e.to_string())?;
+            app.manage(WatcherState(watcher));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             display,
             read_markdown_file,
             write_markdown_file,
             get_workspace_path,
             list_workspace_files,
-            create_markdown_file
+            create_markdown_file,
+            get_file_tree,
+            create_directory
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

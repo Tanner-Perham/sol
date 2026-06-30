@@ -135,77 +135,174 @@ html, body, #root {
   color: var(--text-muted);
 }
 
-.btn-new-file {
-  background: transparent;
-  border: 1px dashed var(--accent);
-  color: var(--accent);
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  transition: all 0.2s ease;
-  font-weight: 500;
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.btn-new-file:hover {
+.btn-header-action {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.btn-header-action:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.btn-header-action.active {
+  color: var(--accent);
   background-color: var(--accent-glow);
-  border-style: solid;
+  border-color: var(--accent);
 }
 
 /* File List */
 .file-list {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 8px;
+  padding: 12px 6px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
-.file-item {
+/* File Tree Row */
+.file-tree-row {
+  box-sizing: border-box;
   width: 100%;
-  background: transparent;
-  border: 1px solid transparent;
   color: var(--text-muted);
   text-align: left;
-  padding: 8px 12px;
+  padding: 6px 8px;
   font-size: 13px;
-  border-radius: 8px;
-  transition: all 0.2s ease;
+  border-radius: 6px;
+  transition: all 0.15s ease;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--font-sans);
   display: flex;
   align-items: center;
-  gap: 8px;
   cursor: pointer;
+  border: 1px solid transparent;
+  position: relative;
+  user-select: none;
 }
 
-.file-item:hover {
+.file-tree-row:hover {
   background-color: var(--bg-hover);
   color: var(--text-primary);
 }
 
-.file-item.active {
+.file-tree-row.active {
   background-color: var(--bg-hover);
   border-color: var(--accent);
   color: var(--text-primary);
   font-weight: 500;
 }
 
-.file-item.kb-selected {
+.file-tree-row.kb-selected {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* Chevron & Icon wrappers */
+.tree-chevron-wrapper {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 2px;
+  flex-shrink: 0;
+}
+
+.tree-chevron {
+  width: 10px;
+  height: 10px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.tree-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.file-item-icon-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  flex-shrink: 0;
 }
 
 .file-item-icon {
   width: 14px;
   height: 14px;
+  color: var(--text-muted);
   opacity: 0.6;
 }
 
-.file-item.active .file-item-icon {
+.folder-icon {
+  color: var(--accent);
+  opacity: 0.8;
+}
+
+.file-tree-row.active .file-item-icon {
   opacity: 1;
+}
+
+.file-tree-row.active .file-item-icon:not(.folder-icon) {
+  color: var(--accent);
+}
+
+.file-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 8px;
+}
+
+/* Row Actions (New File / Folder Inside Subdirectory) */
+.row-actions {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  position: absolute;
+  right: 6px;
+  background-color: var(--bg-hover);
+  padding-left: 8px;
+}
+
+.file-tree-row:hover .row-actions {
+  display: flex;
+}
+
+.btn-row-action {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.btn-row-action:hover {
+  background-color: var(--bg-card);
   color: var(--accent);
 }
 
@@ -217,28 +314,37 @@ html, body, #root {
   line-height: 1.5;
 }
 
-/* New File Form */
-.new-file-form {
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
-  background-color: var(--bg-dark);
+/* Creating state inputs styling */
+.file-item-creating-wrapper {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  width: 100%;
 }
 
-.new-file-input {
+.new-node-form {
+  display: flex;
+  align-items: center;
+}
+
+.new-node-input {
   width: 100%;
   background: var(--bg-card);
   border: 1px solid var(--border);
   color: var(--text-primary);
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color 0.15s ease;
+  font-family: var(--font-sans);
 }
 
-.new-file-input:focus {
+.new-node-input:focus {
   border-color: var(--accent);
 }
+
 
 /* Main Workspace */
 .app-main {

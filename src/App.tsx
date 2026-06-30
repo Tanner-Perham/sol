@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
@@ -25,6 +26,13 @@ export interface SplitPane {
 }
 
 export type PaneNode = LeafPane | SplitPane;
+
+export interface FileNode {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  children: FileNode[];
+}
 
 function computeWordCount(content: string): number {
   return content
@@ -79,7 +87,11 @@ const removePaneFromTree = (root: PaneNode, paneIdToRemove: PaneId): PaneNode | 
 
 function App() {
   const [workspacePath, setWorkspacePath] = useState("");
-  const [files, setFiles] = useState<string[]>([]);
+  const [fileTree, setFileTree] = useState<FileNode[]>([]);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [showHidden, setShowHidden] = useState(false);
+  const [creatingNode, setCreatingNode] = useState<{ type: "file" | "dir"; parentPath: string } | null>(null);
+  const [newInputName, setNewInputName] = useState("");
   
   // Layout state
   const [layout, setLayout] = useState<PaneNode>({
@@ -99,8 +111,6 @@ function App() {
   const [livePreview, setLivePreview] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [vimModeName, setVimModeName] = useState("NORMAL");
-  const [creatingFile, setCreatingFile] = useState(false);
-  const [newFileName, setNewFileName] = useState("");
   const [focusedComponent, setFocusedComponent] = useState<"editor" | "sidebar">("editor");
   const [sidebarSelectedIndex, setSidebarSelectedIndex] = useState(0);
 
@@ -112,19 +122,42 @@ function App() {
   const editorViewsRef = useRef<Map<PaneId, EditorView | null>>(new Map());
   const paneStatesRef = useRef<Map<PaneId, { isDirty: boolean; wordCount: number }>>(new Map());
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const newFileInputRef = useRef<HTMLInputElement>(null);
+  const reloadTreeRef = useRef<any>(null);
+  const prevActiveFileRef = useRef<string | null>(null);
+  const inputFocusedRef = useRef(false);
+
+  // Tree helpers
+  const findFirstMdFile = (nodes: FileNode[]): string | null => {
+    for (const node of nodes) {
+      if (!node.is_dir && node.path.endsWith(".md")) {
+        return node.path;
+      }
+    }
+    for (const node of nodes) {
+      if (node.is_dir) {
+        const found = findFirstMdFile(node.children);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  const findDefaultFile = (nodes: FileNode[]): string | null => {
+    const rootTest = nodes.find(n => !n.is_dir && n.path === "test.md");
+    if (rootTest) return "test.md";
+    return findFirstMdFile(nodes);
+  };
 
   // Load workspace path and files
   const loadWorkspace = useCallback(async () => {
     try {
       const path = await invoke<string>("get_workspace_path");
       setWorkspacePath(path);
-      const fileList = await invoke<string[]>("list_workspace_files");
-      setFiles(fileList);
+      const tree = await invoke<FileNode[]>("get_file_tree");
+      setFileTree(tree);
 
-      if (fileList.length > 0) {
-        // Auto-open test.md if it exists, otherwise the first file
-        const defaultFile = fileList.find(f => f === "test.md") || fileList[0];
+      const defaultFile = findDefaultFile(tree);
+      if (defaultFile) {
         setLayout({
           type: "leaf",
           id: "pane-root",
@@ -135,8 +168,8 @@ function App() {
       } else {
         // Create test.md automatically if workspace is empty
         await invoke<string>("create_markdown_file", { name: "test.md" });
-        const updatedList = await invoke<string[]>("list_workspace_files");
-        setFiles(updatedList);
+        const updatedTree = await invoke<FileNode[]>("get_file_tree");
+        setFileTree(updatedTree);
         setLayout({
           type: "leaf",
           id: "pane-root",
@@ -292,15 +325,111 @@ function App() {
     }
   };
 
-  // Sync index when files or activeFile changes
+  // Flattened visible items for tree list keyboard/mouse selection
+  interface VisibleItem {
+    path: string;
+    name: string;
+    isDir: boolean;
+    depth: number;
+    node: FileNode;
+  }
+
+  const visibleItems = useMemo(() => {
+    const items: VisibleItem[] = [];
+
+    const traverse = (nodes: FileNode[], depth: number, parentPath: string) => {
+      if (creatingNode && creatingNode.parentPath === parentPath) {
+        items.push({
+          path: "__creating__",
+          name: newInputName,
+          isDir: creatingNode.type === "dir",
+          depth,
+          node: { name: "", path: "__creating__", is_dir: creatingNode.type === "dir", children: [] }
+        });
+      }
+
+      for (const node of nodes) {
+        if (!showHidden && node.name.startsWith(".")) {
+          continue;
+        }
+
+        items.push({
+          path: node.path,
+          name: node.name,
+          isDir: node.is_dir,
+          depth,
+          node
+        });
+
+        if (node.is_dir && expandedPaths.has(node.path)) {
+          traverse(node.children, depth + 1, node.path);
+        }
+      }
+    };
+
+    traverse(fileTree, 0, "");
+    return items;
+  }, [fileTree, expandedPaths, showHidden, creatingNode, newInputName]);
+
+  const expandParentsOfFile = useCallback((filePath: string) => {
+    const parts = filePath.split("/");
+    if (parts.length <= 1) return;
+    setExpandedPaths(prev => {
+      const next = new Set(prev);
+      let current = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        current = current ? `${current}/${parts[i]}` : parts[i];
+        next.add(current);
+      }
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     if (activeFile) {
-      const idx = files.indexOf(activeFile);
-      if (idx !== -1) {
-        setSidebarSelectedIndex(idx);
+      expandParentsOfFile(activeFile);
+    }
+  }, [activeFile, expandParentsOfFile]);
+
+  // Sync index only when activeFile actually changes (prevent resetting when user toggles folders or on watcher refreshes)
+  useEffect(() => {
+    if (activeFile !== prevActiveFileRef.current) {
+      prevActiveFileRef.current = activeFile;
+      if (activeFile) {
+        const idx = visibleItems.findIndex(item => item.path === activeFile);
+        if (idx !== -1) {
+          setSidebarSelectedIndex(idx);
+        }
       }
     }
-  }, [activeFile, files]);
+  }, [activeFile, visibleItems]);
+
+  const triggerTreeReload = useCallback(() => {
+    if (reloadTreeRef.current) clearTimeout(reloadTreeRef.current);
+    reloadTreeRef.current = setTimeout(async () => {
+      try {
+        const tree = await invoke<FileNode[]>("get_file_tree");
+        setFileTree(tree);
+      } catch (err) {
+        console.error("Failed to reload file tree", err);
+      }
+    }, 30);
+  }, []);
+
+  // Listen to filesystem events emitted by backend
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const setupListener = async () => {
+      unlisten = await listen("workspace-changed", () => {
+        triggerTreeReload();
+      });
+    };
+    setupListener();
+    return () => {
+      if (reloadTreeRef.current) clearTimeout(reloadTreeRef.current);
+      if (unlisten) unlisten();
+    };
+  }, [triggerTreeReload]);
 
   // Save the current file
   const saveFile = useCallback(async () => {
@@ -319,8 +448,8 @@ function App() {
       paneStatesRef.current.set(activePaneId, { isDirty: false, wordCount: computeWordCount(currentContent) });
       setIsDirty(false);
 
-      const fileList = await invoke<string[]>("list_workspace_files");
-      setFiles(fileList);
+      const tree = await invoke<FileNode[]>("get_file_tree");
+      setFileTree(tree);
     } catch (err) {
       console.error("Failed to save file", err);
     }
@@ -786,6 +915,7 @@ function App() {
 
   // Handle focus switching
   useEffect(() => {
+    if (creatingNode) return; // Do not switch focus during creation to allow editing the input
     if (focusedComponent === "editor") {
       if (activePaneId) {
         editorViewsRef.current.get(activePaneId)?.focus();
@@ -793,36 +923,89 @@ function App() {
     } else if (focusedComponent === "sidebar") {
       sidebarRef.current?.focus();
     }
-  }, [focusedComponent, activePaneId]);
-
-  // Focus input when creating a file
-  useEffect(() => {
-    if (creatingFile) {
-      newFileInputRef.current?.focus();
-    }
-  }, [creatingFile]);
+  }, [focusedComponent, activePaneId, creatingNode]);
 
   // Sidebar key bindings
   const handleSidebarKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (creatingFile) return;
+    if (creatingNode) return;
 
     switch (e.key) {
       case "j":
       case "ArrowDown":
         e.preventDefault();
-        setSidebarSelectedIndex((i) => Math.min(i + 1, files.length - 1));
+        setSidebarSelectedIndex((i) => Math.min(i + 1, visibleItems.length - 1));
         break;
       case "k":
       case "ArrowUp":
         e.preventDefault();
         setSidebarSelectedIndex((i) => Math.max(i - 1, 0));
         break;
+      case "h":
+      case "ArrowLeft":
+        e.preventDefault();
+        {
+          const currentItem = visibleItems[sidebarSelectedIndex];
+          if (currentItem) {
+            if (currentItem.isDir && expandedPaths.has(currentItem.path)) {
+              setExpandedPaths(prev => {
+                const next = new Set(prev);
+                next.delete(currentItem.path);
+                return next;
+              });
+            } else {
+              const parts = currentItem.path.split("/");
+              if (parts.length > 1) {
+                const parentPath = parts.slice(0, -1).join("/");
+                const parentIdx = visibleItems.findIndex(item => item.path === parentPath);
+                if (parentIdx !== -1) {
+                  setSidebarSelectedIndex(parentIdx);
+                }
+              }
+            }
+          }
+        }
+        break;
+      case "l":
+      case "ArrowRight":
+        e.preventDefault();
+        {
+          const currentItem = visibleItems[sidebarSelectedIndex];
+          if (currentItem) {
+            if (currentItem.isDir) {
+              if (!expandedPaths.has(currentItem.path)) {
+                setExpandedPaths(prev => {
+                  const next = new Set(prev);
+                  next.add(currentItem.path);
+                  return next;
+                });
+              } else {
+                setSidebarSelectedIndex((i) => Math.min(i + 1, visibleItems.length - 1));
+              }
+            } else {
+              openFile(currentItem.path);
+              setFocusedComponent("editor");
+            }
+          }
+        }
+        break;
       case "Enter":
       case " ":
         e.preventDefault();
-        if (files[sidebarSelectedIndex]) {
-          openFile(files[sidebarSelectedIndex]);
-          setFocusedComponent("editor");
+        {
+          const currentItem = visibleItems[sidebarSelectedIndex];
+          if (currentItem) {
+            if (currentItem.isDir) {
+              setExpandedPaths(prev => {
+                const next = new Set(prev);
+                if (next.has(currentItem.path)) next.delete(currentItem.path);
+                else next.add(currentItem.path);
+                return next;
+              });
+            } else {
+              openFile(currentItem.path);
+              setFocusedComponent("editor");
+            }
+          }
         }
         break;
       case "Escape":
@@ -834,27 +1017,59 @@ function App() {
     }
   };
 
-  // Create file submit
-  const handleNewFileSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const name = newFileName.trim();
-    if (!name) {
-      setCreatingFile(false);
+  // Submit handler for inline directory/file creation input
+  const handleNewNodeSubmit = async (isBlur: boolean = false) => {
+    const name = newInputName.trim();
+    if (!name || !creatingNode) {
+      inputFocusedRef.current = false;
+      setCreatingNode(null);
+      setNewInputName("");
       return;
     }
 
-    const nameWithExt = name.endsWith(".md") ? name : `${name}.md`;
-    try {
-      await invoke("create_markdown_file", { name: nameWithExt });
-      setCreatingFile(false);
-      setNewFileName("");
+    const isDefault = name === "untitled.md" || name === "untitled";
+    if (isBlur && isDefault) {
+      inputFocusedRef.current = false;
+      setCreatingNode(null);
+      setNewInputName("");
+      return;
+    }
 
-      const fileList = await invoke<string[]>("list_workspace_files");
-      setFiles(fileList);
-      await openFile(nameWithExt);
-      setFocusedComponent("editor");
+    const relativePath = creatingNode.parentPath ? `${creatingNode.parentPath}/${name}` : name;
+
+    try {
+      if (creatingNode.type === "file") {
+        const nameWithExt = relativePath.endsWith(".md") ? relativePath : `${relativePath}.md`;
+        await invoke("create_markdown_file", { name: nameWithExt });
+        if (creatingNode.parentPath) {
+          setExpandedPaths(prev => {
+            const next = new Set(prev);
+            next.add(creatingNode.parentPath);
+            return next;
+          });
+        }
+        const tree = await invoke<FileNode[]>("get_file_tree");
+        setFileTree(tree);
+        await openFile(nameWithExt);
+        setFocusedComponent("editor");
+      } else {
+        await invoke("create_directory", { path: relativePath });
+        if (creatingNode.parentPath) {
+          setExpandedPaths(prev => {
+            const next = new Set(prev);
+            next.add(creatingNode.parentPath);
+            return next;
+          });
+        }
+        const tree = await invoke<FileNode[]>("get_file_tree");
+        setFileTree(tree);
+      }
     } catch (err) {
-      console.error("Failed to create file", err);
+      console.error("Failed to create item", err);
+    } finally {
+      inputFocusedRef.current = false;
+      setCreatingNode(null);
+      setNewInputName("");
     }
   };
 
@@ -939,37 +1154,51 @@ function App() {
         <aside className={`app-sidebar ${sidebarOpen ? "" : "collapsed"}`}>
           <div className="sidebar-header">
             <span className="sidebar-title">Documents</span>
-            <button
-              className="btn-new-file"
-              onClick={() => setCreatingFile(true)}
-              title="Create new markdown file"
-            >
-              + New
-            </button>
+            <div className="sidebar-header-actions">
+              <button
+                className="btn-header-action"
+                onClick={() => {
+                  inputFocusedRef.current = false;
+                  setCreatingNode({ type: "file", parentPath: "" });
+                  setNewInputName("untitled.md");
+                }}
+                title="New File (Root)"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="12" y1="18" x2="12" y2="12" />
+                  <line x1="9" y1="15" x2="15" y2="15" />
+                </svg>
+              </button>
+              <button
+                className="btn-header-action"
+                onClick={() => {
+                  inputFocusedRef.current = false;
+                  setCreatingNode({ type: "dir", parentPath: "" });
+                  setNewInputName("untitled");
+                }}
+                title="New Folder (Root)"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  <line x1="12" y1="18" x2="12" y2="12" />
+                  <line x1="9" y1="15" x2="15" y2="15" />
+                </svg>
+              </button>
+              <button
+                className={`btn-header-action ${showHidden ? "active" : ""}`}
+                onClick={() => setShowHidden(prev => !prev)}
+                title="Toggle Hidden Files"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                  {!showHidden && <line x1="1" y1="1" x2="23" y2="23" />}
+                </svg>
+              </button>
+            </div>
           </div>
-
-          {creatingFile && (
-            <form onSubmit={handleNewFileSubmit} className="new-file-form">
-              <input
-                ref={newFileInputRef}
-                className="new-file-input"
-                value={newFileName}
-                onChange={(e) => setNewFileName(e.target.value)}
-                onBlur={() => {
-                  setCreatingFile(false);
-                  setNewFileName("");
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    setCreatingFile(false);
-                    setNewFileName("");
-                  }
-                  e.stopPropagation();
-                }}
-                placeholder="filename.md"
-              />
-            </form>
-          )}
 
           <div
             ref={sidebarRef}
@@ -978,30 +1207,172 @@ function App() {
             onKeyDown={handleSidebarKeyDown}
             onFocus={() => setFocusedComponent("sidebar")}
           >
-            {files.length === 0 && !creatingFile && (
+            {visibleItems.length === 0 && !creatingNode && (
               <div className="file-list-empty">
-                No files found in workspace. Click "+ New" to get started.
+                No files found in workspace. Use buttons in the header to get started.
               </div>
             )}
-            {files.map((file, idx) => {
-              const isActive = activeFile === file;
+            {visibleItems.map((item, idx) => {
               const isSelected = idx === sidebarSelectedIndex;
+
+              if (item.path === "__creating__") {
+                return (
+                  <div
+                    key="__creating__"
+                    className="file-item-creating-wrapper"
+                    style={{ paddingLeft: `${8 + item.depth * 16}px` }}
+                  >
+                    <span className="file-item-icon-wrapper">
+                      {item.isDir ? (
+                        <svg className="file-item-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                        </svg>
+                      ) : (
+                        <svg className="file-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                          <polyline points="14 2 14 8 20 8" />
+                        </svg>
+                      )}
+                    </span>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handleNewNodeSubmit(false);
+                      }}
+                      className="new-node-form"
+                      style={{ flex: 1 }}
+                    >
+                      <input
+                        ref={(el) => {
+                          if (el && !inputFocusedRef.current) {
+                            inputFocusedRef.current = true;
+                            el.focus();
+                            const dotIdx = el.value.lastIndexOf(".");
+                            if (dotIdx > 0 && !item.isDir) {
+                              el.setSelectionRange(0, dotIdx);
+                            } else {
+                              el.select();
+                            }
+                          }
+                        }}
+                        className="new-node-input"
+                        value={newInputName}
+                        onChange={(e) => setNewInputName(e.target.value)}
+                        onBlur={() => handleNewNodeSubmit(true)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.stopPropagation();
+                            inputFocusedRef.current = false;
+                            setCreatingNode(null);
+                            setNewInputName("");
+                          }
+                        }}
+                        placeholder={item.isDir ? "Folder..." : "File.md..."}
+                      />
+                    </form>
+                  </div>
+                );
+              }
+
+              const isActive = activeFile === item.path;
+              const isExpanded = item.isDir && expandedPaths.has(item.path);
+
               return (
-                <button
-                  key={file}
-                  className={`file-item ${isActive ? "active" : ""} ${isSelected && focusedComponent === "sidebar" ? "kb-selected" : ""}`}
+                <div
+                  key={item.path}
+                  className={`file-tree-row ${isActive ? "active" : ""} ${isSelected && focusedComponent === "sidebar" ? "kb-selected" : ""}`}
+                  style={{ paddingLeft: `${8 + item.depth * 16}px` }}
                   onClick={() => {
                     setSidebarSelectedIndex(idx);
-                    openFile(file);
-                    setFocusedComponent("editor");
+                    if (item.isDir) {
+                      setExpandedPaths(prev => {
+                        const next = new Set(prev);
+                        if (next.has(item.path)) next.delete(item.path);
+                        else next.add(item.path);
+                        return next;
+                      });
+                    } else {
+                      openFile(item.path);
+                      setFocusedComponent("editor");
+                    }
                   }}
                 >
-                  <svg className="file-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                    <polyline points="14 2 14 8 20 8" />
-                  </svg>
-                  <span>{file.replace(/\.md$/, "")}</span>
-                </button>
+                  <span className="tree-chevron-wrapper">
+                    {item.isDir && (
+                      <svg
+                        className={`tree-chevron ${isExpanded ? "expanded" : ""}`}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="file-item-icon-wrapper">
+                    {item.isDir ? (
+                      <svg className="file-item-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                      </svg>
+                    ) : (
+                      <svg className="file-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                        <polyline points="14 2 14 8 20 8" />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="file-item-name">
+                    {item.isDir ? item.name : item.name.replace(/\.md$/, "")}
+                  </span>
+                  {item.isDir && (
+                    <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="btn-row-action"
+                        onClick={() => {
+                          inputFocusedRef.current = false;
+                          setCreatingNode({ type: "file", parentPath: item.path });
+                          setNewInputName("untitled.md");
+                          setExpandedPaths(prev => {
+                            const next = new Set(prev);
+                            next.add(item.path);
+                            return next;
+                          });
+                        }}
+                        title="New File inside folder"
+                      >
+                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                          <polyline points="14 2 14 8 20 8" />
+                          <line x1="12" y1="18" x2="12" y2="12" />
+                          <line x1="9" y1="15" x2="15" y2="15" />
+                        </svg>
+                      </button>
+                      <button
+                        className="btn-row-action"
+                        onClick={() => {
+                          inputFocusedRef.current = false;
+                          setCreatingNode({ type: "dir", parentPath: item.path });
+                          setNewInputName("untitled");
+                          setExpandedPaths(prev => {
+                            const next = new Set(prev);
+                            next.add(item.path);
+                            return next;
+                          });
+                        }}
+                        title="New Folder inside folder"
+                      >
+                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                          <line x1="12" y1="18" x2="12" y2="12" />
+                          <line x1="9" y1="15" x2="15" y2="15" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>

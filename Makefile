@@ -17,7 +17,7 @@ help:
 	@echo "  build           Build the Tauri application bundle (production release)"
 	@echo "  build-frontend  Build only the Vite frontend assets"
 	@echo ""
-	@echo "Test & Quality Targets:"
+  	@echo "Test & Quality Targets:"
 	@echo "  test            Run all checks and tests (Rust tests + frontend type check)"
 	@echo "  test-rust       Run Rust unit tests"
 	@echo "  lint            Run clippy lint checks on Rust and compiler checks on frontend"
