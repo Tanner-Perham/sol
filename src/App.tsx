@@ -908,7 +908,15 @@ function App() {
       // Ctrl+E or Ctrl+\ to toggle sidebar
       if ((e.key === "e" && (e.ctrlKey || e.metaKey)) || (e.key === "\\" && (e.ctrlKey || e.metaKey))) {
         e.preventDefault();
-        setSidebarOpen(prev => !prev);
+        setSidebarOpen(prev => {
+          const next = !prev;
+          if (next) {
+            setFocusedComponent("sidebar");
+          } else {
+            setFocusedComponent("editor");
+          }
+          return next;
+        });
         return;
       }
 
