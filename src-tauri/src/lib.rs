@@ -1,10 +1,13 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use notify::{Watcher, RecommendedWatcher, RecursiveMode};
 use tauri::{Emitter, Manager};
 
-#[allow(dead_code)]
-struct WatcherState(RecommendedWatcher);
+struct WorkspaceState {
+    path: Mutex<PathBuf>,
+    watcher: Mutex<RecommendedWatcher>,
+}
 
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct FileNode {
@@ -98,14 +101,14 @@ fn write_markdown_file(path: String, content: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_workspace_path() -> String {
-    "..".to_string()
+fn get_workspace_path(state: tauri::State<'_, WorkspaceState>) -> String {
+    state.path.lock().unwrap().to_string_lossy().into_owned()
 }
 
 #[tauri::command]
-fn list_workspace_files() -> Result<Vec<String>, String> {
-    let dir = "..";
-    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+fn list_workspace_files(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<String>, String> {
+    let workspace = state.path.lock().unwrap();
+    let entries = fs::read_dir(&*workspace).map_err(|e| e.to_string())?;
     let mut files = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -124,9 +127,10 @@ fn list_workspace_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn create_markdown_file(name: String) -> Result<String, String> {
+fn create_markdown_file(name: String, state: tauri::State<'_, WorkspaceState>) -> Result<String, String> {
     let name_clean = if name.ends_with(".md") { name } else { format!("{}.md", name) };
-    let path = Path::new("..").join(&name_clean);
+    let workspace = state.path.lock().unwrap();
+    let path = workspace.join(&name_clean);
     if path.exists() {
         return Err("File already exists".to_string());
     }
@@ -140,18 +144,49 @@ fn create_markdown_file(name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn get_file_tree() -> Result<Vec<FileNode>, String> {
-    let base = Path::new("..");
-    build_tree(base, base)
+fn get_file_tree(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<FileNode>, String> {
+    let workspace = state.path.lock().unwrap();
+    build_tree(&workspace, &workspace)
 }
 
 #[tauri::command]
-fn create_directory(path: String) -> Result<(), String> {
-    let full_path = Path::new("..").join(&path);
+fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+    let workspace = state.path.lock().unwrap();
+    let full_path = workspace.join(&path);
     if full_path.exists() {
         return Err("Directory or file already exists".to_string());
     }
     fs::create_dir_all(&full_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn select_directory() -> Option<String> {
+    rfd::FileDialog::new()
+        .pick_folder()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn set_workspace_path(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<FileNode>, String> {
+    let new_path = PathBuf::from(&path);
+    if !new_path.is_dir() {
+        return Err("Path is not a directory".to_string());
+    }
+
+    let mut path_lock = state.path.lock().unwrap();
+    let old_path = path_lock.clone();
+    *path_lock = new_path.clone();
+
+    let mut watcher_lock = state.watcher.lock().unwrap();
+    let _ = watcher_lock.unwatch(&old_path);
+    watcher_lock
+        .watch(&new_path, RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    build_tree(&new_path, &new_path)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -165,9 +200,13 @@ pub fn run() {
                     let _ = app_handle.emit("workspace-changed", ());
                 }
             }).map_err(|e| e.to_string())?;
-            
-            watcher.watch(Path::new(".."), RecursiveMode::Recursive).map_err(|e| e.to_string())?;
-            app.manage(WatcherState(watcher));
+
+            let default_path = PathBuf::from("..");
+            watcher.watch(&default_path, RecursiveMode::Recursive).map_err(|e| e.to_string())?;
+            app.manage(WorkspaceState {
+                path: Mutex::new(default_path),
+                watcher: Mutex::new(watcher),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -178,9 +217,10 @@ pub fn run() {
             list_workspace_files,
             create_markdown_file,
             get_file_tree,
-            create_directory
+            create_directory,
+            select_directory,
+            set_workspace_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-

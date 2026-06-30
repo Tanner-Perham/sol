@@ -184,6 +184,58 @@ function App() {
     }
   }, []);
 
+  const changeWorkspace = async () => {
+    try {
+      // Auto-save active file if dirty before switching workspace
+      if (activePaneId && activeLeaf && activeLeaf.activeFile) {
+        const view = editorViewsRef.current.get(activePaneId);
+        const paneState = paneStatesRef.current.get(activePaneId);
+        if (paneState?.isDirty && view) {
+          const content = view.state.doc.toString();
+          const currentActiveFilePath = `${workspacePath}/${activeLeaf.activeFile}`;
+          try {
+            await invoke("write_markdown_file", { path: currentActiveFilePath, content });
+          } catch (err) {
+            console.error("Failed to auto-save file on workspace change", err);
+          }
+        }
+      }
+
+      const selectedPath = await invoke<string | null>("select_directory");
+      if (!selectedPath) return;
+
+      const newTree = await invoke<FileNode[]>("set_workspace_path", { path: selectedPath });
+      setWorkspacePath(selectedPath);
+      setFileTree(newTree);
+      setExpandedPaths(new Set());
+      setSidebarSelectedIndex(0);
+
+      const defaultFile = findDefaultFile(newTree);
+      if (defaultFile) {
+        setLayout({
+          type: "leaf",
+          id: "pane-root",
+          activeFile: defaultFile,
+          tabs: [defaultFile]
+        });
+        setActivePaneId("pane-root");
+      } else {
+        await invoke("create_markdown_file", { name: "test.md" });
+        const updatedTree = await invoke<FileNode[]>("get_file_tree");
+        setFileTree(updatedTree);
+        setLayout({
+          type: "leaf",
+          id: "pane-root",
+          activeFile: "test.md",
+          tabs: ["test.md"]
+        });
+        setActivePaneId("pane-root");
+      }
+    } catch (err) {
+      console.error("Failed to change workspace", err);
+    }
+  };
+
   // Run on mount
   useEffect(() => {
     loadWorkspace();
@@ -1157,7 +1209,9 @@ function App() {
             <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
           <span className="app-title">SOL</span>
-          <span className="app-subtitle">workspace</span>
+          <span className="app-subtitle" title={workspacePath}>
+            {workspacePath ? (workspacePath.split(/[/\\]/).filter(Boolean).pop() || workspacePath) : "workspace"}
+          </span>
         </div>
 
         <div className="app-actions">
@@ -1180,6 +1234,15 @@ function App() {
           <div className="sidebar-header">
             <span className="sidebar-title">Documents</span>
             <div className="sidebar-header-actions">
+              <button
+                className="btn-header-action"
+                onClick={changeWorkspace}
+                title="Open Folder (Change Workspace)"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+              </button>
               <button
                 className="btn-header-action"
                 onClick={() => {
