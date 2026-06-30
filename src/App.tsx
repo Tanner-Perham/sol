@@ -978,8 +978,25 @@ function App() {
       }
     };
 
+    const handleGlobalClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const linkEl = target.closest(".cm-prose-link");
+      if (linkEl) {
+        const href = linkEl.getAttribute("href") || linkEl.getAttribute("title");
+        if (href) {
+          e.preventDefault();
+          e.stopPropagation();
+          import("@tauri-apps/plugin-opener").then(opener => {
+            opener.openUrl(href).catch((err: any) => console.error("Failed to open link", err));
+          });
+        }
+      }
+    };
+
+    window.addEventListener("click", handleGlobalClick, true);
     window.addEventListener("keydown", handleKeyDown, true);
     return () => {
+      window.removeEventListener("click", handleGlobalClick, true);
       window.removeEventListener("keydown", handleKeyDown, true);
       if (prefixTimeoutRef.current) clearTimeout(prefixTimeoutRef.current);
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -1707,7 +1724,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     }
 
     if (livePreview) {
-      extensions.push(prosePreviewPlugin);
+      extensions.push(prosePreviewPlugin(workspacePath));
     }
 
     const startState = EditorState.create({
@@ -1743,7 +1760,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       viewRef.current = null;
       registerView(paneId, null);
     };
-  }, [activeFile, content, vimMode, livePreview, paneId]);
+  }, [activeFile, content, vimMode, livePreview, paneId, workspacePath]);
 
   // Handle focus sync
   useEffect(() => {

@@ -163,7 +163,7 @@ fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Re
 fn select_directory() -> Option<String> {
     rfd::FileDialog::new()
         .pick_folder()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p).to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -171,7 +171,7 @@ fn set_workspace_path(
     path: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Vec<FileNode>, String> {
-    let new_path = PathBuf::from(&path);
+    let new_path = std::fs::canonicalize(PathBuf::from(&path)).map_err(|e| e.to_string())?;
     if !new_path.is_dir() {
         return Err("Path is not a directory".to_string());
     }
@@ -201,7 +201,7 @@ pub fn run() {
                 }
             }).map_err(|e| e.to_string())?;
 
-            let default_path = PathBuf::from("..");
+            let default_path = std::fs::canonicalize("..").unwrap_or_else(|_| PathBuf::from(".."));
             watcher.watch(&default_path, RecursiveMode::Recursive).map_err(|e| e.to_string())?;
             app.manage(WorkspaceState {
                 path: Mutex::new(default_path),
