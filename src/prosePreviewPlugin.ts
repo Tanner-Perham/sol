@@ -43,6 +43,18 @@ class SceneBreakWidget extends WidgetType {
   }
 }
 
+class EmptyLineSpacerWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const span = document.createElement("span");
+    span.className = "cm-empty-line-spacer";
+    span.textContent = "\u00a0";
+    return span;
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 class BulletWidget extends WidgetType {
   toDOM(): HTMLElement {
     const span = document.createElement("span");
@@ -351,6 +363,16 @@ function buildDecorations(view: EditorView, workspacePath: string): DecorationSe
         }
         if (codeLastLines.has(line.number)) cls += " last";
         builder.add(line.from, line.from, lineClass(cls, attrs));
+        if (text.length === 0) {
+          builder.add(
+            line.from,
+            line.from,
+            Decoration.widget({
+              widget: new EmptyLineSpacerWidget(),
+              side: 1
+            })
+          );
+        }
         pos = line.to + 1;
         continue;
       }
@@ -462,6 +484,17 @@ function buildDecorations(view: EditorView, workspacePath: string): DecorationSe
         for (const { from: f, to: t, dec } of collectInlineMarks(line.from, text, workspacePath)) {
           builder.add(f, t, dec);
         }
+      }
+
+      if (text.length === 0) {
+        builder.add(
+          line.from,
+          line.from,
+          Decoration.widget({
+            widget: new EmptyLineSpacerWidget(),
+            side: 1
+          })
+        );
       }
 
       pos = line.to + 1;

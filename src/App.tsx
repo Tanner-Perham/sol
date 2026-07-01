@@ -1771,8 +1771,11 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ".cm-activeLine": {
           backgroundColor: "transparent",
         },
-        ".cm-selectionBackground, ::selection": {
-          backgroundColor: "rgba(207, 177, 140, 0.2) !important",
+        ".cm-selectionBackground, .cm-content ::selection": {
+          backgroundColor: "rgba(207, 177, 140, 0.4) !important",
+        },
+        ".cm-focused .cm-selectionBackground, &.cm-focused .cm-content ::selection": {
+          backgroundColor: "rgba(207, 177, 140, 0.55) !important",
         },
       }, { dark: true })
     ];

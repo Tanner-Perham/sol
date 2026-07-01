@@ -13,7 +13,9 @@
   --font-mono: ui-monospace, 'Menlo', 'Monaco', monospace;
 }
 
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
   margin: 0;
   padding: 0;
@@ -63,8 +65,15 @@ html, body, #root {
 }
 
 @keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
+
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-2px);
+  }
 }
 
 .app-title {
@@ -402,12 +411,43 @@ html, body, #root {
   border-left: 2px solid var(--accent) !important;
 }
 
-.cm-selectionBackground, ::selection {
-  background: rgba(207, 177, 140, 0.2) !important;
+.cm-selectionBackground,
+.cm-content ::selection {
+  background: rgba(207, 177, 140, 0.4) !important;
 }
 
-.cm-focused .cm-selectionBackground {
-  background: rgba(207, 177, 140, 0.25) !important;
+.cm-focused .cm-selectionBackground,
+.cm-editor.cm-focused .cm-content ::selection {
+  background: rgba(207, 177, 140, 0.55) !important;
+}
+
+.cm-line br {
+  display: inline-block !important;
+  width: 4px !important;
+  height: 1.1em !important;
+  line-height: 1 !important;
+  vertical-align: middle !important;
+}
+
+.cm-empty-line-spacer {
+  display: inline-block !important;
+  width: 4px !important;
+  height: 1.1em !important;
+  line-height: 1 !important;
+  vertical-align: middle !important;
+  color: transparent !important;
+  background: transparent !important;
+  user-select: text !important;
+}
+
+.cm-empty-line-spacer::selection,
+.cm-content .cm-empty-line-spacer::selection {
+  background: rgba(207, 177, 140, 0.4) !important;
+}
+
+.cm-editor.cm-focused .cm-empty-line-spacer::selection,
+.cm-editor.cm-focused .cm-content .cm-empty-line-spacer::selection {
+  background: rgba(207, 177, 140, 0.55) !important;
 }
 
 .cm-gutters {
@@ -608,8 +648,13 @@ html, body, #root {
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 /* Floating helper tips */
@@ -634,8 +679,15 @@ html, body, #root {
 }
 
 @keyframes slideUp {
-  from { transform: translateY(20px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }
 
 .tip-header {
@@ -694,8 +746,10 @@ html, body, #root {
 
 /* Hide scrollbar for IE, Edge and Firefox */
 .editor-tabs {
-  -ms-overflow-style: none;  /* IE and Edge */
-  scrollbar-width: none;  /* Firefox */
+  -ms-overflow-style: none;
+  /* IE and Edge */
+  scrollbar-width: none;
+  /* Firefox */
 }
 
 /* Tab Item */
@@ -853,10 +907,13 @@ html, body, #root {
 
 /* Animations */
 @keyframes pulse {
-  0%, 100% {
+
+  0%,
+  100% {
     opacity: 1;
     transform: scale(1);
   }
+
   50% {
     opacity: 0.5;
     transform: scale(0.95);
@@ -1025,6 +1082,3 @@ html, body, #root {
   padding-top: 0.2em;
   padding-bottom: 0.05em;
 }
-
-
-
