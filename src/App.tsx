@@ -379,6 +379,45 @@ function App() {
     }
   };
 
+  const closeAllTabs = useCallback(async () => {
+    const getAllLeaves = (node: PaneNode): LeafPane[] => {
+      if (node.type === "leaf") return [node];
+      return node.children.flatMap(getAllLeaves);
+    };
+
+    const leaves = getAllLeaves(layoutRef.current);
+    for (const leaf of leaves) {
+      for (const tab of leaf.tabs) {
+        const paneState = paneStatesRef.current.get(leaf.id);
+        const view = editorViewsRef.current.get(leaf.id);
+        if (leaf.activeFile === tab && paneState?.isDirty && view) {
+          const content = view.state.doc.toString();
+          try {
+            await invoke("write_markdown_file", {
+              path: `${workspacePathRef.current}/${tab}`,
+              content,
+            });
+          } catch (err) {
+            console.error("Failed to auto-save file on close all", err);
+          }
+        }
+      }
+    }
+
+    editorViewsRef.current.clear();
+    paneStatesRef.current.clear();
+
+    setLayout({
+      type: "leaf",
+      id: "pane-root",
+      activeFile: null,
+      tabs: []
+    });
+    setActivePaneId("pane-root");
+    setIsDirty(false);
+    setWordCount(0);
+  }, []);
+
   // Flattened visible items for tree list keyboard/mouse selection
   interface VisibleItem {
     path: string;
@@ -812,6 +851,8 @@ function App() {
   const splitActivePaneRef = useRef(splitActivePane);
   const closeActivePaneRef = useRef(closeActivePane);
   const navigateFocusRef = useRef(navigateFocus);
+  const closeAllTabsRef = useRef(closeAllTabs);
+  const workspacePathRef = useRef(workspacePath);
 
   useEffect(() => { layoutRef.current = layout; }, [layout]);
   useEffect(() => { activePaneIdRef.current = activePaneId; }, [activePaneId]);
@@ -822,6 +863,23 @@ function App() {
   useEffect(() => { splitActivePaneRef.current = splitActivePane; }, [splitActivePane]);
   useEffect(() => { closeActivePaneRef.current = closeActivePane; }, [closeActivePane]);
   useEffect(() => { navigateFocusRef.current = navigateFocus; }, [navigateFocus]);
+  useEffect(() => { closeAllTabsRef.current = closeAllTabs; }, [closeAllTabs]);
+  useEffect(() => { workspacePathRef.current = workspacePath; }, [workspacePath]);
+
+  // Register Vim custom Ex commands
+  useEffect(() => {
+    Vim.defineEx("quit", "q", () => {
+      const currentActivePaneId = activePaneIdRef.current;
+      const leaf = findLeafNode(layoutRef.current, currentActivePaneId);
+      if (leaf && leaf.activeFile) {
+        closeTabRef.current(currentActivePaneId, leaf.activeFile);
+      }
+    });
+
+    Vim.defineEx("qall", "qa", () => {
+      closeAllTabsRef.current();
+    });
+  }, []);
 
   // Global key listener
   useEffect(() => {
