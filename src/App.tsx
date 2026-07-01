@@ -1842,12 +1842,13 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     // Track visual block selection for blockwise insert
     let savedBlockSelection: { startLine: number; endLine: number; col: number; originalText: string } | null = null;
 
-    // Global keydown handler to intercept Ctrl+V, Ctrl+Q, and Shift+I
+    // Global keydown handler to intercept Ctrl+V, Ctrl+Q, Shift+I, and x in visual block
     const handleDocumentKeyDown = (e: KeyboardEvent) => {
       const isCtrlV = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && !e.altKey && !e.shiftKey;
       const isCtrlQ = e.ctrlKey && e.key.toLowerCase() === 'q' && !e.altKey && !e.shiftKey && !e.metaKey;
       const isShiftI = e.shiftKey && e.key === 'I';
       const isEscape = e.key === 'Escape';
+      const isX = e.key === 'x' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
 
       const cm = getCM(view);
 
@@ -1874,6 +1875,46 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           const originalText = firstLine.text;
 
           savedBlockSelection = { startLine, endLine, col, originalText };
+        }
+      } else if (isX && cm && cm.state && cm.state.vim) {
+        const vimState = cm.state.vim;
+        if (vimState.visualBlock && vimState.sel) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          // Get the block selection bounds
+          const anchor = vimState.sel.anchor;
+          const head = vimState.sel.head;
+          const startLineNum = Math.min(anchor.line, head.line);
+          const endLineNum = Math.max(anchor.line, head.line);
+          const startCol = Math.min(anchor.ch, head.ch);
+          const endCol = Math.max(anchor.ch, head.ch) + 1; // inclusive
+
+          // Build delete changes for all lines in the block
+          const changes: { from: number; to: number; insert: string }[] = [];
+
+          for (let lineNum = startLineNum; lineNum <= endLineNum; lineNum++) {
+            if (lineNum + 1 > view.state.doc.lines) continue;
+            const line = view.state.doc.line(lineNum + 1);
+            const lineStartCol = Math.min(startCol, line.text.length);
+            const lineEndCol = Math.min(endCol, line.text.length);
+
+            if (lineStartCol < lineEndCol) {
+              const from = line.from + lineStartCol;
+              const to = line.from + lineEndCol;
+              changes.push({ from, to, insert: "" });
+            }
+          }
+
+          if (changes.length > 0) {
+            // Exit visual mode first
+            Vim.exitVisualMode(cm as any, false);
+
+            // Apply all deletions as a single transaction
+            view.dispatch({ changes });
+          }
+
+          return false;
         }
       } else if (isEscape && savedBlockSelection && cm && cm.state && cm.state.vim) {
         // Blockwise insert: duplicate inserted text to all lines

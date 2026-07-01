@@ -1,7 +1,7 @@
 # Test
 This is a test file.
 ## Header level 2
-Another **test** line
+another **test** line
 
 Here is a [[link]] to another page
 
