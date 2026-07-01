@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
-import { EditorState } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorState, RangeSetBuilder } from "@codemirror/state";
+import { EditorView, keymap, Decoration, DecorationSet, ViewPlugin, ViewUpdate, WidgetType } from "@codemirror/view";
 import { defaultKeymap, historyKeymap, history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { vim, Vim, getCM } from "@replit/codemirror-vim";
@@ -1740,9 +1740,35 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
     const extensions = [
       history(),
-      keymap.of([...defaultKeymap, ...historyKeymap]),
+      keymap.of([
+        {
+          key: "Mod-v",
+          run: (view) => {
+            const cm = getCM(view);
+            if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {
+              Vim.handleKey(cm, "<C-v>", "mapping");
+              return true;
+            }
+            return false;
+          }
+        },
+        {
+          key: "Ctrl-q",
+          run: (view) => {
+            const cm = getCM(view);
+            if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {
+              Vim.handleKey(cm, "<C-q>", "mapping");
+              return true;
+            }
+            return false;
+          }
+        },
+        ...defaultKeymap,
+        ...historyKeymap
+      ]),
       markdown(),
       EditorView.lineWrapping,
+      customSelectionHighlightPlugin,
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const docString = update.state.doc.toString();
@@ -1805,6 +1831,102 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       view.focus();
     }
 
+    const handlePaste = (e: ClipboardEvent) => {
+      const cm = getCM(view);
+      if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {
+        e.preventDefault();
+      }
+    };
+    view.dom.addEventListener("paste", handlePaste, true);
+
+    // Track visual block selection for blockwise insert
+    let savedBlockSelection: { startLine: number; endLine: number; col: number; originalText: string } | null = null;
+
+    // Global keydown handler to intercept Ctrl+V, Ctrl+Q, and Shift+I
+    const handleDocumentKeyDown = (e: KeyboardEvent) => {
+      const isCtrlV = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && !e.altKey && !e.shiftKey;
+      const isCtrlQ = e.ctrlKey && e.key.toLowerCase() === 'q' && !e.altKey && !e.shiftKey && !e.metaKey;
+      const isShiftI = e.shiftKey && e.key === 'I';
+      const isEscape = e.key === 'Escape';
+
+      const cm = getCM(view);
+
+      if (isCtrlV || isCtrlQ) {
+        if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {
+          e.preventDefault();
+          e.stopPropagation();
+          const vimKey = isCtrlV ? "<C-v>" : "<C-q>";
+          Vim.handleKey(cm, vimKey, "keydown");
+          return false;
+        }
+      } else if (isShiftI && cm && cm.state && cm.state.vim) {
+        const vimState = cm.state.vim;
+        if (vimState.visualBlock && vimState.sel) {
+          // Save the block selection bounds and original line content before entering insert mode
+          const anchor = vimState.sel.anchor;
+          const head = vimState.sel.head;
+          const startLine = Math.min(anchor.line, head.line);
+          const endLine = Math.max(anchor.line, head.line);
+          const col = Math.min(anchor.ch, head.ch);
+
+          // Save the original first line text to compare later
+          const firstLine = view.state.doc.line(startLine + 1);
+          const originalText = firstLine.text;
+
+          savedBlockSelection = { startLine, endLine, col, originalText };
+        }
+      } else if (isEscape && savedBlockSelection && cm && cm.state && cm.state.vim) {
+        // Blockwise insert: duplicate inserted text to all lines
+        const { col, originalText } = savedBlockSelection;
+        const blockSel = savedBlockSelection;
+        savedBlockSelection = null;
+
+        // Wait for vim to process the Escape and update the document
+        setTimeout(() => {
+          // Get the updated first line and find what was inserted
+          const firstLine = view.state.doc.line(blockSel.startLine + 1);
+          const newText = firstLine.text;
+
+          // Find the inserted text by comparing original and new text at the insert column
+          const originalAfterCol = originalText.slice(col);
+          const newAfterCol = newText.slice(col);
+
+          // Find where the original text resumes in the new text
+          let insertedText = "";
+          if (newAfterCol.endsWith(originalAfterCol)) {
+            insertedText = newAfterCol.slice(0, newAfterCol.length - originalAfterCol.length);
+          } else {
+            // Fallback: assume everything between col and cursor is inserted
+            const cursorPos = view.state.selection.main.head;
+            const insertEnd = cursorPos - firstLine.from;
+            insertedText = newText.slice(col, insertEnd + 1);
+          }
+
+          if (insertedText.length > 0) {
+            // Use vim's undo to revert the first line change
+            Vim.handleKey(cm, "u", "mapping");
+
+            // Wait for undo to complete, then insert on ALL lines as single transaction
+            setTimeout(() => {
+              const changes: { from: number; to: number; insert: string }[] = [];
+
+              for (let lineNum = blockSel.startLine; lineNum <= blockSel.endLine; lineNum++) {
+                if (lineNum + 1 > view.state.doc.lines) continue;
+                const line = view.state.doc.line(lineNum + 1);
+                const insertPos = line.from + Math.min(col, line.text.length);
+                changes.push({ from: insertPos, to: insertPos, insert: insertedText });
+              }
+
+              if (changes.length > 0) {
+                view.dispatch({ changes });
+              }
+            }, 10);
+          }
+        }, 20);
+      }
+    };
+    document.addEventListener("keydown", handleDocumentKeyDown, true);
+
     if (vimMode) {
       const cm = getCM(view);
       if (cm) {
@@ -1817,6 +1939,8 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     }
 
     return () => {
+      view.dom.removeEventListener("paste", handlePaste, true);
+      document.removeEventListener("keydown", handleDocumentKeyDown, true);
       view.destroy();
       viewRef.current = null;
       registerView(paneId, null);
@@ -1894,6 +2018,132 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     </div>
   );
 };
+
+// Widget for visual block empty line indicator
+class VisualBlockEmptyWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const span = document.createElement("span");
+    span.className = "cm-visual-block-empty-indicator";
+    span.textContent = "\u00a0"; // non-breaking space
+    return span;
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+export const customSelectionHighlightPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = this.getDecorations(view);
+    }
+
+    update(update: ViewUpdate) {
+      if (update.selectionSet || update.docChanged || update.viewportChanged) {
+        this.decorations = this.getDecorations(update.view);
+      }
+    }
+
+    getDecorations(view: EditorView): DecorationSet {
+      const builder = new RangeSetBuilder<Decoration>();
+      const cm = getCM(view);
+      const vimState = cm?.state?.vim;
+      const isVisualBlock = vimState?.visualBlock === true;
+
+      // For visual block mode, we need to read directly from vim's selection state
+      // because CodeMirror doesn't natively support block selections
+      if (isVisualBlock && vimState?.sel) {
+        const anchor = vimState.sel.anchor;
+        const head = vimState.sel.head;
+
+        // Calculate the block rectangle
+        const startLineNum = Math.min(anchor.line, head.line) + 1; // vim uses 0-indexed
+        const endLineNum = Math.max(anchor.line, head.line) + 1;
+        const startCol = Math.min(anchor.ch, head.ch);
+        const endCol = Math.max(anchor.ch, head.ch) + 1; // inclusive
+
+        const blockMarkDec = Decoration.mark({ class: "cm-visual-block-selection" });
+
+        // Create decorations for each line in the block
+        const decorations: { from: number; to: number; dec: typeof blockMarkDec }[] = [];
+
+        for (let lineNum = startLineNum; lineNum <= endLineNum; lineNum++) {
+          if (lineNum > view.state.doc.lines) continue;
+          const line = view.state.doc.line(lineNum);
+          const lineStartCol = Math.min(startCol, line.text.length);
+          const lineEndCol = Math.min(endCol, line.text.length);
+
+          if (lineStartCol < lineEndCol) {
+            const from = line.from + lineStartCol;
+            const to = line.from + lineEndCol;
+            decorations.push({ from, to, dec: blockMarkDec });
+          } else if (line.text.length === 0) {
+            // Empty line - use a widget to show a visible indicator
+            decorations.push({
+              from: line.from,
+              to: line.from,
+              dec: Decoration.widget({
+                widget: new VisualBlockEmptyWidget(),
+                side: 1
+              })
+            });
+          }
+        }
+
+        // Sort by position and add to builder
+        decorations.sort((a, b) => a.from - b.from);
+        for (const d of decorations) {
+          if (d.from <= d.to) {
+            builder.add(d.from, d.to, d.dec);
+          }
+        }
+
+        return builder.finish();
+      }
+
+      // Regular selection handling (non-block mode)
+      const ranges = view.state.selection.ranges;
+      const hasSelection = ranges.some(r => !r.empty);
+      if (!hasSelection) {
+        return builder.finish();
+      }
+
+      const markDec = Decoration.mark({ class: "cm-custom-selection" });
+      const emptyLineMarkDec = Decoration.mark({ class: "cm-custom-selected-empty-mark" });
+
+      for (const range of ranges) {
+        if (range.empty) continue;
+
+        const startLine = view.state.doc.lineAt(range.from);
+        const endLine = view.state.doc.lineAt(range.to);
+
+        if (startLine.number === endLine.number) {
+          builder.add(range.from, range.to, markDec);
+        } else {
+          for (let n = startLine.number; n <= endLine.number; n++) {
+            const line = view.state.doc.line(n);
+            if (line.text.length === 0) {
+              builder.add(line.from, line.to, emptyLineMarkDec);
+            } else {
+              const from = n === startLine.number ? range.from : line.from;
+              const to = n === endLine.number ? range.to : line.to;
+              if (from < to) {
+                builder.add(from, to, markDec);
+              }
+            }
+          }
+        }
+      }
+
+      return builder.finish();
+    }
+  },
+  {
+    decorations: (v) => v.decorations
+  }
+);
 
 export default App;
 

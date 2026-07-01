@@ -8,6 +8,7 @@ import {
 } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { getCM } from "@replit/codemirror-vim";
 
 // --- Helpers ---
 function isAbsolute(path: string): boolean {
@@ -325,6 +326,19 @@ function buildDecorations(view: EditorView, workspacePath: string): DecorationSe
     const from = view.state.doc.lineAt(range.from).number;
     const to = view.state.doc.lineAt(range.to).number;
     for (let n = from; n <= to; n++) cursorLines.add(n);
+  }
+
+  // Also show raw markdown for lines in visual block selection
+  const cm = getCM(view);
+  const vimState = cm?.state?.vim;
+  if (vimState?.visualBlock && vimState?.sel) {
+    const anchor = vimState.sel.anchor;
+    const head = vimState.sel.head;
+    const startLine = Math.min(anchor.line, head.line) + 1; // vim uses 0-indexed
+    const endLine = Math.max(anchor.line, head.line) + 1;
+    for (let n = startLine; n <= endLine; n++) {
+      cursorLines.add(n);
+    }
   }
 
   for (const { from, to } of view.visibleRanges) {

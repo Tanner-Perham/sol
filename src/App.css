@@ -413,12 +413,14 @@ body,
 
 .cm-selectionBackground,
 .cm-content ::selection {
-  background: rgba(207, 177, 140, 0.4) !important;
+  background: rgba(207, 177, 140, 0.3) !important;
+  color: inherit !important;
 }
 
 .cm-focused .cm-selectionBackground,
 .cm-editor.cm-focused .cm-content ::selection {
-  background: rgba(207, 177, 140, 0.55) !important;
+  background: rgba(207, 177, 140, 0.4) !important;
+  color: inherit !important;
 }
 
 .cm-line br {
@@ -448,6 +450,58 @@ body,
 .cm-editor.cm-focused .cm-empty-line-spacer::selection,
 .cm-editor.cm-focused .cm-content .cm-empty-line-spacer::selection {
   background: rgba(207, 177, 140, 0.55) !important;
+}
+
+.cm-custom-selection {
+  background-color: rgba(207, 177, 140, 0.35) !important;
+}
+
+.cm-editor.cm-focused .cm-custom-selection {
+  background-color: rgba(207, 177, 140, 0.5) !important;
+}
+
+/* Visual block mode highlighting - much more prominent */
+.cm-visual-block-selection {
+  background-color: rgba(207, 177, 140, 0.5) !important;
+  border-radius: 2px;
+}
+
+.cm-editor.cm-focused .cm-visual-block-selection {
+  background-color: rgba(207, 177, 140, 0.65) !important;
+}
+
+/* Visual block empty line indicator */
+.cm-visual-block-empty-indicator {
+  display: inline-block !important;
+  width: 4px !important;
+  height: 1.1em !important;
+  background-color: rgba(207, 177, 140, 0.5) !important;
+  border-radius: 2px !important;
+  vertical-align: middle !important;
+}
+
+.cm-editor.cm-focused .cm-visual-block-empty-indicator {
+  background-color: rgba(207, 177, 140, 0.65) !important;
+}
+
+.cm-custom-selected-empty-mark {
+  background-color: rgba(207, 177, 140, 0.4) !important;
+  display: inline-block !important;
+  width: 4px !important;
+  height: 1.1em !important;
+  vertical-align: middle !important;
+}
+
+.cm-editor.cm-focused .cm-custom-selected-empty-mark {
+  background-color: rgba(207, 177, 140, 0.55) !important;
+}
+
+.cm-custom-selected-empty .cm-empty-line-spacer {
+  background-color: rgba(207, 177, 140, 0.4) !important;
+}
+
+.cm-editor.cm-focused .cm-custom-selected-empty .cm-empty-line-spacer {
+  background-color: rgba(207, 177, 140, 0.55) !important;
 }
 
 .cm-gutters {
