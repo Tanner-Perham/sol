@@ -1250,9 +1250,10 @@ body,
   background-color: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  width: 500px;
-  max-width: 90vw;
-  max-height: 85vh;
+  width: 660px;
+  height: 480px;
+  max-width: 95vw;
+  max-height: 90vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1271,6 +1272,7 @@ body,
   justify-content: space-between;
   padding: 16px 20px;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 .settings-modal-header h2 {
@@ -1301,7 +1303,57 @@ body,
   transform: scale(1.15);
 }
 
-.settings-modal-body {
+.settings-modal-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  height: calc(100% - 53px); /* 53px is header height */
+}
+
+.settings-modal-sidebar {
+  width: 160px;
+  background-color: rgba(0, 0, 0, 0.15);
+  border-right: 1px solid var(--border);
+  padding: 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.settings-tab-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 12px;
+  text-align: left;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+
+.settings-tab-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.settings-tab-btn.active {
+  background-color: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.settings-modal-content {
+  flex: 1;
   padding: 20px;
   overflow-y: auto;
   display: flex;
@@ -1324,6 +1376,66 @@ body,
   border-bottom: 1px solid var(--border);
   padding-bottom: 6px;
   margin-bottom: 2px;
+}
+
+/* Hotkeys Reference Styles */
+.keybind-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.keybind-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background-color: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.keybind-row:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 4px var(--accent-glow);
+}
+
+.keybind-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.keybind-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.keybind-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.keybind-badge-container {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.keybind-badge {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+  box-shadow: 0 2px 0 var(--border);
+  min-width: 1.5em;
+  text-align: center;
 }
 
 /* Themes Grid */

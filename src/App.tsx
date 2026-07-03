@@ -147,6 +147,7 @@ function App() {
   
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"general" | "appearance" | "hotkeys">("general");
 
   const [creatingNode, setCreatingNode] = useState<{ type: "file" | "dir"; parentPath: string } | null>(null);
   const [newInputName, setNewInputName] = useState("");
@@ -1566,7 +1567,10 @@ function App() {
           </button>
           <button
             className="btn-header-action"
-            onClick={() => setShowSettingsModal(true)}
+            onClick={() => {
+              setShowSettingsModal(true);
+              setActiveSettingsTab("general");
+            }}
             title="Settings"
             style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px", width: "30px", height: "30px" }}
           >
@@ -1883,170 +1887,267 @@ function App() {
             </button>
           </div>
 
-          <div className="settings-modal-body">
-            {/* Theme Section */}
-            <div className="settings-section">
-              <span className="settings-section-title">Theme</span>
-              <div className="themes-grid">
-                {[
-                  { id: "sol-dark", name: "Sol Dark", colors: ["#131312", "#cfb18c", "#e8e6e3"] },
-                  { id: "nord", name: "Nord Night", colors: ["#2e3440", "#88c0d0", "#d8dee9"] },
-                  { id: "monokai", name: "Monokai Aura", colors: ["#1a1a1a", "#ae81ff", "#f8f8f2"] },
-                  { id: "forest", name: "Forest Moss", colors: ["#141715", "#87af92", "#e3e8e4"] },
-                  { id: "sepia", name: "Sepia", colors: ["#fbf8f3", "#c07a34", "#433422"] },
-                  { id: "light", name: "Sol Light", colors: ["#fafafa", "#3b82f6", "#171717"] },
-                  { id: "lego", name: "Lego Block 🧩", colors: ["#0055a5", "#e60012", "#ffffff"] }
-                ].map((t) => (
-                  <div
-                    key={t.id}
-                    className={`theme-card-option ${settings.theme === t.id ? "active" : ""}`}
-                    onClick={() => updateSettings({ theme: t.id as any })}
-                  >
-                    <div className="theme-color-preview">
-                      <div className="color-dot" style={{ backgroundColor: t.colors[0] }} title="Background" />
-                      <div className="color-dot" style={{ backgroundColor: t.colors[1] }} title="Accent/Accent" />
-                      <div className="color-dot" style={{ backgroundColor: t.colors[2] }} title="Text" />
+          <div className="settings-modal-container">
+            {/* Left Sidebar */}
+            <div className="settings-modal-sidebar">
+              <button
+                className={`settings-tab-btn ${activeSettingsTab === "general" ? "active" : ""}`}
+                onClick={() => setActiveSettingsTab("general")}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <line x1="9" y1="3" x2="9" y2="21" />
+                </svg>
+                General
+              </button>
+              <button
+                className={`settings-tab-btn ${activeSettingsTab === "appearance" ? "active" : ""}`}
+                onClick={() => setActiveSettingsTab("appearance")}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
+                </svg>
+                Appearance
+              </button>
+              <button
+                className={`settings-tab-btn ${activeSettingsTab === "hotkeys" ? "active" : ""}`}
+                onClick={() => setActiveSettingsTab("hotkeys")}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2" ry="2" />
+                  <line x1="6" y1="8" x2="6" y2="8" />
+                  <line x1="10" y1="8" x2="10" y2="8" />
+                  <line x1="14" y1="8" x2="14" y2="8" />
+                  <line x1="18" y1="8" x2="18" y2="8" />
+                  <line x1="6" y1="12" x2="6" y2="12" />
+                  <line x1="10" y1="12" x2="10" y2="12" />
+                  <line x1="14" y1="12" x2="14" y2="12" />
+                  <line x1="18" y1="12" x2="18" y2="12" />
+                  <line x1="7" y1="16" x2="17" y2="16" />
+                </svg>
+                Hotkeys
+              </button>
+            </div>
+
+            {/* Right Content Area */}
+            <div className="settings-modal-content">
+              {activeSettingsTab === "general" && (
+                <div className="settings-section">
+                  <span className="settings-section-title">General Preferences</span>
+                  
+                  {/* Vim Mode */}
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Vim Mode</span>
+                      <span className="settings-control-desc">Enable Vim key bindings and commands</span>
                     </div>
-                    <span className="theme-card-name">{t.name}</span>
+                    <label className="settings-switch">
+                      <input
+                        type="checkbox"
+                        checked={settings.vimMode}
+                        onChange={(e) => updateSettings({ vimMode: e.target.checked })}
+                      />
+                      <span className="switch-slider" />
+                    </label>
                   </div>
-                ))}
-              </div>
-            </div>
 
-            {/* Typography Section */}
-            <div className="settings-section">
-              <span className="settings-section-title">Typography</span>
-              
-              {/* Font Family */}
-              <div className="settings-control-row">
-                <div className="settings-control-label">
-                  <span>Font Family</span>
-                  <span className="settings-control-desc">Font used in the editor area</span>
-                </div>
-                <div className="segmented-control">
-                  {[
-                    { id: "serif", label: "Serif" },
-                    { id: "sans", label: "Sans" },
-                    { id: "mono", label: "Mono" }
-                  ].map((f) => (
-                    <button
-                      key={f.id}
-                      className={`segment-btn ${settings.fontFamily === f.id ? "active" : ""}`}
-                      onClick={() => updateSettings({ fontFamily: f.id as any })}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+                  {/* Live Preview */}
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Live Preview</span>
+                      <span className="settings-control-desc">Show dynamic rich markdown formatting</span>
+                    </div>
+                    <label className="settings-switch">
+                      <input
+                        type="checkbox"
+                        checked={settings.livePreview}
+                        onChange={(e) => updateSettings({ livePreview: e.target.checked })}
+                      />
+                      <span className="switch-slider" />
+                    </label>
+                  </div>
 
-              {/* Font Size */}
-              <div className="settings-control-row">
-                <div className="settings-control-label">
-                  <span>Font Size</span>
-                  <span className="settings-control-desc">Adjust size of text in editor</span>
+                  {/* Show Hidden Files */}
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Show Hidden Files</span>
+                      <span className="settings-control-desc">Display files and folders starting with a dot</span>
+                    </div>
+                    <label className="settings-switch">
+                      <input
+                        type="checkbox"
+                        checked={settings.showHidden}
+                        onChange={(e) => updateSettings({ showHidden: e.target.checked })}
+                      />
+                      <span className="switch-slider" />
+                    </label>
+                  </div>
                 </div>
-                <div className="slider-container">
-                  <input
-                    type="range"
-                    min="12"
-                    max="24"
-                    value={settings.fontSize}
-                    onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })}
-                    className="settings-slider"
-                  />
-                  <span className="slider-value">{settings.fontSize}px</span>
-                </div>
-              </div>
+              )}
 
-              {/* Line Height */}
-              <div className="settings-control-row">
-                <div className="settings-control-label">
-                  <span>Line Height</span>
-                  <span className="settings-control-desc">Vertical spacing between text lines</span>
-                </div>
-                <div className="slider-container">
-                  <input
-                    type="range"
-                    min="1.4"
-                    max="2.2"
-                    step="0.1"
-                    value={settings.lineHeight}
-                    onChange={(e) => updateSettings({ lineHeight: parseFloat(e.target.value) })}
-                    className="settings-slider"
-                  />
-                  <span className="slider-value">{settings.lineHeight}</span>
-                </div>
-              </div>
-            </div>
+              {activeSettingsTab === "appearance" && (
+                <>
+                  {/* Theme Section */}
+                  <div className="settings-section">
+                    <span className="settings-section-title">Theme</span>
+                    <div className="themes-grid">
+                      {[
+                        { id: "sol-dark", name: "Sol Dark", colors: ["#131312", "#cfb18c", "#e8e6e3"] },
+                        { id: "nord", name: "Nord Night", colors: ["#2e3440", "#88c0d0", "#d8dee9"] },
+                        { id: "monokai", name: "Monokai Aura", colors: ["#1a1a1a", "#ae81ff", "#f8f8f2"] },
+                        { id: "forest", name: "Forest Moss", colors: ["#141715", "#87af92", "#e3e8e4"] },
+                        { id: "sepia", name: "Sepia", colors: ["#fbf8f3", "#c07a34", "#433422"] },
+                        { id: "light", name: "Sol Light", colors: ["#fafafa", "#3b82f6", "#171717"] },
+                        { id: "lego", name: "Lego Block 🧩", colors: ["#0055a5", "#e60012", "#ffffff"] }
+                      ].map((t) => (
+                        <div
+                          key={t.id}
+                          className={`theme-card-option ${settings.theme === t.id ? "active" : ""}`}
+                          onClick={() => updateSettings({ theme: t.id as any })}
+                        >
+                          <div className="theme-color-preview">
+                            <div className="color-dot" style={{ backgroundColor: t.colors[0] }} title="Background" />
+                            <div className="color-dot" style={{ backgroundColor: t.colors[1] }} title="Accent" />
+                            <div className="color-dot" style={{ backgroundColor: t.colors[2] }} title="Text" />
+                          </div>
+                          <span className="theme-card-name">{t.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
 
-            {/* Editor Preferences Section */}
-            <div className="settings-section">
-              <span className="settings-section-title">Preferences</span>
+                  {/* Typography Section */}
+                  <div className="settings-section">
+                    <span className="settings-section-title">Typography</span>
+                    
+                    {/* Font Family */}
+                    <div className="settings-control-row">
+                      <div className="settings-control-label">
+                        <span>Font Family</span>
+                        <span className="settings-control-desc">Font used in the editor area</span>
+                      </div>
+                      <div className="segmented-control">
+                        {[
+                          { id: "serif", label: "Serif" },
+                          { id: "sans", label: "Sans" },
+                          { id: "mono", label: "Mono" }
+                        ].map((f) => (
+                          <button
+                            key={f.id}
+                            className={`segment-btn ${settings.fontFamily === f.id ? "active" : ""}`}
+                            onClick={() => updateSettings({ fontFamily: f.id as any })}
+                          >
+                            {f.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
-              {/* Vim Mode */}
-              <div className="settings-control-row">
-                <div className="settings-control-label">
-                  <span>Vim Mode</span>
-                  <span className="settings-control-desc">Enable Vim key bindings and commands</span>
-                </div>
-                <label className="settings-switch">
-                  <input
-                    type="checkbox"
-                    checked={settings.vimMode}
-                    onChange={(e) => updateSettings({ vimMode: e.target.checked })}
-                  />
-                  <span className="switch-slider" />
-                </label>
-              </div>
+                    {/* Font Size */}
+                    <div className="settings-control-row">
+                      <div className="settings-control-label">
+                        <span>Font Size</span>
+                        <span className="settings-control-desc">Adjust size of text in editor</span>
+                      </div>
+                      <div className="slider-container">
+                        <input
+                          type="range"
+                          min="12"
+                          max="24"
+                          value={settings.fontSize}
+                          onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })}
+                          className="settings-slider"
+                        />
+                        <span className="slider-value">{settings.fontSize}px</span>
+                      </div>
+                    </div>
 
-              {/* Live Preview */}
-              <div className="settings-control-row">
-                <div className="settings-control-label">
-                  <span>Live Preview</span>
-                  <span className="settings-control-desc">Show dynamic rich markdown formatting</span>
-                </div>
-                <label className="settings-switch">
-                  <input
-                    type="checkbox"
-                    checked={settings.livePreview}
-                    onChange={(e) => updateSettings({ livePreview: e.target.checked })}
-                  />
-                  <span className="switch-slider" />
-                </label>
-              </div>
+                    {/* Line Height */}
+                    <div className="settings-control-row">
+                      <div className="settings-control-label">
+                        <span>Line Height</span>
+                        <span className="settings-control-desc">Vertical spacing between text lines</span>
+                      </div>
+                      <div className="slider-container">
+                        <input
+                          type="range"
+                          min="1.4"
+                          max="2.2"
+                          step="0.1"
+                          value={settings.lineHeight}
+                          onChange={(e) => updateSettings({ lineHeight: parseFloat(e.target.value) })}
+                          className="settings-slider"
+                        />
+                        <span className="slider-value">{settings.lineHeight}</span>
+                      </div>
+                    </div>
 
-              {/* Line Wrapping */}
-              <div className="settings-control-row">
-                <div className="settings-control-label">
-                  <span>Line Wrapping</span>
-                  <span className="settings-control-desc">Wrap long text lines to fit the view</span>
-                </div>
-                <label className="settings-switch">
-                  <input
-                    type="checkbox"
-                    checked={settings.lineWrapping}
-                    onChange={(e) => updateSettings({ lineWrapping: e.target.checked })}
-                  />
-                  <span className="switch-slider" />
-                </label>
-              </div>
+                    {/* Line Wrapping */}
+                    <div className="settings-control-row">
+                      <div className="settings-control-label">
+                        <span>Line Wrapping</span>
+                        <span className="settings-control-desc">Wrap long text lines to fit the view</span>
+                      </div>
+                      <label className="settings-switch">
+                        <input
+                          type="checkbox"
+                          checked={settings.lineWrapping}
+                          onChange={(e) => updateSettings({ lineWrapping: e.target.checked })}
+                        />
+                        <span className="switch-slider" />
+                      </label>
+                    </div>
+                  </div>
+                </>
+              )}
 
-              {/* Show Hidden Files */}
-              <div className="settings-control-row">
-                <div className="settings-control-label">
-                  <span>Show Hidden Files</span>
-                  <span className="settings-control-desc">Display files and folders starting with a dot</span>
+              {activeSettingsTab === "hotkeys" && (
+                <div className="settings-section">
+                  <span className="settings-section-title">Keyboard Shortcuts</span>
+                  <div className="keybind-list">
+                    {[
+                      { name: "Save Document", desc: "Saves changes in active editor pane", keys: ["Ctrl", "S"], vim: ":w" },
+                      { name: "Toggle Live Preview", desc: "Toggle visual rendering style", keys: ["Ctrl", "P"] },
+                      { name: "Toggle Sidebar / Editor Focus", desc: "Quick focus toggle between panels", keys: ["Tab"] },
+                      { name: "Switch Workspace tab", desc: "Activate a tab in active editor pane", keys: ["Alt", "1-9"] },
+                      { name: "Visual Block Selection", desc: "Trigger visual block cursor highlighting (Vim only)", keys: ["Ctrl", "V"], alternative: ["Ctrl", "Q"] },
+                      { name: "Exit visual selection", desc: "Escape visual or insert editor mode", keys: ["Esc"] }
+                    ].map((kb, idx) => (
+                      <div key={idx} className="keybind-row">
+                        <div className="keybind-info">
+                          <span className="keybind-name">{kb.name}</span>
+                          <span className="keybind-desc">{kb.desc}</span>
+                        </div>
+                        <div className="keybind-badge-container">
+                          {kb.keys.map((k, i) => (
+                            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                              {i > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
+                              <kbd className="keybind-badge">{k}</kbd>
+                            </span>
+                          ))}
+                          {kb.alternative && (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                              <span style={{ fontSize: "10px", color: "var(--text-muted)", margin: "0 4px" }}>/</span>
+                              {kb.alternative.map((k, i) => (
+                                <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                                  {i > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
+                                  <kbd className="keybind-badge">{k}</kbd>
+                                </span>
+                              ))}
+                            </span>
+                          )}
+                          {kb.vim && (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", marginLeft: "8px" }}>
+                              <span style={{ fontSize: "11px", color: "var(--accent)", fontWeight: "600" }} title="Vim Ex Command">Vim:</span>
+                              <kbd className="keybind-badge" style={{ borderColor: "var(--accent)", color: "var(--accent)" }}>{kb.vim}</kbd>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <label className="settings-switch">
-                  <input
-                    type="checkbox"
-                    checked={settings.showHidden}
-                    onChange={(e) => updateSettings({ showHidden: e.target.checked })}
-                  />
-                  <span className="switch-slider" />
-                </label>
-              </div>
+              )}
             </div>
           </div>
         </div>
