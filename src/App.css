@@ -1438,6 +1438,44 @@ body,
   text-align: center;
 }
 
+/* Recording Active State Styles */
+.keybind-row.recording {
+  border-color: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  background-color: rgba(207, 177, 140, 0.05);
+}
+
+.keybind-badge.recording {
+  font-weight: 600;
+  animation: keybindPulse 1.5s infinite ease-in-out;
+  padding: 4px 10px;
+}
+
+@keyframes keybindPulse {
+  0% {
+    opacity: 0.6;
+    box-shadow: 0 0 2px var(--accent-glow);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 10px var(--accent);
+  }
+  100% {
+    opacity: 0.6;
+    box-shadow: 0 0 2px var(--accent-glow);
+  }
+}
+
+.btn-record-key:hover {
+  color: var(--accent) !important;
+  transform: scale(1.12);
+}
+
+.btn-reset-key:hover {
+  color: var(--red, #f87171) !important;
+  transform: scale(1.12);
+}
+
 /* Themes Grid */
 .themes-grid {
   display: grid;

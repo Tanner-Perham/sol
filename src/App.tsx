@@ -118,6 +118,22 @@ const removePaneFromTree = (root: PaneNode, paneIdToRemove: PaneId): PaneNode | 
   };
 };
 
+export interface Keybindings {
+  save: string;
+  togglePreview: string;
+  toggleSidebar: string;
+  toggleFocus: string;
+  prefixMode: string;
+}
+
+export const DEFAULT_KEYBINDINGS: Keybindings = {
+  save: "mod+s",
+  togglePreview: "mod+p",
+  toggleSidebar: "mod+e",
+  toggleFocus: "tab",
+  prefixMode: "ctrl+a"
+};
+
 export interface AppSettings {
   theme: "sol-dark" | "nord" | "monokai" | "forest" | "sepia" | "light" | "lego";
   fontFamily: "sans" | "serif" | "mono";
@@ -127,6 +143,7 @@ export interface AppSettings {
   vimMode: boolean;
   livePreview: boolean;
   showHidden: boolean;
+  keybindings?: Keybindings;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -137,7 +154,50 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lineWrapping: true,
   vimMode: true,
   livePreview: true,
-  showHidden: false
+  showHidden: false,
+  keybindings: DEFAULT_KEYBINDINGS
+};
+
+const matchKeybinding = (e: KeyboardEvent, keybindingStr: string): boolean => {
+  if (!keybindingStr) return false;
+  
+  const parts = keybindingStr.toLowerCase().split("+");
+  const baseKey = parts[parts.length - 1];
+  
+  const isMac = navigator.userAgent.indexOf("Mac") !== -1;
+  const needsMod = parts.includes("mod");
+  const needsMeta = parts.includes("cmd") || parts.includes("command") || parts.includes("meta");
+  const needsCtrl = parts.includes("ctrl") || parts.includes("control");
+  const needsShift = parts.includes("shift");
+  const needsAlt = parts.includes("alt") || parts.includes("option");
+  
+  const hasCtrl = e.ctrlKey;
+  const hasMeta = e.metaKey;
+  const hasShift = e.shiftKey;
+  const hasAlt = e.altKey;
+  
+  let matchMod = false;
+  if (needsMod) {
+    if (isMac) {
+      if (hasMeta && !hasCtrl) matchMod = true;
+    } else {
+      if (hasCtrl && !hasMeta) matchMod = true;
+    }
+  } else {
+    matchMod = true;
+  }
+  
+  if (needsCtrl !== hasCtrl && !needsMod) return false;
+  if (needsMeta !== hasMeta && !needsMod) return false;
+  if (needsMod && !matchMod) return false;
+  
+  if (needsShift !== hasShift) return false;
+  if (needsAlt !== hasAlt) return false;
+  
+  const actualKey = e.key.toLowerCase();
+  const actualCode = e.code.toLowerCase();
+  
+  return actualKey === baseKey || actualCode === baseKey || actualCode === `key${baseKey}`;
 };
 
 function App() {
@@ -148,6 +208,7 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState<"general" | "appearance" | "hotkeys">("general");
+  const [recordingHotkey, setRecordingHotkey] = useState<keyof Keybindings | null>(null);
 
   const [creatingNode, setCreatingNode] = useState<{ type: "file" | "dir"; parentPath: string } | null>(null);
   const [newInputName, setNewInputName] = useState("");
@@ -180,6 +241,104 @@ function App() {
       return updated;
     });
   }, []);
+
+  // Recording keybindings effect
+  useEffect(() => {
+    if (!recordingHotkey) return;
+
+    const handleRecordKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const key = e.key;
+
+      // Ignore individual modifier key presses
+      if (["Control", "Shift", "Alt", "Meta"].includes(key)) {
+        return;
+      }
+
+      // Escape key cancels the recording
+      if (key === "Escape") {
+        setRecordingHotkey(null);
+        return;
+      }
+
+      const parts: string[] = [];
+      const isMac = navigator.userAgent.indexOf("Mac") !== -1;
+
+      // Standardize meta/ctrl as "mod"
+      if (e.metaKey) {
+        parts.push(isMac ? "mod" : "meta");
+      } else if (e.ctrlKey) {
+        parts.push(isMac ? "ctrl" : "mod");
+      }
+
+      if (e.altKey) {
+        parts.push("alt");
+      }
+
+      if (e.shiftKey) {
+        parts.push("shift");
+      }
+
+      // Standardize key names
+      let baseKey = key.toLowerCase();
+      if (baseKey === " ") baseKey = "space";
+      else if (baseKey === "arrowup") baseKey = "up";
+      else if (baseKey === "arrowdown") baseKey = "down";
+      else if (baseKey === "arrowleft") baseKey = "left";
+      else if (baseKey === "arrowright") baseKey = "right";
+
+      parts.push(baseKey);
+      const newHotkeyStr = parts.join("+");
+
+      // Save custom keybinding
+      updateSettings({
+        keybindings: {
+          ...(settings.keybindings || DEFAULT_KEYBINDINGS),
+          [recordingHotkey]: newHotkeyStr
+        }
+      });
+
+      setRecordingHotkey(null);
+    };
+
+    window.addEventListener("keydown", handleRecordKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", handleRecordKeyDown, true);
+    };
+  }, [recordingHotkey, settings.keybindings, updateSettings]);
+
+  const renderShortcutBadges = (shortcutStr: string) => {
+    const isMac = navigator.userAgent.indexOf("Mac") !== -1;
+    const parts = shortcutStr.split("+");
+    return parts.map((part, idx) => {
+      let label = part;
+      if (part === "mod") {
+        label = isMac ? "⌘ Cmd" : "Ctrl";
+      } else if (part === "ctrl") {
+        label = "Ctrl";
+      } else if (part === "meta") {
+        label = isMac ? "⌘ Cmd" : "Win";
+      } else if (part === "alt") {
+        label = isMac ? "⌥ Opt" : "Alt";
+      } else if (part === "shift") {
+        label = "Shift";
+      } else if (part === "tab") {
+        label = "Tab";
+      } else if (part === "esc" || part === "escape") {
+        label = "Esc";
+      } else {
+        label = part.charAt(0).toUpperCase() + part.slice(1);
+      }
+      return (
+        <span key={idx} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+          {idx > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
+          <kbd className="keybind-badge">{label}</kbd>
+        </span>
+      );
+    });
+  };
 
   // Derived state
   const activeLeaf = findLeafNode(layout, activePaneId);
@@ -982,6 +1141,7 @@ function App() {
   const workspacePathRef = useRef(workspacePath);
   const fileTreeRef = useRef(fileTree);
   const pendingHeadersRef = useRef<Map<PaneId, string>>(new Map());
+  const settingsRef = useRef(settings);
 
   useEffect(() => { layoutRef.current = layout; }, [layout]);
   useEffect(() => { activePaneIdRef.current = activePaneId; }, [activePaneId]);
@@ -995,6 +1155,7 @@ function App() {
   useEffect(() => { closeAllTabsRef.current = closeAllTabs; }, [closeAllTabs]);
   useEffect(() => { workspacePathRef.current = workspacePath; }, [workspacePath]);
   useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   // Register Vim custom Ex commands
   useEffect(() => {
@@ -1075,8 +1236,10 @@ function App() {
         return;
       }
 
+      const keybindings = settingsRef.current.keybindings || DEFAULT_KEYBINDINGS;
+
       // Enter prefix mode
-      if (e.ctrlKey && e.key.toLowerCase() === "a") {
+      if (matchKeybinding(e, keybindings.prefixMode)) {
         e.preventDefault();
         setPrefixActive(true);
         if (prefixTimeoutRef.current) clearTimeout(prefixTimeoutRef.current);
@@ -1087,14 +1250,14 @@ function App() {
       }
 
       // Ctrl+S to save
-      if (e.key === "s" && (e.ctrlKey || e.metaKey)) {
+      if (matchKeybinding(e, keybindings.save)) {
         e.preventDefault();
         saveFileRef.current();
         return;
       }
 
       // Ctrl+E or Ctrl+\ to toggle sidebar
-      if ((e.key === "e" && (e.ctrlKey || e.metaKey)) || (e.key === "\\" && (e.ctrlKey || e.metaKey))) {
+      if (matchKeybinding(e, keybindings.toggleSidebar) || (e.key === "\\" && (e.ctrlKey || e.metaKey))) {
         e.preventDefault();
         setSidebarOpen(prev => {
           const next = !prev;
@@ -1109,7 +1272,7 @@ function App() {
       }
 
       // Ctrl+P to toggle Live Preview
-      if (e.key === "p" && (e.ctrlKey || e.metaKey)) {
+      if (matchKeybinding(e, keybindings.togglePreview)) {
         e.preventDefault();
         setSettings(prev => {
           const nextVal = !prev.livePreview;
@@ -1121,7 +1284,7 @@ function App() {
       }
 
       // Ctrl+H (or Ctrl+Shift+H/Tab) to focus sidebar / editor
-      if (e.key === "Tab" && !isEditing) {
+      if (matchKeybinding(e, keybindings.toggleFocus) && !isEditing) {
         e.preventDefault();
         setFocusedComponent(prev => (prev === "editor" ? "sidebar" : "editor"));
         return;
@@ -2102,49 +2265,136 @@ function App() {
               )}
 
               {activeSettingsTab === "hotkeys" && (
-                <div className="settings-section">
-                  <span className="settings-section-title">Keyboard Shortcuts</span>
-                  <div className="keybind-list">
-                    {[
-                      { name: "Save Document", desc: "Saves changes in active editor pane", keys: ["Ctrl", "S"], vim: ":w" },
-                      { name: "Toggle Live Preview", desc: "Toggle visual rendering style", keys: ["Ctrl", "P"] },
-                      { name: "Toggle Sidebar / Editor Focus", desc: "Quick focus toggle between panels", keys: ["Tab"] },
-                      { name: "Switch Workspace tab", desc: "Activate a tab in active editor pane", keys: ["Alt", "1-9"] },
-                      { name: "Visual Block Selection", desc: "Trigger visual block cursor highlighting (Vim only)", keys: ["Ctrl", "V"], alternative: ["Ctrl", "Q"] },
-                      { name: "Exit visual selection", desc: "Escape visual or insert editor mode", keys: ["Esc"] }
-                    ].map((kb, idx) => (
-                      <div key={idx} className="keybind-row">
-                        <div className="keybind-info">
-                          <span className="keybind-name">{kb.name}</span>
-                          <span className="keybind-desc">{kb.desc}</span>
-                        </div>
-                        <div className="keybind-badge-container">
-                          {kb.keys.map((k, i) => (
-                            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
-                              {i > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
-                              <kbd className="keybind-badge">{k}</kbd>
-                            </span>
-                          ))}
-                          {kb.alternative && (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
-                              <span style={{ fontSize: "10px", color: "var(--text-muted)", margin: "0 4px" }}>/</span>
-                              {kb.alternative.map((k, i) => (
-                                <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
-                                  {i > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
-                                  <kbd className="keybind-badge">{k}</kbd>
+                <div className="settings-section" style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
+                  <div>
+                    <span className="settings-section-title">Customizable Shortcuts</span>
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "10px" }}>
+                      Click the edit icon to record a new key combination, or the reset icon to restore the default.
+                    </div>
+                    <div className="keybind-list">
+                      {[
+                        { id: "save", name: "Save Document", desc: "Saves changes in active editor pane", vim: ":w" },
+                        { id: "togglePreview", name: "Toggle Live Preview", desc: "Toggle visual rendering style" },
+                        { id: "toggleSidebar", name: "Toggle Sidebar Panel", desc: "Show or hide the file tree sidebar" },
+                        { id: "toggleFocus", name: "Toggle Sidebar / Editor Focus", desc: "Quick focus toggle between panels" },
+                        { id: "prefixMode", name: "Enter Split Pane Prefix Mode", desc: "Enter window splitting mode (trigger \\ or - splits next)" }
+                      ].map((kb) => {
+                        const currentVal = settings.keybindings?.[kb.id as keyof Keybindings] || DEFAULT_KEYBINDINGS[kb.id as keyof Keybindings];
+                        const isRecording = recordingHotkey === kb.id;
+                        return (
+                          <div key={kb.id} className={`keybind-row ${isRecording ? "recording" : ""}`}>
+                            <div className="keybind-info">
+                              <span className="keybind-name">{kb.name}</span>
+                              <span className="keybind-desc">{kb.desc}</span>
+                            </div>
+                            <div className="keybind-badge-container">
+                              {isRecording ? (
+                                <kbd className="keybind-badge recording" style={{ color: "var(--accent)", borderColor: "var(--accent)" }}>
+                                  Press keys (Esc to cancel)...
+                                </kbd>
+                              ) : (
+                                <>
+                                  {renderShortcutBadges(currentVal)}
+                                  <button
+                                    className="btn-record-key"
+                                    onClick={() => setRecordingHotkey(kb.id as keyof Keybindings)}
+                                    title="Record custom shortcut"
+                                    style={{
+                                      background: "none",
+                                      border: "none",
+                                      color: "var(--text-muted)",
+                                      cursor: "pointer",
+                                      padding: "4px",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      transition: "color 0.2s ease"
+                                    }}
+                                  >
+                                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                      <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z" />
+                                    </svg>
+                                  </button>
+                                  {settings.keybindings?.[kb.id as keyof Keybindings] && settings.keybindings[kb.id as keyof Keybindings] !== DEFAULT_KEYBINDINGS[kb.id as keyof Keybindings] && (
+                                    <button
+                                      className="btn-reset-key"
+                                      onClick={() => {
+                                        updateSettings({
+                                          keybindings: {
+                                            ...(settings.keybindings || DEFAULT_KEYBINDINGS),
+                                            [kb.id]: DEFAULT_KEYBINDINGS[kb.id as keyof Keybindings]
+                                          }
+                                        });
+                                      }}
+                                      title="Reset to default"
+                                      style={{
+                                        background: "none",
+                                        border: "none",
+                                        color: "var(--text-muted)",
+                                        cursor: "pointer",
+                                        padding: "4px",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        transition: "color 0.2s ease"
+                                      }}
+                                    >
+                                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                                      </svg>
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                              {kb.vim && (
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", marginLeft: "8px" }}>
+                                  <span style={{ fontSize: "11px", color: "var(--accent)", fontWeight: "600" }} title="Vim Ex Command">Vim:</span>
+                                  <kbd className="keybind-badge" style={{ borderColor: "var(--accent)", color: "var(--accent)" }}>{kb.vim}</kbd>
                                 </span>
-                              ))}
-                            </span>
-                          )}
-                          {kb.vim && (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", marginLeft: "8px" }}>
-                              <span style={{ fontSize: "11px", color: "var(--accent)", fontWeight: "600" }} title="Vim Ex Command">Vim:</span>
-                              <kbd className="keybind-badge" style={{ borderColor: "var(--accent)", color: "var(--accent)" }}>{kb.vim}</kbd>
-                            </span>
-                          )}
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="settings-section-title">Built-in Reference</span>
+                    <div className="keybind-list" style={{ marginTop: "6px" }}>
+                      {[
+                        { name: "Switch Workspace Tab", desc: "Activate tab index 1-9 in active pane", keys: ["Alt", "1-9"] },
+                        { name: "Vim Visual Block Mode", desc: "Toggle visual block column editing", keys: ["Ctrl", "V"], alternative: ["Ctrl", "Q"] },
+                        { name: "Exit Active Mode", desc: "Return to normal editing mode", keys: ["Esc"] }
+                      ].map((kb, idx) => (
+                        <div key={idx} className="keybind-row" style={{ opacity: 0.85 }}>
+                          <div className="keybind-info">
+                            <span className="keybind-name">{kb.name}</span>
+                            <span className="keybind-desc">{kb.desc}</span>
+                          </div>
+                          <div className="keybind-badge-container">
+                            {kb.keys.map((k, i) => (
+                              <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                                {i > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
+                                <kbd className="keybind-badge">{k}</kbd>
+                              </span>
+                            ))}
+                            {kb.alternative && (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                                <span style={{ fontSize: "10px", color: "var(--text-muted)", margin: "0 4px" }}>/</span>
+                                {kb.alternative.map((k, i) => (
+                                  <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                                    {i > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
+                                    <kbd className="keybind-badge">{k}</kbd>
+                                  </span>
+                                ))}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 </div>
               )}
