@@ -148,33 +148,60 @@ function collectInlineMarks(
   text: string,
   workspacePath: string,
   selection: any,
-  isLineRaw: boolean
+  isLineRaw: boolean,
+  markdownFiles: Set<string>
 ): Mark[] {
   const marks: Mark[] = [];
   let m: RegExpExecArray | null;
 
-  // 1. Wiki Note Links: [[xyz]] (ignore if preceded by !)
+  // 1. Wiki Note Links: [[xyz]] or [[xyz|alias]] (ignore if preceded by !)
   const wikiLinkRe = /(?<!\!)\[\[([^\]\n]+)\]\]/g;
   while ((m = wikiLinkRe.exec(text)) !== null) {
     const s = lineFrom + m.index;
     const e = s + m[0].length;
-    const target = m[1];
+    const targetRaw = m[1];
+
+    const parts = targetRaw.split("|");
+    const linkTarget = parts[0].trim();
+    const displayText = parts.length > 1 ? parts[1].trim() : linkTarget;
 
     const isCursorInside = isLineRaw && rangeIntersectsSelection(s + 2, e - 2, selection);
 
+    // Hide opening brackets if cursor is not inside the raw link
     if (!isCursorInside) {
       marks.push({ from: s, to: s + 2, dec: REPLACE });
     }
+
+    // Hide the linkTarget and '|' if cursor is not inside AND there is an alias
+    if (!isCursorInside && parts.length > 1) {
+      const aliasOffset = targetRaw.indexOf("|");
+      marks.push({ from: s + 2, to: s + 2 + aliasOffset + 1, dec: REPLACE });
+    }
+
+    // Check if target note exists in workspace
+    const cleanName = linkTarget.split("#")[0].trim();
+    const isLocalHeader = cleanName === "";
+    const targetFileName = (cleanName.toLowerCase().endsWith(".md") ? cleanName : `${cleanName}.md`).toLowerCase();
+    const exists = isLocalHeader || markdownFiles.has(targetFileName);
+
+    const linkClassStr = exists
+      ? "cm-prose-link cm-prose-note-link"
+      : "cm-prose-link cm-prose-note-link broken";
+
+    // Style the display text as the link
+    const displayStart = parts.length > 1 ? s + 2 + targetRaw.indexOf("|") + 1 : s + 2;
     marks.push({
-      from: s + 2,
-      to: s + 2 + target.length,
+      from: displayStart,
+      to: displayStart + displayText.length,
       dec: Decoration.mark({
-        class: "cm-prose-link cm-prose-note-link",
-        attributes: { "data-note-link": target, title: `Open ${target}.md` }
+        class: linkClassStr,
+        attributes: { "data-note-link": linkTarget, title: exists ? `Open ${linkTarget}` : `Create ${cleanName}.md` }
       })
     });
+
+    // Hide closing brackets if cursor is not inside the raw link
     if (!isCursorInside) {
-      marks.push({ from: s + 2 + target.length, to: e, dec: REPLACE });
+      marks.push({ from: displayStart + displayText.length, to: e, dec: REPLACE });
     }
   }
 
@@ -328,8 +355,12 @@ function collectInlineMarks(
 
 // --- Main builder ---
 
-function buildDecorations(view: EditorView, workspacePath: string): DecorationSet {
+function buildDecorations(view: EditorView, workspacePath: string, markdownFiles: Set<string>): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
+
+  const lowercaseFiles = new Set(
+    Array.from(markdownFiles).map((f) => f.toLowerCase())
+  );
 
   // Document scan to pre-calculate block levels (Code blocks and Tables)
   const doc = view.state.doc;
@@ -546,7 +577,7 @@ function buildDecorations(view: EditorView, workspacePath: string): DecorationSe
 
       // Inline bold / italic / links / inline-code / images / wiki-images
       if (text.length > 0) {
-        for (const { from: f, to: t, dec } of collectInlineMarks(line.from, text, workspacePath, view.state.selection, raw)) {
+        for (const { from: f, to: t, dec } of collectInlineMarks(line.from, text, workspacePath, view.state.selection, raw, lowercaseFiles)) {
           builder.add(f, t, dec);
         }
       }
@@ -571,17 +602,17 @@ function buildDecorations(view: EditorView, workspacePath: string): DecorationSe
 
 // --- Plugin export ---
 
-export const prosePreviewPlugin = (workspacePath: string) => ViewPlugin.fromClass(
+export const prosePreviewPlugin = (workspacePath: string, markdownFiles: Set<string>) => ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
 
     constructor(view: EditorView) {
-      this.decorations = buildDecorations(view, workspacePath);
+      this.decorations = buildDecorations(view, workspacePath, markdownFiles);
     }
 
     update(update: ViewUpdate): void {
       if (update.docChanged || update.viewportChanged || update.selectionSet) {
-        this.decorations = buildDecorations(update.view, workspacePath);
+        this.decorations = buildDecorations(update.view, workspacePath, markdownFiles);
       }
     }
   },

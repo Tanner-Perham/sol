@@ -2,12 +2,45 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
-import { EditorState, RangeSetBuilder } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, Compartment } from "@codemirror/state";
 import { EditorView, keymap, Decoration, DecorationSet, ViewPlugin, ViewUpdate, WidgetType } from "@codemirror/view";
 import { defaultKeymap, historyKeymap, history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { autocompletion, CompletionContext } from "@codemirror/autocomplete";
 import { vim, Vim, getCM } from "@replit/codemirror-vim";
 import { prosePreviewPlugin } from "./prosePreviewPlugin";
+
+function findHeaderLine(doc: any, header: string): number | null {
+  const cleanHeader = header.toLowerCase().replace(/^#+\s+/, "").trim();
+  for (let i = 1; i <= doc.lines; i++) {
+    const text = doc.line(i).text.trim();
+    if (text.startsWith("#")) {
+      const textClean = text.toLowerCase().replace(/^#+\s+/, "").trim();
+      if (textClean === cleanHeader) {
+        return i;
+      }
+    }
+  }
+  return null;
+}
+
+function wikiCompletionSource(context: CompletionContext, markdownFilesSet: Set<string>) {
+  const word = context.matchBefore(/\[\[[^\]]*$/);
+  if (!word) return null;
+  const typed = word.text.slice(2);
+  const options = Array.from(markdownFilesSet).map(name => {
+    const displayName = name.endsWith(".md") ? name.slice(0, -3) : name;
+    return {
+      label: displayName,
+      type: "variable",
+      apply: displayName
+    };
+  });
+  return {
+    from: word.from + 2,
+    options: options.filter(opt => opt.label.toLowerCase().includes(typed.toLowerCase()))
+  };
+}
 
 export type PaneId = string;
 
@@ -248,10 +281,28 @@ function App() {
     const leaf = findLeafNode(layout, activePaneId);
     if (!leaf) return;
 
-    if (leaf.activeFile === fileName) {
-      // Just focus it
+    // Split fileName into relativePath and header
+    const hashIdx = fileName.indexOf("#");
+    const relativePath = hashIdx !== -1 ? fileName.substring(0, hashIdx) : fileName;
+    const header = hashIdx !== -1 ? fileName.substring(hashIdx + 1) : null;
+
+    if (leaf.activeFile === relativePath) {
+      // Just focus it and scroll to header if present
       setFocusedComponent("editor");
-      editorViewsRef.current.get(activePaneId)?.focus();
+      const view = editorViewsRef.current.get(activePaneId);
+      if (view) {
+        view.focus();
+        if (header) {
+          const lineNum = findHeaderLine(view.state.doc, header);
+          if (lineNum !== null) {
+            const line = view.state.doc.line(lineNum);
+            view.dispatch({
+              selection: { anchor: line.from },
+              scrollIntoView: true
+            });
+          }
+        }
+      }
       return;
     }
 
@@ -268,8 +319,13 @@ function App() {
       }
     }
 
+    // Save pending header in ref if present
+    if (header) {
+      pendingHeadersRef.current.set(activePaneId, header);
+    }
+
     const currentWS = wsPath || workspacePath;
-    const filePath = `${currentWS}/${fileName}`;
+    const filePath = `${currentWS}/${relativePath}`;
     try {
       const content = await invoke<string>("read_markdown_file", { path: filePath });
       
@@ -280,11 +336,11 @@ function App() {
       const updateActivePane = (node: PaneNode): PaneNode => {
         if (node.type === "leaf") {
           if (node.id === activePaneId) {
-            const nextTabs = node.tabs.includes(fileName) ? node.tabs : [...node.tabs, fileName];
+            const nextTabs = node.tabs.includes(relativePath) ? node.tabs : [...node.tabs, relativePath];
             return {
               ...node,
               tabs: nextTabs,
-              activeFile: fileName
+              activeFile: relativePath
             };
           }
           return node;
@@ -854,6 +910,7 @@ function App() {
   const closeAllTabsRef = useRef(closeAllTabs);
   const workspacePathRef = useRef(workspacePath);
   const fileTreeRef = useRef(fileTree);
+  const pendingHeadersRef = useRef<Map<PaneId, string>>(new Map());
 
   useEffect(() => { layoutRef.current = layout; }, [layout]);
   useEffect(() => { activePaneIdRef.current = activePaneId; }, [activePaneId]);
@@ -1047,8 +1104,23 @@ function App() {
 
         const noteLink = linkEl.getAttribute("data-note-link");
         if (noteLink) {
-          const cleanName = noteLink.trim();
-          const targetFileName = cleanName.endsWith(".md") ? cleanName : `${cleanName}.md`;
+          e.preventDefault();
+          e.stopPropagation();
+
+          const hashIdx = noteLink.indexOf("#");
+          const namePart = hashIdx !== -1 ? noteLink.substring(0, hashIdx).trim() : noteLink.trim();
+          const headerPart = hashIdx !== -1 ? noteLink.substring(hashIdx + 1).trim() : null;
+
+          // If it is a heading-only link (starts with #)
+          if (namePart === "") {
+            if (activeFile) {
+              const fullTarget = headerPart ? `${activeFile}#${headerPart}` : activeFile;
+              openFileRef.current(fullTarget);
+            }
+            return;
+          }
+
+          const targetFileName = namePart.endsWith(".md") ? namePart : `${namePart}.md`;
 
           // Helper to find file in tree recursively
           const findFileInTree = (nodes: FileNode[], targetName: string): string | null => {
@@ -1078,7 +1150,8 @@ function App() {
               }
             }
             if (foundPath) {
-              openFileRef.current(foundPath);
+              const fullTarget = headerPart ? `${foundPath}#${headerPart}` : foundPath;
+              openFileRef.current(fullTarget);
             }
           };
 
@@ -1341,6 +1414,8 @@ function App() {
           vimMode={vimMode}
           livePreview={livePreview}
           workspacePath={workspacePath}
+          fileTree={fileTree}
+          pendingHeadersRef={pendingHeadersRef}
           onFocus={() => {
             setActivePaneId(node.id);
             setFocusedComponent("editor");
@@ -1724,6 +1799,8 @@ interface EditorPaneProps {
   vimMode: boolean;
   livePreview: boolean;
   workspacePath: string;
+  fileTree: FileNode[];
+  pendingHeadersRef: React.MutableRefObject<Map<PaneId, string>>;
   onFocus: () => void;
   onCloseTab: (paneId: string, file: string) => void;
   onOpenFile: (file: string) => void;
@@ -1741,6 +1818,8 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   vimMode,
   livePreview,
   workspacePath,
+  fileTree,
+  pendingHeadersRef,
   onFocus,
   onCloseTab,
   onOpenFile,
@@ -1753,6 +1832,30 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   const viewRef = useRef<EditorView | null>(null);
   const [content, setContent] = useState("");
   const [isLocalDirty, setIsLocalDirty] = useState(false);
+
+  const prosePreviewCompartment = useMemo(() => new Compartment(), []);
+
+  const markdownFilesSet = useMemo(() => {
+    const set = new Set<string>();
+    const collect = (nodes: FileNode[]) => {
+      for (const node of nodes) {
+        if (!node.is_dir) {
+          if (node.name.toLowerCase().endsWith(".md")) {
+            set.add(node.name);
+          }
+        } else {
+          collect(node.children);
+        }
+      }
+    };
+    collect(fileTree);
+    return set;
+  }, [fileTree]);
+
+  const markdownFilesSetRef = useRef(markdownFilesSet);
+  useEffect(() => {
+    markdownFilesSetRef.current = markdownFilesSet;
+  }, [markdownFilesSet]);
 
   // Load content when activeFile changes
   useEffect(() => {
@@ -1802,6 +1905,11 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           }
         }
         return false;
+      }),
+      autocompletion({
+        override: [
+          (context) => wikiCompletionSource(context, markdownFilesSetRef.current)
+        ]
       }),
       keymap.of([
         {
@@ -1874,7 +1982,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     }
 
     if (livePreview) {
-      extensions.push(prosePreviewPlugin(workspacePath));
+      extensions.push(prosePreviewCompartment.of(prosePreviewPlugin(workspacePath, markdownFilesSet)));
     }
 
     const startState = EditorState.create({
@@ -1889,6 +1997,22 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
     viewRef.current = view;
     registerView(paneId, view);
+
+    // Scroll to pending header if exists
+    const pendingHeader = pendingHeadersRef.current.get(paneId);
+    if (pendingHeader) {
+      pendingHeadersRef.current.delete(paneId);
+      setTimeout(() => {
+        const lineNum = findHeaderLine(view.state.doc, pendingHeader);
+        if (lineNum !== null) {
+          const line = view.state.doc.line(lineNum);
+          view.dispatch({
+            selection: { anchor: line.from },
+            scrollIntoView: true
+          });
+        }
+      }, 50);
+    }
 
     if (isActive) {
       view.focus();
@@ -2050,6 +2174,15 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       registerView(paneId, null);
     };
   }, [activeFile, content, vimMode, livePreview, paneId, workspacePath]);
+
+  // Dynamic compartment update when file list changes
+  useEffect(() => {
+    if (viewRef.current && livePreview) {
+      viewRef.current.dispatch({
+        effects: prosePreviewCompartment.reconfigure(prosePreviewPlugin(workspacePath, markdownFilesSet))
+      });
+    }
+  }, [markdownFilesSet, workspacePath, livePreview, prosePreviewCompartment]);
 
   // Handle focus sync
   useEffect(() => {
