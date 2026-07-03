@@ -37,7 +37,9 @@ jobs:
           cache: 'npm'
 
       - name: Install Node dependencies
-        run: npm ci
+        run: |
+          npm install \
+          npm ci
 
       - name: Install system dependencies (Linux only)
         if: matrix.platform == 'ubuntu-22.04'
