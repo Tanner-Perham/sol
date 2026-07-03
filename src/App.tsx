@@ -118,11 +118,36 @@ const removePaneFromTree = (root: PaneNode, paneIdToRemove: PaneId): PaneNode | 
   };
 };
 
+export interface AppSettings {
+  theme: "sol-dark" | "nord" | "monokai" | "forest" | "sepia" | "light" | "lego";
+  fontFamily: "sans" | "serif" | "mono";
+  fontSize: number;
+  lineHeight: number;
+  lineWrapping: boolean;
+  vimMode: boolean;
+  livePreview: boolean;
+  showHidden: boolean;
+}
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  theme: "sol-dark",
+  fontFamily: "serif",
+  fontSize: 17,
+  lineHeight: 1.8,
+  lineWrapping: true,
+  vimMode: true,
+  livePreview: true,
+  showHidden: false
+};
+
 function App() {
   const [workspacePath, setWorkspacePath] = useState("");
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
-  const [showHidden, setShowHidden] = useState(false);
+  
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+
   const [creatingNode, setCreatingNode] = useState<{ type: "file" | "dir"; parentPath: string } | null>(null);
   const [newInputName, setNewInputName] = useState("");
   const [pathToHighlight, setPathToHighlight] = useState<string | null>(null);
@@ -141,12 +166,19 @@ function App() {
   const [isDirty, setIsDirty] = useState(false);
   const [wordCount, setWordCount] = useState(0);
 
-  const [vimMode, setVimMode] = useState(true);
-  const [livePreview, setLivePreview] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [vimModeName, setVimModeName] = useState("NORMAL");
   const [focusedComponent, setFocusedComponent] = useState<"editor" | "sidebar">("editor");
   const [sidebarSelectedIndex, setSidebarSelectedIndex] = useState(0);
+
+  const updateSettings = useCallback(async (newSettings: Partial<AppSettings>) => {
+    setSettings(prev => {
+      const updated = { ...prev, ...newSettings };
+      invoke("write_settings", { settingsJson: JSON.stringify(updated, null, 2) })
+        .catch(err => console.error("Failed to save settings", err));
+      return updated;
+    });
+  }, []);
 
   // Derived state
   const activeLeaf = findLeafNode(layout, activePaneId);
@@ -190,6 +222,15 @@ function App() {
       setWorkspacePath(path);
       const tree = await invoke<FileNode[]>("get_file_tree");
       setFileTree(tree);
+
+      // Load settings
+      try {
+        const settingsStr = await invoke<string>("read_settings");
+        const parsed = JSON.parse(settingsStr);
+        setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+      } catch (err) {
+        console.error("Failed to load settings", err);
+      }
 
       const defaultFile = findDefaultFile(tree);
       if (defaultFile) {
@@ -244,6 +285,15 @@ function App() {
       setExpandedPaths(new Set());
       setSidebarSelectedIndex(0);
 
+      // Load settings for the new workspace
+      try {
+        const settingsStr = await invoke<string>("read_settings");
+        const parsed = JSON.parse(settingsStr);
+        setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+      } catch (err) {
+        console.error("Failed to load settings on workspace change", err);
+      }
+
       const defaultFile = findDefaultFile(newTree);
       if (defaultFile) {
         setLayout({
@@ -269,6 +319,26 @@ function App() {
       console.error("Failed to change workspace", err);
     }
   };
+
+  // Dynamically apply settings as CSS variables and classes to the root
+  useEffect(() => {
+    const root = document.documentElement;
+    
+    // Remove previous themes
+    root.classList.forEach(cls => {
+      if (cls.startsWith("theme-")) {
+        root.classList.remove(cls);
+      }
+    });
+
+    // Add current theme class
+    root.classList.add(`theme-${settings.theme}`);
+
+    // Update typography CSS variables
+    root.style.setProperty("--editor-font-family", `var(--font-${settings.fontFamily})`);
+    root.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
+    root.style.setProperty("--editor-line-height", `${settings.lineHeight}`);
+  }, [settings.theme, settings.fontFamily, settings.fontSize, settings.lineHeight]);
 
   // Run on mount
   useEffect(() => {
@@ -498,7 +568,7 @@ function App() {
       }
 
       for (const node of nodes) {
-        if (!showHidden && node.name.startsWith(".")) {
+        if (!settings.showHidden && node.name.startsWith(".")) {
           continue;
         }
 
@@ -518,7 +588,7 @@ function App() {
 
     traverse(fileTree, 0, "");
     return items;
-  }, [fileTree, expandedPaths, showHidden, creatingNode, newInputName]);
+  }, [fileTree, expandedPaths, settings.showHidden, creatingNode, newInputName]);
 
   const expandParentsOfFile = useCallback((filePath: string) => {
     const parts = filePath.split("/");
@@ -1040,7 +1110,12 @@ function App() {
       // Ctrl+P to toggle Live Preview
       if (e.key === "p" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        setLivePreview(prev => !prev);
+        setSettings(prev => {
+          const nextVal = !prev.livePreview;
+          invoke("write_settings", { settingsJson: JSON.stringify({ ...prev, livePreview: nextVal }, null, 2) })
+            .catch(err => console.error("Failed to save settings", err));
+          return { ...prev, livePreview: nextVal };
+        });
         return;
       }
 
@@ -1411,8 +1486,7 @@ function App() {
           activeFile={node.activeFile}
           tabs={node.tabs}
           isActive={node.id === activePaneId}
-          vimMode={vimMode}
-          livePreview={livePreview}
+          settings={settings}
           workspacePath={workspacePath}
           fileTree={fileTree}
           pendingHeadersRef={pendingHeadersRef}
@@ -1480,8 +1554,8 @@ function App() {
 
         <div className="app-actions">
           <button
-            className={`status-toggle ${livePreview ? "active" : ""}`}
-            onClick={() => setLivePreview(prev => !prev)}
+            className={`status-toggle ${settings.livePreview ? "active" : ""}`}
+            onClick={() => updateSettings({ livePreview: !settings.livePreview })}
             title="Toggle Live Preview (Ctrl+P)"
             style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px" }}
           >
@@ -1490,9 +1564,20 @@ function App() {
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
           </button>
+          <button
+            className="btn-header-action"
+            onClick={() => setShowSettingsModal(true)}
+            title="Settings"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px", width: "30px", height: "30px" }}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
         </div>
       </header>
-
+ 
       <div className="app-body">
         <aside className={`app-sidebar ${sidebarOpen ? "" : "collapsed"}`}>
           <div className="sidebar-header">
@@ -1555,14 +1640,14 @@ function App() {
                 </svg>
               </button>
               <button
-                className={`btn-header-action ${showHidden ? "active" : ""}`}
-                onClick={() => setShowHidden(prev => !prev)}
+                className={`btn-header-action ${settings.showHidden ? "active" : ""}`}
+                onClick={() => updateSettings({ showHidden: !settings.showHidden })}
                 title="Toggle Hidden Files"
               >
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
                   <circle cx="12" cy="12" r="3" />
-                  {!showHidden && <line x1="1" y1="1" x2="23" y2="23" />}
+                  {!settings.showHidden && <line x1="1" y1="1" x2="23" y2="23" />}
                 </svg>
               </button>
             </div>
@@ -1770,14 +1855,14 @@ function App() {
           </div>
         )}
         <button
-          className={`status-toggle ${vimMode ? "active" : ""}`}
-          onClick={() => setVimMode(prev => !prev)}
+          className={`status-toggle ${settings.vimMode ? "active" : ""}`}
+          onClick={() => updateSettings({ vimMode: !settings.vimMode })}
           title="Toggle Vim Mode"
         >
           Vim
         </button>
         <div className="status-spacer" />
-        {vimMode && (
+        {settings.vimMode && (
           <div className="status-section">
             <span className="status-badge-vim">VIM</span>
             <span className="status-badge-mode">{vimModeName}</span>
@@ -1787,6 +1872,185 @@ function App() {
           <span>{wordCount.toLocaleString()} words</span>
         </div>
       </footer>
+
+      {/* Settings Modal */}
+      <div className={`settings-modal-overlay ${showSettingsModal ? "open" : ""}`} onClick={() => setShowSettingsModal(false)}>
+        <div className="settings-modal-card" onClick={(e) => e.stopPropagation()}>
+          <div className="settings-modal-header">
+            <h2>Settings</h2>
+            <button className="btn-close-modal" onClick={() => setShowSettingsModal(false)} title="Close Settings">
+              ×
+            </button>
+          </div>
+
+          <div className="settings-modal-body">
+            {/* Theme Section */}
+            <div className="settings-section">
+              <span className="settings-section-title">Theme</span>
+              <div className="themes-grid">
+                {[
+                  { id: "sol-dark", name: "Sol Dark", colors: ["#131312", "#cfb18c", "#e8e6e3"] },
+                  { id: "nord", name: "Nord Night", colors: ["#2e3440", "#88c0d0", "#d8dee9"] },
+                  { id: "monokai", name: "Monokai Aura", colors: ["#1a1a1a", "#ae81ff", "#f8f8f2"] },
+                  { id: "forest", name: "Forest Moss", colors: ["#141715", "#87af92", "#e3e8e4"] },
+                  { id: "sepia", name: "Sepia", colors: ["#fbf8f3", "#c07a34", "#433422"] },
+                  { id: "light", name: "Sol Light", colors: ["#fafafa", "#3b82f6", "#171717"] },
+                  { id: "lego", name: "Lego Block 🧩", colors: ["#0055a5", "#e60012", "#ffffff"] }
+                ].map((t) => (
+                  <div
+                    key={t.id}
+                    className={`theme-card-option ${settings.theme === t.id ? "active" : ""}`}
+                    onClick={() => updateSettings({ theme: t.id as any })}
+                  >
+                    <div className="theme-color-preview">
+                      <div className="color-dot" style={{ backgroundColor: t.colors[0] }} title="Background" />
+                      <div className="color-dot" style={{ backgroundColor: t.colors[1] }} title="Accent/Accent" />
+                      <div className="color-dot" style={{ backgroundColor: t.colors[2] }} title="Text" />
+                    </div>
+                    <span className="theme-card-name">{t.name}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Typography Section */}
+            <div className="settings-section">
+              <span className="settings-section-title">Typography</span>
+              
+              {/* Font Family */}
+              <div className="settings-control-row">
+                <div className="settings-control-label">
+                  <span>Font Family</span>
+                  <span className="settings-control-desc">Font used in the editor area</span>
+                </div>
+                <div className="segmented-control">
+                  {[
+                    { id: "serif", label: "Serif" },
+                    { id: "sans", label: "Sans" },
+                    { id: "mono", label: "Mono" }
+                  ].map((f) => (
+                    <button
+                      key={f.id}
+                      className={`segment-btn ${settings.fontFamily === f.id ? "active" : ""}`}
+                      onClick={() => updateSettings({ fontFamily: f.id as any })}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Font Size */}
+              <div className="settings-control-row">
+                <div className="settings-control-label">
+                  <span>Font Size</span>
+                  <span className="settings-control-desc">Adjust size of text in editor</span>
+                </div>
+                <div className="slider-container">
+                  <input
+                    type="range"
+                    min="12"
+                    max="24"
+                    value={settings.fontSize}
+                    onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })}
+                    className="settings-slider"
+                  />
+                  <span className="slider-value">{settings.fontSize}px</span>
+                </div>
+              </div>
+
+              {/* Line Height */}
+              <div className="settings-control-row">
+                <div className="settings-control-label">
+                  <span>Line Height</span>
+                  <span className="settings-control-desc">Vertical spacing between text lines</span>
+                </div>
+                <div className="slider-container">
+                  <input
+                    type="range"
+                    min="1.4"
+                    max="2.2"
+                    step="0.1"
+                    value={settings.lineHeight}
+                    onChange={(e) => updateSettings({ lineHeight: parseFloat(e.target.value) })}
+                    className="settings-slider"
+                  />
+                  <span className="slider-value">{settings.lineHeight}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Editor Preferences Section */}
+            <div className="settings-section">
+              <span className="settings-section-title">Preferences</span>
+
+              {/* Vim Mode */}
+              <div className="settings-control-row">
+                <div className="settings-control-label">
+                  <span>Vim Mode</span>
+                  <span className="settings-control-desc">Enable Vim key bindings and commands</span>
+                </div>
+                <label className="settings-switch">
+                  <input
+                    type="checkbox"
+                    checked={settings.vimMode}
+                    onChange={(e) => updateSettings({ vimMode: e.target.checked })}
+                  />
+                  <span className="switch-slider" />
+                </label>
+              </div>
+
+              {/* Live Preview */}
+              <div className="settings-control-row">
+                <div className="settings-control-label">
+                  <span>Live Preview</span>
+                  <span className="settings-control-desc">Show dynamic rich markdown formatting</span>
+                </div>
+                <label className="settings-switch">
+                  <input
+                    type="checkbox"
+                    checked={settings.livePreview}
+                    onChange={(e) => updateSettings({ livePreview: e.target.checked })}
+                  />
+                  <span className="switch-slider" />
+                </label>
+              </div>
+
+              {/* Line Wrapping */}
+              <div className="settings-control-row">
+                <div className="settings-control-label">
+                  <span>Line Wrapping</span>
+                  <span className="settings-control-desc">Wrap long text lines to fit the view</span>
+                </div>
+                <label className="settings-switch">
+                  <input
+                    type="checkbox"
+                    checked={settings.lineWrapping}
+                    onChange={(e) => updateSettings({ lineWrapping: e.target.checked })}
+                  />
+                  <span className="switch-slider" />
+                </label>
+              </div>
+
+              {/* Show Hidden Files */}
+              <div className="settings-control-row">
+                <div className="settings-control-label">
+                  <span>Show Hidden Files</span>
+                  <span className="settings-control-desc">Display files and folders starting with a dot</span>
+                </div>
+                <label className="settings-switch">
+                  <input
+                    type="checkbox"
+                    checked={settings.showHidden}
+                    onChange={(e) => updateSettings({ showHidden: e.target.checked })}
+                  />
+                  <span className="switch-slider" />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1796,8 +2060,7 @@ interface EditorPaneProps {
   activeFile: string | null;
   tabs: string[];
   isActive: boolean;
-  vimMode: boolean;
-  livePreview: boolean;
+  settings: AppSettings;
   workspacePath: string;
   fileTree: FileNode[];
   pendingHeadersRef: React.MutableRefObject<Map<PaneId, string>>;
@@ -1815,8 +2078,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   activeFile,
   tabs,
   isActive,
-  vimMode,
-  livePreview,
+  settings,
   workspacePath,
   fileTree,
   pendingHeadersRef,
@@ -1832,6 +2094,8 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   const viewRef = useRef<EditorView | null>(null);
   const [content, setContent] = useState("");
   const [isLocalDirty, setIsLocalDirty] = useState(false);
+
+  const { vimMode, livePreview, lineWrapping, theme } = settings;
 
   const prosePreviewCompartment = useMemo(() => new Compartment(), []);
 
@@ -1938,7 +2202,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ...historyKeymap
       ]),
       markdown(),
-      EditorView.lineWrapping,
+      ...(lineWrapping ? [EditorView.lineWrapping] : []),
       customSelectionHighlightPlugin,
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
@@ -1968,13 +2232,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ".cm-activeLine": {
           backgroundColor: "transparent",
         },
-        ".cm-selectionBackground, .cm-content ::selection": {
-          backgroundColor: "rgba(207, 177, 140, 0.4) !important",
-        },
-        ".cm-focused .cm-selectionBackground, &.cm-focused .cm-content ::selection": {
-          backgroundColor: "rgba(207, 177, 140, 0.55) !important",
-        },
-      }, { dark: true })
+      }, { dark: !["sepia", "light"].includes(theme) })
     ];
 
     if (vimMode) {
@@ -2173,7 +2431,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       viewRef.current = null;
       registerView(paneId, null);
     };
-  }, [activeFile, content, vimMode, livePreview, paneId, workspacePath]);
+  }, [activeFile, content, vimMode, livePreview, lineWrapping, theme, paneId, workspacePath]);
 
   // Dynamic compartment update when file list changes
   useEffect(() => {
