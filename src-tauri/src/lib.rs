@@ -189,6 +189,28 @@ fn set_workspace_path(
     build_tree(&new_path, &new_path)
 }
 
+#[tauri::command]
+fn read_settings(state: tauri::State<'_, WorkspaceState>) -> Result<String, String> {
+    let workspace = state.path.lock().unwrap();
+    let settings_dir = workspace.join(".sol");
+    let settings_file = settings_dir.join("settings.json");
+    if !settings_file.exists() {
+        return Ok("{}".to_string());
+    }
+    fs::read_to_string(&settings_file).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_settings(settings_json: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+    let workspace = state.path.lock().unwrap();
+    let settings_dir = workspace.join(".sol");
+    if !settings_dir.exists() {
+        fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+    }
+    let settings_file = settings_dir.join("settings.json");
+    fs::write(&settings_file, settings_json).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -219,7 +241,9 @@ pub fn run() {
             get_file_tree,
             create_directory,
             select_directory,
-            set_workspace_path
+            set_workspace_path,
+            read_settings,
+            write_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

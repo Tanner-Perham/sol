@@ -118,11 +118,98 @@ const removePaneFromTree = (root: PaneNode, paneIdToRemove: PaneId): PaneNode | 
   };
 };
 
+export interface Keybindings {
+  save: string;
+  togglePreview: string;
+  toggleSidebar: string;
+  toggleFocus: string;
+  prefixMode: string;
+}
+
+export const DEFAULT_KEYBINDINGS: Keybindings = {
+  save: "mod+s",
+  togglePreview: "mod+p",
+  toggleSidebar: "mod+e",
+  toggleFocus: "tab",
+  prefixMode: "ctrl+a"
+};
+
+export interface AppSettings {
+  theme: "sol-dark" | "nord" | "monokai" | "forest" | "sepia" | "light" | "lego";
+  fontFamily: "sans" | "serif" | "mono";
+  fontSize: number;
+  lineHeight: number;
+  lineWrapping: boolean;
+  vimMode: boolean;
+  livePreview: boolean;
+  showHidden: boolean;
+  keybindings?: Keybindings;
+}
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  theme: "sol-dark",
+  fontFamily: "serif",
+  fontSize: 17,
+  lineHeight: 1.8,
+  lineWrapping: true,
+  vimMode: true,
+  livePreview: true,
+  showHidden: false,
+  keybindings: DEFAULT_KEYBINDINGS
+};
+
+const matchKeybinding = (e: KeyboardEvent, keybindingStr: string): boolean => {
+  if (!keybindingStr) return false;
+  
+  const parts = keybindingStr.toLowerCase().split("+");
+  const baseKey = parts[parts.length - 1];
+  
+  const isMac = navigator.userAgent.indexOf("Mac") !== -1;
+  const needsMod = parts.includes("mod");
+  const needsMeta = parts.includes("cmd") || parts.includes("command") || parts.includes("meta");
+  const needsCtrl = parts.includes("ctrl") || parts.includes("control");
+  const needsShift = parts.includes("shift");
+  const needsAlt = parts.includes("alt") || parts.includes("option");
+  
+  const hasCtrl = e.ctrlKey;
+  const hasMeta = e.metaKey;
+  const hasShift = e.shiftKey;
+  const hasAlt = e.altKey;
+  
+  let matchMod = false;
+  if (needsMod) {
+    if (isMac) {
+      if (hasMeta && !hasCtrl) matchMod = true;
+    } else {
+      if (hasCtrl && !hasMeta) matchMod = true;
+    }
+  } else {
+    matchMod = true;
+  }
+  
+  if (needsCtrl !== hasCtrl && !needsMod) return false;
+  if (needsMeta !== hasMeta && !needsMod) return false;
+  if (needsMod && !matchMod) return false;
+  
+  if (needsShift !== hasShift) return false;
+  if (needsAlt !== hasAlt) return false;
+  
+  const actualKey = e.key.toLowerCase();
+  const actualCode = e.code.toLowerCase();
+  
+  return actualKey === baseKey || actualCode === baseKey || actualCode === `key${baseKey}`;
+};
+
 function App() {
   const [workspacePath, setWorkspacePath] = useState("");
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
-  const [showHidden, setShowHidden] = useState(false);
+  
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"general" | "appearance" | "hotkeys">("general");
+  const [recordingHotkey, setRecordingHotkey] = useState<keyof Keybindings | null>(null);
+
   const [creatingNode, setCreatingNode] = useState<{ type: "file" | "dir"; parentPath: string } | null>(null);
   const [newInputName, setNewInputName] = useState("");
   const [pathToHighlight, setPathToHighlight] = useState<string | null>(null);
@@ -141,12 +228,117 @@ function App() {
   const [isDirty, setIsDirty] = useState(false);
   const [wordCount, setWordCount] = useState(0);
 
-  const [vimMode, setVimMode] = useState(true);
-  const [livePreview, setLivePreview] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [vimModeName, setVimModeName] = useState("NORMAL");
   const [focusedComponent, setFocusedComponent] = useState<"editor" | "sidebar">("editor");
   const [sidebarSelectedIndex, setSidebarSelectedIndex] = useState(0);
+
+  const updateSettings = useCallback(async (newSettings: Partial<AppSettings>) => {
+    setSettings(prev => {
+      const updated = { ...prev, ...newSettings };
+      invoke("write_settings", { settingsJson: JSON.stringify(updated, null, 2) })
+        .catch(err => console.error("Failed to save settings", err));
+      return updated;
+    });
+  }, []);
+
+  // Recording keybindings effect
+  useEffect(() => {
+    if (!recordingHotkey) return;
+
+    const handleRecordKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const key = e.key;
+
+      // Ignore individual modifier key presses
+      if (["Control", "Shift", "Alt", "Meta"].includes(key)) {
+        return;
+      }
+
+      // Escape key cancels the recording
+      if (key === "Escape") {
+        setRecordingHotkey(null);
+        return;
+      }
+
+      const parts: string[] = [];
+      const isMac = navigator.userAgent.indexOf("Mac") !== -1;
+
+      // Standardize meta/ctrl as "mod"
+      if (e.metaKey) {
+        parts.push(isMac ? "mod" : "meta");
+      } else if (e.ctrlKey) {
+        parts.push(isMac ? "ctrl" : "mod");
+      }
+
+      if (e.altKey) {
+        parts.push("alt");
+      }
+
+      if (e.shiftKey) {
+        parts.push("shift");
+      }
+
+      // Standardize key names
+      let baseKey = key.toLowerCase();
+      if (baseKey === " ") baseKey = "space";
+      else if (baseKey === "arrowup") baseKey = "up";
+      else if (baseKey === "arrowdown") baseKey = "down";
+      else if (baseKey === "arrowleft") baseKey = "left";
+      else if (baseKey === "arrowright") baseKey = "right";
+
+      parts.push(baseKey);
+      const newHotkeyStr = parts.join("+");
+
+      // Save custom keybinding
+      updateSettings({
+        keybindings: {
+          ...(settings.keybindings || DEFAULT_KEYBINDINGS),
+          [recordingHotkey]: newHotkeyStr
+        }
+      });
+
+      setRecordingHotkey(null);
+    };
+
+    window.addEventListener("keydown", handleRecordKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", handleRecordKeyDown, true);
+    };
+  }, [recordingHotkey, settings.keybindings, updateSettings]);
+
+  const renderShortcutBadges = (shortcutStr: string) => {
+    const isMac = navigator.userAgent.indexOf("Mac") !== -1;
+    const parts = shortcutStr.split("+");
+    return parts.map((part, idx) => {
+      let label = part;
+      if (part === "mod") {
+        label = isMac ? "⌘ Cmd" : "Ctrl";
+      } else if (part === "ctrl") {
+        label = "Ctrl";
+      } else if (part === "meta") {
+        label = isMac ? "⌘ Cmd" : "Win";
+      } else if (part === "alt") {
+        label = isMac ? "⌥ Opt" : "Alt";
+      } else if (part === "shift") {
+        label = "Shift";
+      } else if (part === "tab") {
+        label = "Tab";
+      } else if (part === "esc" || part === "escape") {
+        label = "Esc";
+      } else {
+        label = part.charAt(0).toUpperCase() + part.slice(1);
+      }
+      return (
+        <span key={idx} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+          {idx > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
+          <kbd className="keybind-badge">{label}</kbd>
+        </span>
+      );
+    });
+  };
 
   // Derived state
   const activeLeaf = findLeafNode(layout, activePaneId);
@@ -190,6 +382,15 @@ function App() {
       setWorkspacePath(path);
       const tree = await invoke<FileNode[]>("get_file_tree");
       setFileTree(tree);
+
+      // Load settings
+      try {
+        const settingsStr = await invoke<string>("read_settings");
+        const parsed = JSON.parse(settingsStr);
+        setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+      } catch (err) {
+        console.error("Failed to load settings", err);
+      }
 
       const defaultFile = findDefaultFile(tree);
       if (defaultFile) {
@@ -244,6 +445,15 @@ function App() {
       setExpandedPaths(new Set());
       setSidebarSelectedIndex(0);
 
+      // Load settings for the new workspace
+      try {
+        const settingsStr = await invoke<string>("read_settings");
+        const parsed = JSON.parse(settingsStr);
+        setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+      } catch (err) {
+        console.error("Failed to load settings on workspace change", err);
+      }
+
       const defaultFile = findDefaultFile(newTree);
       if (defaultFile) {
         setLayout({
@@ -269,6 +479,26 @@ function App() {
       console.error("Failed to change workspace", err);
     }
   };
+
+  // Dynamically apply settings as CSS variables and classes to the root
+  useEffect(() => {
+    const root = document.documentElement;
+    
+    // Remove previous themes
+    root.classList.forEach(cls => {
+      if (cls.startsWith("theme-")) {
+        root.classList.remove(cls);
+      }
+    });
+
+    // Add current theme class
+    root.classList.add(`theme-${settings.theme}`);
+
+    // Update typography CSS variables
+    root.style.setProperty("--editor-font-family", `var(--font-${settings.fontFamily})`);
+    root.style.setProperty("--editor-font-size", `${settings.fontSize}px`);
+    root.style.setProperty("--editor-line-height", `${settings.lineHeight}`);
+  }, [settings.theme, settings.fontFamily, settings.fontSize, settings.lineHeight]);
 
   // Run on mount
   useEffect(() => {
@@ -498,7 +728,7 @@ function App() {
       }
 
       for (const node of nodes) {
-        if (!showHidden && node.name.startsWith(".")) {
+        if (!settings.showHidden && node.name.startsWith(".")) {
           continue;
         }
 
@@ -518,7 +748,7 @@ function App() {
 
     traverse(fileTree, 0, "");
     return items;
-  }, [fileTree, expandedPaths, showHidden, creatingNode, newInputName]);
+  }, [fileTree, expandedPaths, settings.showHidden, creatingNode, newInputName]);
 
   const expandParentsOfFile = useCallback((filePath: string) => {
     const parts = filePath.split("/");
@@ -911,6 +1141,7 @@ function App() {
   const workspacePathRef = useRef(workspacePath);
   const fileTreeRef = useRef(fileTree);
   const pendingHeadersRef = useRef<Map<PaneId, string>>(new Map());
+  const settingsRef = useRef(settings);
 
   useEffect(() => { layoutRef.current = layout; }, [layout]);
   useEffect(() => { activePaneIdRef.current = activePaneId; }, [activePaneId]);
@@ -924,6 +1155,7 @@ function App() {
   useEffect(() => { closeAllTabsRef.current = closeAllTabs; }, [closeAllTabs]);
   useEffect(() => { workspacePathRef.current = workspacePath; }, [workspacePath]);
   useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   // Register Vim custom Ex commands
   useEffect(() => {
@@ -1004,8 +1236,10 @@ function App() {
         return;
       }
 
+      const keybindings = settingsRef.current.keybindings || DEFAULT_KEYBINDINGS;
+
       // Enter prefix mode
-      if (e.ctrlKey && e.key.toLowerCase() === "a") {
+      if (matchKeybinding(e, keybindings.prefixMode)) {
         e.preventDefault();
         setPrefixActive(true);
         if (prefixTimeoutRef.current) clearTimeout(prefixTimeoutRef.current);
@@ -1016,14 +1250,14 @@ function App() {
       }
 
       // Ctrl+S to save
-      if (e.key === "s" && (e.ctrlKey || e.metaKey)) {
+      if (matchKeybinding(e, keybindings.save)) {
         e.preventDefault();
         saveFileRef.current();
         return;
       }
 
       // Ctrl+E or Ctrl+\ to toggle sidebar
-      if ((e.key === "e" && (e.ctrlKey || e.metaKey)) || (e.key === "\\" && (e.ctrlKey || e.metaKey))) {
+      if (matchKeybinding(e, keybindings.toggleSidebar) || (e.key === "\\" && (e.ctrlKey || e.metaKey))) {
         e.preventDefault();
         setSidebarOpen(prev => {
           const next = !prev;
@@ -1038,14 +1272,19 @@ function App() {
       }
 
       // Ctrl+P to toggle Live Preview
-      if (e.key === "p" && (e.ctrlKey || e.metaKey)) {
+      if (matchKeybinding(e, keybindings.togglePreview)) {
         e.preventDefault();
-        setLivePreview(prev => !prev);
+        setSettings(prev => {
+          const nextVal = !prev.livePreview;
+          invoke("write_settings", { settingsJson: JSON.stringify({ ...prev, livePreview: nextVal }, null, 2) })
+            .catch(err => console.error("Failed to save settings", err));
+          return { ...prev, livePreview: nextVal };
+        });
         return;
       }
 
       // Ctrl+H (or Ctrl+Shift+H/Tab) to focus sidebar / editor
-      if (e.key === "Tab" && !isEditing) {
+      if (matchKeybinding(e, keybindings.toggleFocus) && !isEditing) {
         e.preventDefault();
         setFocusedComponent(prev => (prev === "editor" ? "sidebar" : "editor"));
         return;
@@ -1411,8 +1650,7 @@ function App() {
           activeFile={node.activeFile}
           tabs={node.tabs}
           isActive={node.id === activePaneId}
-          vimMode={vimMode}
-          livePreview={livePreview}
+          settings={settings}
           workspacePath={workspacePath}
           fileTree={fileTree}
           pendingHeadersRef={pendingHeadersRef}
@@ -1480,8 +1718,8 @@ function App() {
 
         <div className="app-actions">
           <button
-            className={`status-toggle ${livePreview ? "active" : ""}`}
-            onClick={() => setLivePreview(prev => !prev)}
+            className={`status-toggle ${settings.livePreview ? "active" : ""}`}
+            onClick={() => updateSettings({ livePreview: !settings.livePreview })}
             title="Toggle Live Preview (Ctrl+P)"
             style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px" }}
           >
@@ -1490,9 +1728,23 @@ function App() {
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
           </button>
+          <button
+            className="btn-header-action"
+            onClick={() => {
+              setShowSettingsModal(true);
+              setActiveSettingsTab("general");
+            }}
+            title="Settings"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px", width: "30px", height: "30px" }}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
         </div>
       </header>
-
+ 
       <div className="app-body">
         <aside className={`app-sidebar ${sidebarOpen ? "" : "collapsed"}`}>
           <div className="sidebar-header">
@@ -1555,14 +1807,14 @@ function App() {
                 </svg>
               </button>
               <button
-                className={`btn-header-action ${showHidden ? "active" : ""}`}
-                onClick={() => setShowHidden(prev => !prev)}
+                className={`btn-header-action ${settings.showHidden ? "active" : ""}`}
+                onClick={() => updateSettings({ showHidden: !settings.showHidden })}
                 title="Toggle Hidden Files"
               >
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
                   <circle cx="12" cy="12" r="3" />
-                  {!showHidden && <line x1="1" y1="1" x2="23" y2="23" />}
+                  {!settings.showHidden && <line x1="1" y1="1" x2="23" y2="23" />}
                 </svg>
               </button>
             </div>
@@ -1770,14 +2022,14 @@ function App() {
           </div>
         )}
         <button
-          className={`status-toggle ${vimMode ? "active" : ""}`}
-          onClick={() => setVimMode(prev => !prev)}
+          className={`status-toggle ${settings.vimMode ? "active" : ""}`}
+          onClick={() => updateSettings({ vimMode: !settings.vimMode })}
           title="Toggle Vim Mode"
         >
           Vim
         </button>
         <div className="status-spacer" />
-        {vimMode && (
+        {settings.vimMode && (
           <div className="status-section">
             <span className="status-badge-vim">VIM</span>
             <span className="status-badge-mode">{vimModeName}</span>
@@ -1787,6 +2039,369 @@ function App() {
           <span>{wordCount.toLocaleString()} words</span>
         </div>
       </footer>
+
+      {/* Settings Modal */}
+      <div className={`settings-modal-overlay ${showSettingsModal ? "open" : ""}`} onClick={() => setShowSettingsModal(false)}>
+        <div className="settings-modal-card" onClick={(e) => e.stopPropagation()}>
+          <div className="settings-modal-header">
+            <h2>Settings</h2>
+            <button className="btn-close-modal" onClick={() => setShowSettingsModal(false)} title="Close Settings">
+              ×
+            </button>
+          </div>
+
+          <div className="settings-modal-container">
+            {/* Left Sidebar */}
+            <div className="settings-modal-sidebar">
+              <button
+                className={`settings-tab-btn ${activeSettingsTab === "general" ? "active" : ""}`}
+                onClick={() => setActiveSettingsTab("general")}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <line x1="9" y1="3" x2="9" y2="21" />
+                </svg>
+                General
+              </button>
+              <button
+                className={`settings-tab-btn ${activeSettingsTab === "appearance" ? "active" : ""}`}
+                onClick={() => setActiveSettingsTab("appearance")}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
+                </svg>
+                Appearance
+              </button>
+              <button
+                className={`settings-tab-btn ${activeSettingsTab === "hotkeys" ? "active" : ""}`}
+                onClick={() => setActiveSettingsTab("hotkeys")}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2" ry="2" />
+                  <line x1="6" y1="8" x2="6" y2="8" />
+                  <line x1="10" y1="8" x2="10" y2="8" />
+                  <line x1="14" y1="8" x2="14" y2="8" />
+                  <line x1="18" y1="8" x2="18" y2="8" />
+                  <line x1="6" y1="12" x2="6" y2="12" />
+                  <line x1="10" y1="12" x2="10" y2="12" />
+                  <line x1="14" y1="12" x2="14" y2="12" />
+                  <line x1="18" y1="12" x2="18" y2="12" />
+                  <line x1="7" y1="16" x2="17" y2="16" />
+                </svg>
+                Hotkeys
+              </button>
+            </div>
+
+            {/* Right Content Area */}
+            <div className="settings-modal-content">
+              {activeSettingsTab === "general" && (
+                <div className="settings-section">
+                  <span className="settings-section-title">General Preferences</span>
+                  
+                  {/* Vim Mode */}
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Vim Mode</span>
+                      <span className="settings-control-desc">Enable Vim key bindings and commands</span>
+                    </div>
+                    <label className="settings-switch">
+                      <input
+                        type="checkbox"
+                        checked={settings.vimMode}
+                        onChange={(e) => updateSettings({ vimMode: e.target.checked })}
+                      />
+                      <span className="switch-slider" />
+                    </label>
+                  </div>
+
+                  {/* Live Preview */}
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Live Preview</span>
+                      <span className="settings-control-desc">Show dynamic rich markdown formatting</span>
+                    </div>
+                    <label className="settings-switch">
+                      <input
+                        type="checkbox"
+                        checked={settings.livePreview}
+                        onChange={(e) => updateSettings({ livePreview: e.target.checked })}
+                      />
+                      <span className="switch-slider" />
+                    </label>
+                  </div>
+
+                  {/* Show Hidden Files */}
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Show Hidden Files</span>
+                      <span className="settings-control-desc">Display files and folders starting with a dot</span>
+                    </div>
+                    <label className="settings-switch">
+                      <input
+                        type="checkbox"
+                        checked={settings.showHidden}
+                        onChange={(e) => updateSettings({ showHidden: e.target.checked })}
+                      />
+                      <span className="switch-slider" />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {activeSettingsTab === "appearance" && (
+                <>
+                  {/* Theme Section */}
+                  <div className="settings-section">
+                    <span className="settings-section-title">Theme</span>
+                    <div className="themes-grid">
+                      {[
+                        { id: "sol-dark", name: "Sol Dark", colors: ["#131312", "#cfb18c", "#e8e6e3"] },
+                        { id: "nord", name: "Nord Night", colors: ["#2e3440", "#88c0d0", "#d8dee9"] },
+                        { id: "monokai", name: "Monokai Aura", colors: ["#1a1a1a", "#ae81ff", "#f8f8f2"] },
+                        { id: "forest", name: "Forest Moss", colors: ["#141715", "#87af92", "#e3e8e4"] },
+                        { id: "sepia", name: "Sepia", colors: ["#fbf8f3", "#c07a34", "#433422"] },
+                        { id: "light", name: "Sol Light", colors: ["#fafafa", "#3b82f6", "#171717"] },
+                        { id: "lego", name: "Lego Block 🧩", colors: ["#0055a5", "#e60012", "#ffffff"] }
+                      ].map((t) => (
+                        <div
+                          key={t.id}
+                          className={`theme-card-option ${settings.theme === t.id ? "active" : ""}`}
+                          onClick={() => updateSettings({ theme: t.id as any })}
+                        >
+                          <div className="theme-color-preview">
+                            <div className="color-dot" style={{ backgroundColor: t.colors[0] }} title="Background" />
+                            <div className="color-dot" style={{ backgroundColor: t.colors[1] }} title="Accent" />
+                            <div className="color-dot" style={{ backgroundColor: t.colors[2] }} title="Text" />
+                          </div>
+                          <span className="theme-card-name">{t.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Typography Section */}
+                  <div className="settings-section">
+                    <span className="settings-section-title">Typography</span>
+                    
+                    {/* Font Family */}
+                    <div className="settings-control-row">
+                      <div className="settings-control-label">
+                        <span>Font Family</span>
+                        <span className="settings-control-desc">Font used in the editor area</span>
+                      </div>
+                      <div className="segmented-control">
+                        {[
+                          { id: "serif", label: "Serif" },
+                          { id: "sans", label: "Sans" },
+                          { id: "mono", label: "Mono" }
+                        ].map((f) => (
+                          <button
+                            key={f.id}
+                            className={`segment-btn ${settings.fontFamily === f.id ? "active" : ""}`}
+                            onClick={() => updateSettings({ fontFamily: f.id as any })}
+                          >
+                            {f.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Font Size */}
+                    <div className="settings-control-row">
+                      <div className="settings-control-label">
+                        <span>Font Size</span>
+                        <span className="settings-control-desc">Adjust size of text in editor</span>
+                      </div>
+                      <div className="slider-container">
+                        <input
+                          type="range"
+                          min="12"
+                          max="24"
+                          value={settings.fontSize}
+                          onChange={(e) => updateSettings({ fontSize: parseInt(e.target.value) })}
+                          className="settings-slider"
+                        />
+                        <span className="slider-value">{settings.fontSize}px</span>
+                      </div>
+                    </div>
+
+                    {/* Line Height */}
+                    <div className="settings-control-row">
+                      <div className="settings-control-label">
+                        <span>Line Height</span>
+                        <span className="settings-control-desc">Vertical spacing between text lines</span>
+                      </div>
+                      <div className="slider-container">
+                        <input
+                          type="range"
+                          min="1.4"
+                          max="2.2"
+                          step="0.1"
+                          value={settings.lineHeight}
+                          onChange={(e) => updateSettings({ lineHeight: parseFloat(e.target.value) })}
+                          className="settings-slider"
+                        />
+                        <span className="slider-value">{settings.lineHeight}</span>
+                      </div>
+                    </div>
+
+                    {/* Line Wrapping */}
+                    <div className="settings-control-row">
+                      <div className="settings-control-label">
+                        <span>Line Wrapping</span>
+                        <span className="settings-control-desc">Wrap long text lines to fit the view</span>
+                      </div>
+                      <label className="settings-switch">
+                        <input
+                          type="checkbox"
+                          checked={settings.lineWrapping}
+                          onChange={(e) => updateSettings({ lineWrapping: e.target.checked })}
+                        />
+                        <span className="switch-slider" />
+                      </label>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {activeSettingsTab === "hotkeys" && (
+                <div className="settings-section" style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
+                  <div>
+                    <span className="settings-section-title">Customizable Shortcuts</span>
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "10px" }}>
+                      Click the edit icon to record a new key combination, or the reset icon to restore the default.
+                    </div>
+                    <div className="keybind-list">
+                      {[
+                        { id: "save", name: "Save Document", desc: "Saves changes in active editor pane", vim: ":w" },
+                        { id: "togglePreview", name: "Toggle Live Preview", desc: "Toggle visual rendering style" },
+                        { id: "toggleSidebar", name: "Toggle Sidebar Panel", desc: "Show or hide the file tree sidebar" },
+                        { id: "toggleFocus", name: "Toggle Sidebar / Editor Focus", desc: "Quick focus toggle between panels" },
+                        { id: "prefixMode", name: "Enter Split Pane Prefix Mode", desc: "Enter window splitting mode (trigger \\ or - splits next)" }
+                      ].map((kb) => {
+                        const currentVal = settings.keybindings?.[kb.id as keyof Keybindings] || DEFAULT_KEYBINDINGS[kb.id as keyof Keybindings];
+                        const isRecording = recordingHotkey === kb.id;
+                        return (
+                          <div key={kb.id} className={`keybind-row ${isRecording ? "recording" : ""}`}>
+                            <div className="keybind-info">
+                              <span className="keybind-name">{kb.name}</span>
+                              <span className="keybind-desc">{kb.desc}</span>
+                            </div>
+                            <div className="keybind-badge-container">
+                              {isRecording ? (
+                                <kbd className="keybind-badge recording" style={{ color: "var(--accent)", borderColor: "var(--accent)" }}>
+                                  Press keys (Esc to cancel)...
+                                </kbd>
+                              ) : (
+                                <>
+                                  {renderShortcutBadges(currentVal)}
+                                  <button
+                                    className="btn-record-key"
+                                    onClick={() => setRecordingHotkey(kb.id as keyof Keybindings)}
+                                    title="Record custom shortcut"
+                                    style={{
+                                      background: "none",
+                                      border: "none",
+                                      color: "var(--text-muted)",
+                                      cursor: "pointer",
+                                      padding: "4px",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      transition: "color 0.2s ease"
+                                    }}
+                                  >
+                                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                      <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z" />
+                                    </svg>
+                                  </button>
+                                  {settings.keybindings?.[kb.id as keyof Keybindings] && settings.keybindings[kb.id as keyof Keybindings] !== DEFAULT_KEYBINDINGS[kb.id as keyof Keybindings] && (
+                                    <button
+                                      className="btn-reset-key"
+                                      onClick={() => {
+                                        updateSettings({
+                                          keybindings: {
+                                            ...(settings.keybindings || DEFAULT_KEYBINDINGS),
+                                            [kb.id]: DEFAULT_KEYBINDINGS[kb.id as keyof Keybindings]
+                                          }
+                                        });
+                                      }}
+                                      title="Reset to default"
+                                      style={{
+                                        background: "none",
+                                        border: "none",
+                                        color: "var(--text-muted)",
+                                        cursor: "pointer",
+                                        padding: "4px",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        transition: "color 0.2s ease"
+                                      }}
+                                    >
+                                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+                                      </svg>
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                              {kb.vim && (
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", marginLeft: "8px" }}>
+                                  <span style={{ fontSize: "11px", color: "var(--accent)", fontWeight: "600" }} title="Vim Ex Command">Vim:</span>
+                                  <kbd className="keybind-badge" style={{ borderColor: "var(--accent)", color: "var(--accent)" }}>{kb.vim}</kbd>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="settings-section-title">Built-in Reference</span>
+                    <div className="keybind-list" style={{ marginTop: "6px" }}>
+                      {[
+                        { name: "Switch Workspace Tab", desc: "Activate tab index 1-9 in active pane", keys: ["Alt", "1-9"] },
+                        { name: "Vim Visual Block Mode", desc: "Toggle visual block column editing", keys: ["Ctrl", "V"], alternative: ["Ctrl", "Q"] },
+                        { name: "Exit Active Mode", desc: "Return to normal editing mode", keys: ["Esc"] }
+                      ].map((kb, idx) => (
+                        <div key={idx} className="keybind-row" style={{ opacity: 0.85 }}>
+                          <div className="keybind-info">
+                            <span className="keybind-name">{kb.name}</span>
+                            <span className="keybind-desc">{kb.desc}</span>
+                          </div>
+                          <div className="keybind-badge-container">
+                            {kb.keys.map((k, i) => (
+                              <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                                {i > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
+                                <kbd className="keybind-badge">{k}</kbd>
+                              </span>
+                            ))}
+                            {kb.alternative && (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                                <span style={{ fontSize: "10px", color: "var(--text-muted)", margin: "0 4px" }}>/</span>
+                                {kb.alternative.map((k, i) => (
+                                  <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                                    {i > 0 && <span style={{ fontSize: "10px", color: "var(--text-muted)", opacity: 0.6, margin: "0 2px" }}>+</span>}
+                                    <kbd className="keybind-badge">{k}</kbd>
+                                  </span>
+                                ))}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1796,8 +2411,7 @@ interface EditorPaneProps {
   activeFile: string | null;
   tabs: string[];
   isActive: boolean;
-  vimMode: boolean;
-  livePreview: boolean;
+  settings: AppSettings;
   workspacePath: string;
   fileTree: FileNode[];
   pendingHeadersRef: React.MutableRefObject<Map<PaneId, string>>;
@@ -1815,8 +2429,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   activeFile,
   tabs,
   isActive,
-  vimMode,
-  livePreview,
+  settings,
   workspacePath,
   fileTree,
   pendingHeadersRef,
@@ -1832,6 +2445,8 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   const viewRef = useRef<EditorView | null>(null);
   const [content, setContent] = useState("");
   const [isLocalDirty, setIsLocalDirty] = useState(false);
+
+  const { vimMode, livePreview, lineWrapping, theme } = settings;
 
   const prosePreviewCompartment = useMemo(() => new Compartment(), []);
 
@@ -1938,7 +2553,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ...historyKeymap
       ]),
       markdown(),
-      EditorView.lineWrapping,
+      ...(lineWrapping ? [EditorView.lineWrapping] : []),
       customSelectionHighlightPlugin,
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
@@ -1968,13 +2583,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ".cm-activeLine": {
           backgroundColor: "transparent",
         },
-        ".cm-selectionBackground, .cm-content ::selection": {
-          backgroundColor: "rgba(207, 177, 140, 0.4) !important",
-        },
-        ".cm-focused .cm-selectionBackground, &.cm-focused .cm-content ::selection": {
-          backgroundColor: "rgba(207, 177, 140, 0.55) !important",
-        },
-      }, { dark: true })
+      }, { dark: !["sepia", "light"].includes(theme) })
     ];
 
     if (vimMode) {
@@ -2173,7 +2782,7 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       viewRef.current = null;
       registerView(paneId, null);
     };
-  }, [activeFile, content, vimMode, livePreview, paneId, workspacePath]);
+  }, [activeFile, content, vimMode, livePreview, lineWrapping, theme, paneId, workspacePath]);
 
   // Dynamic compartment update when file list changes
   useEffect(() => {
