@@ -133,38 +133,52 @@ interface Mark {
   dec: Decoration;
 }
 
-function collectInlineMarks(lineFrom: number, text: string, workspacePath: string): Mark[] {
+function rangeIntersectsSelection(from: number, to: number, selection: any): boolean {
+  if (!selection) return false;
+  for (const range of selection.ranges) {
+    if (range.from <= to && range.to >= from) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function collectInlineMarks(
+  lineFrom: number,
+  text: string,
+  workspacePath: string,
+  selection: any,
+  isLineRaw: boolean
+): Mark[] {
   const marks: Mark[] = [];
-
-  // 1. Wiki Images: ![[ImageName.png]]
-  const wikiImageRe = /!\[\[([^\]\n]+)\]\]/g;
   let m: RegExpExecArray | null;
-  while ((m = wikiImageRe.exec(text)) !== null) {
+
+  // 1. Wiki Note Links: [[xyz]] (ignore if preceded by !)
+  const wikiLinkRe = /(?<!\!)\[\[([^\]\n]+)\]\]/g;
+  while ((m = wikiLinkRe.exec(text)) !== null) {
     const s = lineFrom + m.index;
     const e = s + m[0].length;
-    const imgPath = m[1];
-    const resolvedUrl = resolveUrl(imgPath, workspacePath);
+    const target = m[1];
+
+    const isCursorInside = isLineRaw && rangeIntersectsSelection(s + 2, e - 2, selection);
+
+    if (!isCursorInside) {
+      marks.push({ from: s, to: s + 2, dec: REPLACE });
+    }
     marks.push({
-      from: s,
-      to: e,
-      dec: Decoration.replace({ widget: new ImageWidget(resolvedUrl, imgPath) })
+      from: s + 2,
+      to: s + 2 + target.length,
+      dec: Decoration.mark({
+        class: "cm-prose-link cm-prose-note-link",
+        attributes: { "data-note-link": target, title: `Open ${target}.md` }
+      })
     });
+    if (!isCursorInside) {
+      marks.push({ from: s + 2 + target.length, to: e, dec: REPLACE });
+    }
   }
 
-  // 2. Images: ![Alt](URL)
-  const imageRe = /!\[([^\]\n]*)\]\(([^)\n]+)\)/g;
-  while ((m = imageRe.exec(text)) !== null) {
-    const s = lineFrom + m.index;
-    const e = s + m[0].length;
-    const resolvedUrl = resolveUrl(m[2], workspacePath);
-    marks.push({
-      from: s,
-      to: e,
-      dec: Decoration.replace({ widget: new ImageWidget(resolvedUrl, m[1]) })
-    });
-  }
-
-  // 3. Links: [Text](URL) (ignore if preceded by !)
+  // 2. Regular Links: [Text](URL) (ignore if preceded by !)
   const linkRe = /(?<!\!)\[([^\]\n]+)\]\(([^)\n]+)\)/g;
   while ((m = linkRe.exec(text)) !== null) {
     const s = lineFrom + m.index;
@@ -172,7 +186,11 @@ function collectInlineMarks(lineFrom: number, text: string, workspacePath: strin
     const linkText = m[1];
     const url = m[2];
 
-    marks.push({ from: s, to: s + 1, dec: REPLACE });
+    const isCursorInside = isLineRaw && rangeIntersectsSelection(s + 1, s + 1 + linkText.length, selection);
+
+    if (!isCursorInside) {
+      marks.push({ from: s, to: s + 1, dec: REPLACE });
+    }
     marks.push({
       from: s + 1,
       to: s + 1 + linkText.length,
@@ -181,83 +199,116 @@ function collectInlineMarks(lineFrom: number, text: string, workspacePath: strin
         attributes: { href: url, target: "_blank", title: url }
       })
     });
-    marks.push({ from: s + 1 + linkText.length, to: e, dec: REPLACE });
+    if (!isCursorInside) {
+      marks.push({ from: s + 1 + linkText.length, to: e, dec: REPLACE });
+    }
   }
 
-  // 4. Inline Code: `code`
-  const codeRe = /`([^`\n]+)`/g;
-  while ((m = codeRe.exec(text)) !== null) {
-    const s = lineFrom + m.index;
-    const e = s + m[0].length;
-    const codeText = m[1];
+  // Under raw lines, only links (Wiki Links & Regular Links) can be rendered if not focused.
+  // Bold, italic, inline code, strike-through, images, etc. should not be rendered if the line contains selection cursor.
+  if (!isLineRaw) {
+    // 3. Wiki Images: ![[ImageName.png]]
+    const wikiImageRe = /!\[\[([^\]\n]+)\]\]/g;
+    while ((m = wikiImageRe.exec(text)) !== null) {
+      const s = lineFrom + m.index;
+      const e = s + m[0].length;
+      const imgPath = m[1];
+      const resolvedUrl = resolveUrl(imgPath, workspacePath);
+      marks.push({
+        from: s,
+        to: e,
+        dec: Decoration.replace({ widget: new ImageWidget(resolvedUrl, imgPath) })
+      });
+    }
 
-    marks.push({ from: s, to: s + 1, dec: REPLACE });
-    marks.push({
-      from: s + 1,
-      to: s + 1 + codeText.length,
-      dec: Decoration.mark({ class: "cm-prose-inline-code" })
-    });
-    marks.push({ from: e - 1, to: e, dec: REPLACE });
-  }
+    // 4. Images: ![Alt](URL)
+    const imageRe = /!\[([^\]\n]*)\]\(([^)\n]+)\)/g;
+    while ((m = imageRe.exec(text)) !== null) {
+      const s = lineFrom + m.index;
+      const e = s + m[0].length;
+      const resolvedUrl = resolveUrl(m[2], workspacePath);
+      marks.push({
+        from: s,
+        to: e,
+        dec: Decoration.replace({ widget: new ImageWidget(resolvedUrl, m[1]) })
+      });
+    }
 
-  // 5. Bold: **text**
-  const boldRe = /\*\*([^*\n]+)\*\*/g;
-  while ((m = boldRe.exec(text)) !== null) {
-    const s = lineFrom + m.index;
-    const e = s + m[0].length;
-    marks.push({ from: s, to: s + 2, dec: REPLACE });
-    marks.push({ from: s + 2, to: e - 2, dec: BOLD });
-    marks.push({ from: e - 2, to: e, dec: REPLACE });
-  }
+    // 5. Inline Code: `code`
+    const codeRe = /`([^`\n]+)`/g;
+    while ((m = codeRe.exec(text)) !== null) {
+      const s = lineFrom + m.index;
+      const e = s + m[0].length;
+      const codeText = m[1];
 
-  // 6. Italic: *text*
-  const italicStarRe = /(?<!\*)\*([^*\n]+)\*(?!\*)/g;
-  while ((m = italicStarRe.exec(text)) !== null) {
-    const s = lineFrom + m.index;
-    const e = s + m[0].length;
-    marks.push({ from: s, to: s + 1, dec: REPLACE });
-    marks.push({ from: s + 1, to: e - 1, dec: ITALIC });
-    marks.push({ from: e - 1, to: e, dec: REPLACE });
-  }
+      marks.push({ from: s, to: s + 1, dec: REPLACE });
+      marks.push({
+        from: s + 1,
+        to: s + 1 + codeText.length,
+        dec: Decoration.mark({ class: "cm-prose-inline-code" })
+      });
+      marks.push({ from: e - 1, to: e, dec: REPLACE });
+    }
 
-  // 7. Italic: _text_
-  const italicUnderRe = /(?<!_)_([^_\n]+)_(?!_)/g;
-  while ((m = italicUnderRe.exec(text)) !== null) {
-    const s = lineFrom + m.index;
-    const e = s + m[0].length;
-    marks.push({ from: s, to: s + 1, dec: REPLACE });
-    marks.push({ from: s + 1, to: e - 1, dec: ITALIC });
-    marks.push({ from: e - 1, to: e, dec: REPLACE });
-  }
+    // 6. Bold: **text**
+    const boldRe = /\*\*([^*\n]+)\*\*/g;
+    while ((m = boldRe.exec(text)) !== null) {
+      const s = lineFrom + m.index;
+      const e = s + m[0].length;
+      marks.push({ from: s, to: s + 2, dec: REPLACE });
+      marks.push({ from: s + 2, to: e - 2, dec: BOLD });
+      marks.push({ from: e - 2, to: e, dec: REPLACE });
+    }
 
-  // 8. Plain URLs: https://www.sigmajs.org/ (ignore if preceded by '(' or '[' or '"')
-  const plainUrlRe = /(?<![\(\["])(https?:\/\/[^\s\n\)]+)/g;
-  while ((m = plainUrlRe.exec(text)) !== null) {
-    const s = lineFrom + m.index;
-    const e = s + m[0].length;
-    const url = m[1];
-    marks.push({
-      from: s,
-      to: e,
-      dec: Decoration.mark({
-        class: "cm-prose-link",
-        attributes: { href: url, target: "_blank", title: url }
-      })
-    });
-  }
+    // 7. Italic: *text*
+    const italicStarRe = /(?<!\*)\*([^*\n]+)\*(?!\*)/g;
+    while ((m = italicStarRe.exec(text)) !== null) {
+      const s = lineFrom + m.index;
+      const e = s + m[0].length;
+      marks.push({ from: s, to: s + 1, dec: REPLACE });
+      marks.push({ from: s + 1, to: e - 1, dec: ITALIC });
+      marks.push({ from: e - 1, to: e, dec: REPLACE });
+    }
 
-  // 9. Strike Through: ~~text~~
-  const strikeRe = /~~([^~\n]+)~~/g;
-  while ((m = strikeRe.exec(text)) !== null) {
-    const s = lineFrom + m.index;
-    const e = s + m[0].length;
-    marks.push({ from: s, to: s + 2, dec: REPLACE });
-    marks.push({
-      from: s + 2,
-      to: e - 2,
-      dec: Decoration.mark({ class: "cm-prose-strike" })
-    });
-    marks.push({ from: e - 2, to: e, dec: REPLACE });
+    // 8. Italic: _text_
+    const italicUnderRe = /(?<!_)_([^_\n]+)_(?!_)/g;
+    while ((m = italicUnderRe.exec(text)) !== null) {
+      const s = lineFrom + m.index;
+      const e = s + m[0].length;
+      marks.push({ from: s, to: s + 1, dec: REPLACE });
+      marks.push({ from: s + 1, to: e - 1, dec: ITALIC });
+      marks.push({ from: e - 1, to: e, dec: REPLACE });
+    }
+
+    // 9. Plain URLs: https://www.sigmajs.org/ (ignore if preceded by '(' or '[' or '"')
+    const plainUrlRe = /(?<![\(\["])(https?:\/\/[^\s\n\)]+)/g;
+    while ((m = plainUrlRe.exec(text)) !== null) {
+      const s = lineFrom + m.index;
+      const e = s + m[0].length;
+      const url = m[1];
+      marks.push({
+        from: s,
+        to: e,
+        dec: Decoration.mark({
+          class: "cm-prose-link",
+          attributes: { href: url, target: "_blank", title: url }
+        })
+      });
+    }
+
+    // 10. Strike Through: ~~text~~
+    const strikeRe = /~~([^~\n]+)~~/g;
+    while ((m = strikeRe.exec(text)) !== null) {
+      const s = lineFrom + m.index;
+      const e = s + m[0].length;
+      marks.push({ from: s, to: s + 2, dec: REPLACE });
+      marks.push({
+        from: s + 2,
+        to: e - 2,
+        dec: Decoration.mark({ class: "cm-prose-strike" })
+      });
+      marks.push({ from: e - 2, to: e, dec: REPLACE });
+    }
   }
 
   // Sort and filter out overlapping ranges to prevent CodeMirror RangeSetBuilder crashes
@@ -494,8 +545,8 @@ function buildDecorations(view: EditorView, workspacePath: string): DecorationSe
       }
 
       // Inline bold / italic / links / inline-code / images / wiki-images
-      if (!raw && text.length > 0) {
-        for (const { from: f, to: t, dec } of collectInlineMarks(line.from, text, workspacePath)) {
+      if (text.length > 0) {
+        for (const { from: f, to: t, dec } of collectInlineMarks(line.from, text, workspacePath, view.state.selection, raw)) {
           builder.add(f, t, dec);
         }
       }

@@ -853,6 +853,7 @@ function App() {
   const navigateFocusRef = useRef(navigateFocus);
   const closeAllTabsRef = useRef(closeAllTabs);
   const workspacePathRef = useRef(workspacePath);
+  const fileTreeRef = useRef(fileTree);
 
   useEffect(() => { layoutRef.current = layout; }, [layout]);
   useEffect(() => { activePaneIdRef.current = activePaneId; }, [activePaneId]);
@@ -865,6 +866,7 @@ function App() {
   useEffect(() => { navigateFocusRef.current = navigateFocus; }, [navigateFocus]);
   useEffect(() => { closeAllTabsRef.current = closeAllTabs; }, [closeAllTabs]);
   useEffect(() => { workspacePathRef.current = workspacePath; }, [workspacePath]);
+  useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
 
   // Register Vim custom Ex commands
   useEffect(() => {
@@ -1040,10 +1042,52 @@ function App() {
       const target = e.target as HTMLElement;
       const linkEl = target.closest(".cm-prose-link");
       if (linkEl) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const noteLink = linkEl.getAttribute("data-note-link");
+        if (noteLink) {
+          const cleanName = noteLink.trim();
+          const targetFileName = cleanName.endsWith(".md") ? cleanName : `${cleanName}.md`;
+
+          // Helper to find file in tree recursively
+          const findFileInTree = (nodes: FileNode[], targetName: string): string | null => {
+            for (const node of nodes) {
+              if (!node.is_dir) {
+                if (node.name.toLowerCase() === targetName.toLowerCase()) {
+                  return node.path;
+                }
+              } else {
+                const found = findFileInTree(node.children, targetName);
+                if (found) return found;
+              }
+            }
+            return null;
+          };
+
+          const openTarget = async () => {
+            let foundPath = findFileInTree(fileTreeRef.current, targetFileName);
+            if (!foundPath) {
+              try {
+                await invoke("create_markdown_file", { name: targetFileName });
+                const tree = await invoke<FileNode[]>("get_file_tree");
+                setFileTree(tree);
+                foundPath = targetFileName;
+              } catch (err) {
+                console.error("Failed to auto-create markdown file from note link", err);
+              }
+            }
+            if (foundPath) {
+              openFileRef.current(foundPath);
+            }
+          };
+
+          openTarget();
+          return;
+        }
+
         const href = linkEl.getAttribute("href") || linkEl.getAttribute("title");
         if (href) {
-          e.preventDefault();
-          e.stopPropagation();
           import("@tauri-apps/plugin-opener").then(opener => {
             opener.openUrl(href).catch((err: any) => console.error("Failed to open link", err));
           });
@@ -1051,10 +1095,10 @@ function App() {
       }
     };
 
-    window.addEventListener("click", handleGlobalClick, true);
+    window.addEventListener("mousedown", handleGlobalClick, true);
     window.addEventListener("keydown", handleKeyDown, true);
     return () => {
-      window.removeEventListener("click", handleGlobalClick, true);
+      window.removeEventListener("mousedown", handleGlobalClick, true);
       window.removeEventListener("keydown", handleKeyDown, true);
       if (prefixTimeoutRef.current) clearTimeout(prefixTimeoutRef.current);
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -1740,6 +1784,25 @@ const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
     const extensions = [
       history(),
+      EditorView.inputHandler.of((view, from, to, text) => {
+        if (text === "[") {
+          if (from > 0 && view.state.doc.sliceString(from - 1, from) === "[") {
+            view.dispatch({
+              changes: { from, to, insert: "[]]" },
+              selection: { anchor: from + 1 }
+            });
+            return true;
+          }
+        } else if (text === "]") {
+          if (from < view.state.doc.length && view.state.doc.sliceString(from, from + 1) === "]") {
+            view.dispatch({
+              selection: { anchor: from + 1 }
+            });
+            return true;
+          }
+        }
+        return false;
+      }),
       keymap.of([
         {
           key: "Mod-v",
