@@ -284,7 +284,7 @@ body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: var(--font-sans);
+  font-family: var(--editor-font-family, var(--font-mono));
   display: flex;
   align-items: center;
   cursor: pointer;
@@ -433,7 +433,7 @@ body,
   font-size: 12px;
   outline: none;
   transition: border-color 0.15s ease;
-  font-family: var(--font-sans);
+  font-family: var(--editor-font-family, var(--font-mono));
 }
 
 .new-node-input:focus {
@@ -490,7 +490,7 @@ body,
   max-width: 68ch !important;
   margin: 0 auto !important;
   padding: 4rem 2rem 8rem 2rem !important;
-  font-family: var(--editor-font-family, var(--font-serif)) !important;
+  font-family: var(--editor-font-family, var(--font-mono)) !important;
   font-size: var(--editor-font-size, 17px) !important;
   caret-color: var(--accent) !important;
 }
@@ -902,6 +902,7 @@ body,
 
 /* Tab Item */
 .editor-tab {
+  font-family: var(--editor-font-family, var(--font-mono));
   display: flex;
   align-items: center;
   gap: 8px;

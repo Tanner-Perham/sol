@@ -10,7 +10,7 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "sol-dark",
-  fontFamily: "serif",
+  fontFamily: "mono",
   fontSize: 17,
   lineHeight: 1.8,
   lineWrapping: true,
