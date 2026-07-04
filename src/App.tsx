@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -15,9 +15,12 @@ import { computeWordCount, findHeaderLine } from "./utils/editorUtils";
 
 // Components
 import { Sidebar, VisibleItem } from "./components/Sidebar";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsModal, SettingsTabType } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
 import { EditorPaneComponent } from "./components/EditorPane/EditorPane";
+
+// Lazy load SemanticCloud to avoid loading heavy dependencies when not needed
+const SemanticCloud = React.lazy(() => import("./components/SemanticCloud/SemanticCloud"));
 
 function App() {
   const [workspacePath, setWorkspacePath] = useState("");
@@ -26,8 +29,9 @@ function App() {
   
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"general" | "appearance" | "hotkeys">("general");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabType>("general");
   const [recordingHotkey, setRecordingHotkey] = useState<keyof Keybindings | null>(null);
+  const [viewMode, setViewMode] = useState<"editor" | "cloud">("editor");
 
   const [creatingNode, setCreatingNode] = useState<{ type: "file" | "dir"; parentPath: string } | null>(null);
   const [newInputName, setNewInputName] = useState("");
@@ -1321,6 +1325,23 @@ function App() {
             </svg>
           </button>
           <button
+            className={`btn-cloud-toggle ${viewMode === "cloud" ? "active" : ""}`}
+            onClick={() => setViewMode(viewMode === "editor" ? "cloud" : "editor")}
+            title="Toggle Semantic Cloud (Ctrl+G)"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <circle cx="19" cy="5" r="2" />
+              <circle cx="5" cy="5" r="2" />
+              <circle cx="5" cy="19" r="2" />
+              <circle cx="19" cy="19" r="2" />
+              <line x1="12" y1="9" x2="12" y2="5" />
+              <line x1="14.5" y1="13.5" x2="17.5" y2="16.5" />
+              <line x1="9.5" y1="13.5" x2="6.5" y2="16.5" />
+            </svg>
+            <span>Cloud</span>
+          </button>
+          <button
             className="btn-header-action"
             onClick={() => {
               setShowSettingsModal(true);
@@ -1362,7 +1383,26 @@ function App() {
         />
 
         <main className="app-main">
-          {renderPaneNode(layout)}
+          {viewMode === "editor" ? (
+            renderPaneNode(layout)
+          ) : (
+            <React.Suspense fallback={
+              <div className="semantic-cloud-container">
+                <div className="semantic-cloud-loading">
+                  <div className="loading-spinner" />
+                  <span>Loading cloud...</span>
+                </div>
+              </div>
+            }>
+              <SemanticCloud
+                workspacePath={workspacePath}
+                onSelectNote={(path) => {
+                  openFile(path);
+                  setViewMode("editor");
+                }}
+              />
+            </React.Suspense>
+          )}
         </main>
       </div>
 

@@ -4,9 +4,15 @@ use std::sync::Mutex;
 use notify::{Watcher, RecommendedWatcher, RecursiveMode};
 use tauri::{Emitter, Manager};
 
+mod privacy;
+mod embedding;
+
+use embedding::{EmbeddingIndex, EmbeddingStatus, SimilarNote};
+
 struct WorkspaceState {
     path: Mutex<PathBuf>,
     watcher: Mutex<RecommendedWatcher>,
+    embedding_index: Mutex<EmbeddingIndex>,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -149,6 +155,202 @@ fn get_file_tree(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<FileNode
     build_tree(&workspace, &workspace)
 }
 
+/// Returns all markdown files that pass the privacy/access policy filter.
+/// These are the files eligible for semantic indexing.
+#[tauri::command]
+fn get_indexable_files(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<String>, String> {
+    let workspace = state.path.lock().unwrap();
+    let files = privacy::get_indexable_files(&workspace)?;
+
+    // Convert to relative paths as strings
+    let relative_paths: Vec<String> = files
+        .iter()
+        .filter_map(|p| {
+            p.strip_prefix(&*workspace)
+                .ok()
+                .and_then(|rel| rel.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    Ok(relative_paths)
+}
+
+// ============================================================================
+// Embedding / Semantic Search Commands
+// ============================================================================
+
+/// Get the current status of the embedding index.
+#[tauri::command]
+fn get_embedding_status(state: tauri::State<'_, WorkspaceState>) -> EmbeddingStatus {
+    let index = state.embedding_index.lock().unwrap();
+    index.status()
+}
+
+/// Search for notes semantically similar to a query string.
+#[tauri::command]
+fn search_similar_notes(
+    query: String,
+    k: usize,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<Vec<SimilarNote>, String> {
+    let mut index = state.embedding_index.lock().unwrap();
+    index.search(&query, k)
+}
+
+/// Progress event for embedding operations
+#[derive(serde::Serialize, Clone)]
+pub struct EmbeddingProgress {
+    pub current: usize,
+    pub total: usize,
+    pub current_file: String,
+    pub phase: String,
+}
+
+/// Rebuild the embedding index for all indexable files.
+/// Emits progress events as it processes each file.
+#[tauri::command]
+async fn rebuild_embedding_index(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<EmbeddingStatus, String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let files = privacy::get_indexable_files(&workspace)?;
+    let total = files.len();
+
+    // Emit initial progress
+    let _ = app.emit("embedding-progress", EmbeddingProgress {
+        current: 0,
+        total,
+        current_file: "Starting...".to_string(),
+        phase: "initializing".to_string(),
+    });
+
+    // Process files one by one, emitting progress
+    for (i, file_path) in files.iter().enumerate() {
+        let relative_path = file_path
+            .strip_prefix(&workspace)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string();
+
+        // Emit progress before processing
+        let _ = app.emit("embedding-progress", EmbeddingProgress {
+            current: i + 1,
+            total,
+            current_file: relative_path.clone(),
+            phase: "embedding".to_string(),
+        });
+
+        let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+        let mtime = embedding::get_file_mtime(&file_path)?;
+
+        // Lock the index just for the embedding operation
+        {
+            let mut index = state.embedding_index.lock().unwrap();
+            index.embed_note(&relative_path, &content, mtime)?;
+        }
+
+        // Yield to allow UI to update (small delay)
+        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+    }
+
+    // Save the index
+    let _ = app.emit("embedding-progress", EmbeddingProgress {
+        current: total,
+        total,
+        current_file: "Saving index...".to_string(),
+        phase: "saving".to_string(),
+    });
+
+    let index_path = workspace.join(".sol").join("embedding_index.bin");
+    {
+        let index = state.embedding_index.lock().unwrap();
+        index.save(&index_path)?;
+    }
+
+    // Emit completion
+    let _ = app.emit("embedding-progress", EmbeddingProgress {
+        current: total,
+        total,
+        current_file: "Complete!".to_string(),
+        phase: "complete".to_string(),
+    });
+
+    let index = state.embedding_index.lock().unwrap();
+    Ok(index.status())
+}
+
+/// Update embeddings incrementally for changed files only.
+#[tauri::command]
+fn update_embedding_index(state: tauri::State<'_, WorkspaceState>) -> Result<EmbeddingStatus, String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let files = privacy::get_indexable_files(&workspace)?;
+
+    let mut index = state.embedding_index.lock().unwrap();
+
+    // Track which paths are still valid
+    let current_paths: std::collections::HashSet<String> = files
+        .iter()
+        .filter_map(|p| {
+            p.strip_prefix(&workspace)
+                .ok()
+                .map(|rel| rel.to_string_lossy().to_string())
+        })
+        .collect();
+
+    // Remove deleted files from index
+    let indexed_paths = index.indexed_paths();
+    for path in indexed_paths {
+        if !current_paths.contains(&path) {
+            index.remove_note(&path);
+        }
+    }
+
+    // Update or add files that have changed
+    for file_path in files {
+        let relative_path = file_path
+            .strip_prefix(&workspace)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string();
+
+        let mtime = embedding::get_file_mtime(&file_path)?;
+
+        if index.needs_update(&relative_path, mtime) {
+            let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+            index.embed_note(&relative_path, &content, mtime)?;
+        }
+    }
+
+    // Save the index
+    let index_path = workspace.join(".sol").join("embedding_index.bin");
+    index.save(&index_path)?;
+
+    Ok(index.status())
+}
+
+/// Get notes similar to a specific note (by path).
+#[tauri::command]
+fn get_similar_to_note(
+    note_path: String,
+    k: usize,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<Vec<SimilarNote>, String> {
+    let index = state.embedding_index.lock().unwrap();
+
+    let embedding = index.get_embedding(&note_path)
+        .ok_or_else(|| format!("Note not in index: {}", note_path))?
+        .clone();
+
+    // Get k+1 neighbors and filter out the query note itself
+    let mut results = index.knn(&embedding, k + 1);
+    results.retain(|n| n.path != note_path);
+    results.truncate(k);
+
+    Ok(results)
+}
+
 #[tauri::command]
 fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
     let workspace = state.path.lock().unwrap();
@@ -229,9 +431,15 @@ pub fn run() {
 
             let default_path = std::fs::canonicalize("..").unwrap_or_else(|_| PathBuf::from(".."));
             watcher.watch(&default_path, RecursiveMode::Recursive).map_err(|e| e.to_string())?;
+
+            // Load or create the embedding index
+            let index_path = default_path.join(".sol").join("embedding_index.bin");
+            let embedding_index = EmbeddingIndex::load(&index_path).unwrap_or_default();
+
             app.manage(WorkspaceState {
                 path: Mutex::new(default_path),
                 watcher: Mutex::new(watcher),
+                embedding_index: Mutex::new(embedding_index),
             });
             Ok(())
         })
@@ -243,6 +451,14 @@ pub fn run() {
             list_workspace_files,
             create_markdown_file,
             get_file_tree,
+            get_indexable_files,
+            // Embedding commands
+            get_embedding_status,
+            search_similar_notes,
+            rebuild_embedding_index,
+            update_embedding_index,
+            get_similar_to_note,
+            // File/directory commands
             create_directory,
             select_directory,
             set_workspace_path,

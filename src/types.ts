@@ -31,6 +31,12 @@ export interface Keybindings {
   prefixMode: string;
 }
 
+// Privacy/Access Policy - controls which files are included in AI features
+export interface AccessPolicy {
+  excludePatterns: string[];  // Glob patterns like "journal/**", "*.private.md"
+  excludePaths: string[];     // Explicit relative paths to exclude
+}
+
 export interface AppSettings {
   theme: "sol-dark" | "nord" | "monokai" | "forest" | "sepia" | "light" | "lego";
   fontFamily: "sans" | "serif" | "mono";
@@ -41,4 +47,5 @@ export interface AppSettings {
   livePreview: boolean;
   showHidden: boolean;
   keybindings?: Keybindings;
+  accessPolicy?: AccessPolicy;
 }

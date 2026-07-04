@@ -1,12 +1,14 @@
-import React from "react";
-import { AppSettings, Keybindings } from "../types";
+import React, { useState } from "react";
+import { AppSettings, Keybindings, AccessPolicy } from "../types";
 import { DEFAULT_KEYBINDINGS } from "../constants";
+
+export type SettingsTabType = "general" | "appearance" | "hotkeys" | "privacy";
 
 export interface SettingsModalProps {
   showSettingsModal: boolean;
   setShowSettingsModal: (show: boolean) => void;
-  activeSettingsTab: "general" | "appearance" | "hotkeys";
-  setActiveSettingsTab: (tab: "general" | "appearance" | "hotkeys") => void;
+  activeSettingsTab: SettingsTabType;
+  setActiveSettingsTab: (tab: SettingsTabType) => void;
   settings: AppSettings;
   updateSettings: (newSettings: Partial<AppSettings>) => Promise<void>;
   recordingHotkey: keyof Keybindings | null;
@@ -42,6 +44,229 @@ const renderShortcutBadges = (shortcutStr: string) => {
       </span>
     );
   });
+};
+
+// Privacy settings sub-component
+const PrivacySettings: React.FC<{
+  settings: AppSettings;
+  updateSettings: (newSettings: Partial<AppSettings>) => Promise<void>;
+}> = ({ settings, updateSettings }) => {
+  const [newPattern, setNewPattern] = useState("");
+  const [newPath, setNewPath] = useState("");
+
+  const policy = settings.accessPolicy || { excludePatterns: [], excludePaths: [] };
+
+  const addPattern = () => {
+    if (!newPattern.trim()) return;
+    const updated: AccessPolicy = {
+      ...policy,
+      excludePatterns: [...policy.excludePatterns, newPattern.trim()]
+    };
+    updateSettings({ accessPolicy: updated });
+    setNewPattern("");
+  };
+
+  const removePattern = (index: number) => {
+    const updated: AccessPolicy = {
+      ...policy,
+      excludePatterns: policy.excludePatterns.filter((_, i) => i !== index)
+    };
+    updateSettings({ accessPolicy: updated });
+  };
+
+  const addPath = () => {
+    if (!newPath.trim()) return;
+    const updated: AccessPolicy = {
+      ...policy,
+      excludePaths: [...policy.excludePaths, newPath.trim()]
+    };
+    updateSettings({ accessPolicy: updated });
+    setNewPath("");
+  };
+
+  const removePath = (index: number) => {
+    const updated: AccessPolicy = {
+      ...policy,
+      excludePaths: policy.excludePaths.filter((_, i) => i !== index)
+    };
+    updateSettings({ accessPolicy: updated });
+  };
+
+  return (
+    <div className="settings-section" style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+      <div>
+        <span className="settings-section-title">Semantic Cloud Privacy</span>
+        <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "15px", lineHeight: "1.5" }}>
+          Files matching these patterns will be excluded from the semantic index and cloud view.
+          This ensures private notes (journals, personal files) never appear in AI-powered features.
+        </div>
+      </div>
+
+      {/* Exclude Patterns */}
+      <div>
+        <div style={{ fontSize: "13px", fontWeight: 500, marginBottom: "8px" }}>Exclude Patterns</div>
+        <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "10px" }}>
+          Glob patterns like <code style={{ background: "var(--bg-hover)", padding: "2px 4px", borderRadius: "3px" }}>journal/**</code> or <code style={{ background: "var(--bg-hover)", padding: "2px 4px", borderRadius: "3px" }}>*.private.md</code>
+        </div>
+        <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+          <input
+            type="text"
+            value={newPattern}
+            onChange={(e) => setNewPattern(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addPattern()}
+            placeholder="e.g., journal/** or *.secret.md"
+            style={{
+              flex: 1,
+              padding: "8px 12px",
+              background: "var(--bg-dark)",
+              border: "1px solid var(--border)",
+              borderRadius: "6px",
+              color: "var(--text-primary)",
+              fontSize: "13px"
+            }}
+          />
+          <button
+            onClick={addPattern}
+            style={{
+              padding: "8px 16px",
+              background: "var(--accent)",
+              color: "white",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "13px",
+              fontWeight: 500
+            }}
+          >
+            Add
+          </button>
+        </div>
+        {policy.excludePatterns.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+            {policy.excludePatterns.map((pattern, idx) => (
+              <span
+                key={idx}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "4px 10px",
+                  background: "var(--bg-hover)",
+                  borderRadius: "4px",
+                  fontSize: "12px"
+                }}
+              >
+                <code>{pattern}</code>
+                <button
+                  onClick={() => removePattern(idx)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                    padding: "0",
+                    lineHeight: 1,
+                    fontSize: "14px"
+                  }}
+                  title="Remove pattern"
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Exclude Paths */}
+      <div>
+        <div style={{ fontSize: "13px", fontWeight: 500, marginBottom: "8px" }}>Exclude Folders</div>
+        <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "10px" }}>
+          Specific folder paths to exclude (relative to workspace root)
+        </div>
+        <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+          <input
+            type="text"
+            value={newPath}
+            onChange={(e) => setNewPath(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addPath()}
+            placeholder="e.g., private or drafts/personal"
+            style={{
+              flex: 1,
+              padding: "8px 12px",
+              background: "var(--bg-dark)",
+              border: "1px solid var(--border)",
+              borderRadius: "6px",
+              color: "var(--text-primary)",
+              fontSize: "13px"
+            }}
+          />
+          <button
+            onClick={addPath}
+            style={{
+              padding: "8px 16px",
+              background: "var(--accent)",
+              color: "white",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "13px",
+              fontWeight: 500
+            }}
+          >
+            Add
+          </button>
+        </div>
+        {policy.excludePaths.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+            {policy.excludePaths.map((path, idx) => (
+              <span
+                key={idx}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "4px 10px",
+                  background: "var(--bg-hover)",
+                  borderRadius: "4px",
+                  fontSize: "12px"
+                }}
+              >
+                <code>{path}</code>
+                <button
+                  onClick={() => removePath(idx)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                    padding: "0",
+                    lineHeight: 1,
+                    fontSize: "14px"
+                  }}
+                  title="Remove path"
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{
+        padding: "12px",
+        background: "var(--bg-hover)",
+        borderRadius: "6px",
+        fontSize: "11px",
+        color: "var(--text-muted)",
+        lineHeight: "1.5"
+      }}>
+        <strong>Note:</strong> Changes take effect immediately. Files excluded here will not be embedded
+        or appear in the Semantic Cloud. The embedding index will be updated on the next workspace scan.
+      </div>
+    </div>
+  );
 };
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -103,6 +328,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <line x1="7" y1="16" x2="17" y2="16" />
               </svg>
               Hotkeys
+            </button>
+            <button
+              className={`settings-tab-btn ${activeSettingsTab === "privacy" ? "active" : ""}`}
+              onClick={() => setActiveSettingsTab("privacy")}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+              Privacy
             </button>
           </div>
 
@@ -276,6 +511,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 </div>
               </>
+            )}
+
+            {activeSettingsTab === "privacy" && (
+              <PrivacySettings settings={settings} updateSettings={updateSettings} />
             )}
 
             {activeSettingsTab === "hotkeys" && (

@@ -20,8 +20,11 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "dompurify": "^3.4.11",
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "sigma": "^3.0.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
