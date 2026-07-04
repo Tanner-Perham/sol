@@ -1,4 +1,4 @@
-.PHONY: help install dev dev-frontend build build-frontend test test-rust lint lint-rust lint-frontend format clean
+.PHONY: help install dev dev-frontend build build-frontend run test test-rust lint lint-rust lint-frontend format clean
 
 # Default target when running just 'make'
 .DEFAULT_GOAL := help
@@ -16,6 +16,7 @@ help:
 	@echo "Build & Release Targets:"
 	@echo "  build           Build the Tauri application bundle (production release)"
 	@echo "  build-frontend  Build only the Vite frontend assets"
+	@echo "  run             Run the release build with WebKit workarounds"
 	@echo ""
   	@echo "Test & Quality Targets:"
 	@echo "  test            Run all checks and tests (Rust tests + frontend type check)"
@@ -41,6 +42,9 @@ dev-frontend:
 
 build:
 	NO_STRIP=1 npm run tauri build
+
+run:
+	WEBKIT_DISABLE_DMABUF_RENDERER=1 ./src-tauri/target/release/sol
 
 build-frontend:
 	npm run build

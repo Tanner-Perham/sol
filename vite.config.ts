@@ -29,4 +29,26 @@ export default defineConfig(() => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  // Production build optimizations
+  build: {
+    // Disable source maps in production for smaller bundles
+    sourcemap: false,
+    // Optimize chunk splitting for better caching
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          // Keep CodeMirror in its own chunk
+          if (id.includes("@codemirror/")) {
+            return "codemirror";
+          }
+          if (id.includes("react-dom") || id.includes("node_modules/react/")) {
+            return "react";
+          }
+        },
+      },
+    },
+    // Use default Oxc minification (Vite 8 default)
+    // Target modern browsers for smaller output
+    target: "esnext",
+  },
 }));
