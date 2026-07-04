@@ -160,10 +160,14 @@ fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Re
 }
 
 #[tauri::command]
-fn select_directory() -> Option<String> {
-    rfd::FileDialog::new()
+async fn select_directory() -> Option<String> {
+    rfd::AsyncFileDialog::new()
         .pick_folder()
-        .map(|p| std::fs::canonicalize(&p).unwrap_or(p).to_string_lossy().into_owned())
+        .await
+        .map(|p| {
+            let path = p.path().to_path_buf();
+            std::fs::canonicalize(&path).unwrap_or(path).to_string_lossy().into_owned()
+        })
 }
 
 #[tauri::command]
