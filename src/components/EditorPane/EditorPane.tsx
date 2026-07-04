@@ -29,6 +29,14 @@ export interface EditorPaneProps {
   onVimModeChange: (mode: string) => void;
 }
 
+interface SavedEditorState {
+  selection: any;
+  scrollTop: number;
+  scrollLeft: number;
+}
+
+const editorStates = new Map<string, SavedEditorState>();
+
 export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   paneId,
   activeFile,
@@ -48,7 +56,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const [content, setContent] = useState("");
+  const [fileData, setFileData] = useState<{ file: string; content: string } | null>(null);
   const [isLocalDirty, setIsLocalDirty] = useState(false);
 
   const { vimMode, livePreview, lineWrapping, theme } = settings;
@@ -77,33 +85,47 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     markdownFilesSetRef.current = markdownFilesSet;
   }, [markdownFilesSet]);
 
+  // Clear saved editor states when workspace path changes
+  useEffect(() => {
+    editorStates.clear();
+  }, [workspacePath]);
+
   // Load content when activeFile changes
   useEffect(() => {
     if (!activeFile) {
-      setContent("");
+      setFileData(null);
       setIsLocalDirty(false);
       registerState(paneId, false, 0);
       return;
     }
 
+    let active = true;
     const loadContent = async () => {
       try {
         const filePath = `${workspacePath}/${activeFile}`;
         const fileContent = await invoke<string>("read_markdown_file", { path: filePath });
-        setContent(fileContent);
+        if (!active) return;
+        setFileData({ file: activeFile, content: fileContent });
         setIsLocalDirty(false);
         const wCount = computeWordCount(fileContent);
         registerState(paneId, false, wCount);
       } catch (err) {
-        console.error("Failed to load pane file", err);
+        if (active) {
+          console.error("Failed to load pane file", err);
+        }
       }
     };
     loadContent();
+    return () => {
+      active = false;
+    };
   }, [activeFile, workspacePath, paneId]);
 
   // CodeMirror initialization & lifecycle
   useEffect(() => {
-    if (!containerRef.current || !activeFile) return;
+    if (!containerRef.current || !fileData) return;
+
+    const { file: loadedFile, content: loadedContent } = fileData;
 
     const extensions = [
       history(),
@@ -203,8 +225,19 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       extensions.push(prosePreviewCompartment.of(prosePreviewPlugin(workspacePath, markdownFilesSet)));
     }
 
+    const savedState = editorStates.get(loadedFile);
+    let selection = undefined;
+    if (savedState && savedState.selection) {
+      const maxPos = loadedContent.length;
+      const savedSel = savedState.selection;
+      if (savedSel.main && savedSel.main.to <= maxPos) {
+        selection = savedSel;
+      }
+    }
+
     const startState = EditorState.create({
-      doc: content,
+      doc: loadedContent,
+      selection,
       extensions
     });
 
@@ -216,7 +249,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     viewRef.current = view;
     registerView(paneId, view);
 
-    // Scroll to pending header if exists
+    // Scroll to pending header if exists, otherwise restore scroll position
     const pendingHeader = pendingHeadersRef.current.get(paneId);
     if (pendingHeader) {
       pendingHeadersRef.current.delete(paneId);
@@ -230,6 +263,16 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           });
         }
       }, 50);
+    } else if (savedState) {
+      const restoreScroll = () => {
+        if (view.scrollDOM) {
+          view.scrollDOM.scrollTop = savedState.scrollTop;
+          view.scrollDOM.scrollLeft = savedState.scrollLeft;
+        }
+      };
+      restoreScroll();
+      setTimeout(restoreScroll, 10);
+      setTimeout(restoreScroll, 50);
     }
 
     if (isActive) {
@@ -385,13 +428,20 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     }
 
     return () => {
+      if (loadedFile && view) {
+        const selection = view.state.selection;
+        const scrollTop = view.scrollDOM ? view.scrollDOM.scrollTop : 0;
+        const scrollLeft = view.scrollDOM ? view.scrollDOM.scrollLeft : 0;
+        editorStates.set(loadedFile, { selection, scrollTop, scrollLeft });
+      }
+
       view.dom.removeEventListener("paste", handlePaste, true);
       document.removeEventListener("keydown", handleDocumentKeyDown, true);
       view.destroy();
       viewRef.current = null;
       registerView(paneId, null);
     };
-  }, [activeFile, content, vimMode, livePreview, lineWrapping, theme, paneId, workspacePath]);
+  }, [fileData, vimMode, livePreview, lineWrapping, theme, paneId, workspacePath]);
 
   // Dynamic compartment update when file list changes
   useEffect(() => {
