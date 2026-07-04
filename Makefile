@@ -40,7 +40,7 @@ dev-frontend:
 	npm run dev
 
 build:
-	npm run tauri build
+	NO_STRIP=1 npm run tauri build
 
 build-frontend:
 	npm run build
