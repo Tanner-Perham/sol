@@ -182,8 +182,12 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ".cm-content": {
           caretColor: "var(--accent)",
         },
-        ".cm-cursor": {
+        ".cm-cursor:not(.cm-fat-cursor)": {
           borderLeftColor: "var(--accent) !important",
+        },
+        ".cm-fat-cursor": {
+          backgroundColor: "var(--accent) !important",
+          borderLeft: "none !important",
         },
         ".cm-activeLine": {
           backgroundColor: "transparent",
