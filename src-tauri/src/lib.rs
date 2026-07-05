@@ -6,13 +6,23 @@ use tauri::{Emitter, Manager};
 
 mod privacy;
 mod embedding;
+mod labels;
+mod tfidf;
+mod discovery;
+mod llm;
 
 use embedding::{EmbeddingIndex, EmbeddingStatus, SimilarNote};
+use labels::{AnchoredLabel, LabelStore};
+use discovery::{DiscoveryCandidate, DiscoveryEngine, DiscoveryState};
+use llm::{ModelStatus, ModelWithStatus, LlmConfig};
 
 struct WorkspaceState {
     path: Mutex<PathBuf>,
     watcher: Mutex<RecommendedWatcher>,
     embedding_index: Mutex<EmbeddingIndex>,
+    label_store: Mutex<LabelStore>,
+    discovery_state: Mutex<DiscoveryState>,
+    download_state: llm::download::SharedDownloadState,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -351,6 +361,337 @@ fn get_similar_to_note(
     Ok(results)
 }
 
+// ============================================================================
+// Label Commands
+// ============================================================================
+
+/// Get all anchored labels.
+#[tauri::command]
+fn get_labels(state: tauri::State<'_, WorkspaceState>) -> Vec<AnchoredLabel> {
+    let store = state.label_store.lock().unwrap();
+    store.get_labels()
+}
+
+/// Create a new anchored label.
+#[tauri::command]
+fn create_label(
+    name: String,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<AnchoredLabel, String> {
+    let mut store = state.label_store.lock().unwrap();
+    let mut index = state.embedding_index.lock().unwrap();
+
+    let label = store.create_label(&name, &mut index)?;
+
+    // Save the label store
+    let workspace = state.path.lock().unwrap();
+    let labels_path = workspace.join(".sol").join("labels.bin");
+    store.save(&labels_path)?;
+
+    Ok(label)
+}
+
+/// Rename an existing label.
+#[tauri::command]
+fn rename_label(
+    id: String,
+    new_name: String,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<AnchoredLabel, String> {
+    let mut store = state.label_store.lock().unwrap();
+    let mut index = state.embedding_index.lock().unwrap();
+
+    let label = store.rename_label(&id, &new_name, &mut index)?;
+
+    // Save the label store
+    let workspace = state.path.lock().unwrap();
+    let labels_path = workspace.join(".sol").join("labels.bin");
+    store.save(&labels_path)?;
+
+    Ok(label)
+}
+
+/// Delete a label.
+#[tauri::command]
+fn delete_label(
+    id: String,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<(), String> {
+    let mut store = state.label_store.lock().unwrap();
+    store.delete_label(&id)?;
+
+    // Save the label store
+    let workspace = state.path.lock().unwrap();
+    let labels_path = workspace.join(".sol").join("labels.bin");
+    store.save(&labels_path)?;
+
+    Ok(())
+}
+
+/// Get notes related to a specific label.
+#[tauri::command]
+fn get_label_notes(
+    label_id: String,
+    k: usize,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<Vec<SimilarNote>, String> {
+    let store = state.label_store.lock().unwrap();
+    let index = state.embedding_index.lock().unwrap();
+    store.get_related_notes(&label_id, &index, k)
+}
+
+// ============================================================================
+// Discovery Commands
+// ============================================================================
+
+/// Get discovery suggestions that have survived enough scans
+#[tauri::command]
+fn get_discovery_suggestions(
+    state: tauri::State<'_, WorkspaceState>
+) -> Vec<DiscoveryCandidate> {
+    let discovery = state.discovery_state.lock().unwrap();
+    DiscoveryEngine::get_surfaced_candidates(&discovery, 2) // Require 2+ scans
+}
+
+/// Trigger a discovery scan
+#[tauri::command]
+fn trigger_discovery_scan(
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<Vec<DiscoveryCandidate>, String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let index = state.embedding_index.lock().unwrap();
+    let labels = state.label_store.lock().unwrap();
+    let mut discovery = state.discovery_state.lock().unwrap();
+
+    // Read note contents for c-TF-IDF
+    let mut note_contents: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for path in index.indexed_paths() {
+        let full_path = workspace.join(&path);
+        if let Ok(content) = fs::read_to_string(&full_path) {
+            note_contents.insert(path, content);
+        }
+    }
+
+    // Run the scan
+    let candidates = DiscoveryEngine::run_scan(
+        &mut discovery,
+        &index,
+        &labels,
+        &note_contents,
+        5,    // num_clusters
+        0.5,  // residual_threshold
+    );
+
+    // Save discovery state
+    let discovery_path = workspace.join(".sol").join("discovery.bin");
+    discovery.save(&discovery_path)?;
+
+    Ok(candidates)
+}
+
+/// Accept a discovery suggestion and create a label from it
+#[tauri::command]
+fn accept_suggestion(
+    candidate_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<AnchoredLabel, String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let mut discovery = state.discovery_state.lock().unwrap();
+    let mut labels = state.label_store.lock().unwrap();
+    let mut index = state.embedding_index.lock().unwrap();
+
+    // Get and remove the candidate
+    let candidate = DiscoveryEngine::accept_candidate(&mut discovery, &candidate_id)
+        .ok_or_else(|| format!("Candidate not found: {}", candidate_id))?;
+
+    // Create a label from it
+    let label = labels.create_label(&candidate.suggested_name, &mut index)?;
+
+    // Save both stores
+    let labels_path = workspace.join(".sol").join("labels.bin");
+    labels.save(&labels_path)?;
+
+    let discovery_path = workspace.join(".sol").join("discovery.bin");
+    discovery.save(&discovery_path)?;
+
+    Ok(label)
+}
+
+/// Dismiss a discovery suggestion
+#[tauri::command]
+fn dismiss_suggestion(
+    candidate_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<bool, String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let mut discovery = state.discovery_state.lock().unwrap();
+
+    let removed = DiscoveryEngine::dismiss_candidate(&mut discovery, &candidate_id);
+
+    // Save discovery state
+    let discovery_path = workspace.join(".sol").join("discovery.bin");
+    discovery.save(&discovery_path)?;
+
+    Ok(removed)
+}
+
+// ============================================================================
+// LLM / Model Management Commands
+// ============================================================================
+
+/// Get list of available models with their status
+#[tauri::command]
+fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
+    let workspace = state.path.lock().unwrap().clone();
+    let config = LlmConfig::load(&workspace);
+
+    llm::registry::get_available_models()
+        .into_iter()
+        .map(|info| {
+            let is_downloaded = llm::is_model_downloaded(&workspace, &info.id);
+            let is_active = config.active_model_id.as_ref() == Some(&info.id);
+
+            let status = if is_active && is_downloaded {
+                ModelStatus::Active
+            } else if is_downloaded {
+                ModelStatus::Downloaded
+            } else {
+                ModelStatus::NotDownloaded
+            };
+
+            ModelWithStatus { info, status }
+        })
+        .collect()
+}
+
+/// Get the currently active model ID
+#[tauri::command]
+fn get_active_model(state: tauri::State<'_, WorkspaceState>) -> Option<String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let config = LlmConfig::load(&workspace);
+    config.active_model_id
+}
+
+/// Set the active model
+#[tauri::command]
+fn set_active_model(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<(), String> {
+    let workspace = state.path.lock().unwrap().clone();
+
+    if !llm::is_model_downloaded(&workspace, &model_id) {
+        return Err("Model not downloaded".to_string());
+    }
+
+    let mut config = LlmConfig::load(&workspace);
+    config.active_model_id = Some(model_id);
+    config.save(&workspace)
+}
+
+/// Start downloading a model
+#[tauri::command]
+fn start_model_download(
+    model_id: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<(), String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let download_state = state.download_state.clone();
+
+    // Spawn download in background thread
+    std::thread::spawn(move || {
+        let result = llm::download::download_model(&workspace, &model_id, &app, &download_state);
+        if let Err(e) = result {
+            let _ = app.emit("model-download-progress", llm::download::DownloadProgress {
+                model_id: model_id.clone(),
+                file_name: "".to_string(),
+                file_index: 0,
+                total_files: 0,
+                bytes_downloaded: 0,
+                total_bytes: 0,
+                status: "error".to_string(),
+                error: Some(e),
+            });
+        }
+    });
+
+    Ok(())
+}
+
+/// Pause a model download
+#[tauri::command]
+fn pause_model_download(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) {
+    llm::download::pause_download(&model_id, &state.download_state);
+}
+
+/// Resume a model download
+#[tauri::command]
+fn resume_model_download(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) {
+    llm::download::resume_download(&model_id, &state.download_state);
+}
+
+/// Cancel a model download
+#[tauri::command]
+fn cancel_model_download(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) {
+    llm::download::cancel_download(&model_id, &state.download_state);
+}
+
+/// Delete a downloaded model
+#[tauri::command]
+fn delete_model(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<(), String> {
+    let workspace = state.path.lock().unwrap().clone();
+
+    // If this was the active model, clear it
+    let mut config = LlmConfig::load(&workspace);
+    if config.active_model_id.as_ref() == Some(&model_id) {
+        config.active_model_id = None;
+        config.save(&workspace)?;
+    }
+
+    llm::download::delete_model(&workspace, &model_id)
+}
+
+/// Generate a topic name using the active LLM
+#[tauri::command]
+fn generate_topic_name(
+    note_snippets: Vec<String>,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<String, String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let config = LlmConfig::load(&workspace);
+
+    let model_id = config.active_model_id
+        .ok_or("No model selected")?;
+
+    llm::inference::generate_topic_name(&workspace, &model_id, &note_snippets)
+}
+
+/// Check if a model is ready (downloaded and can be selected)
+#[tauri::command]
+fn is_model_ready(state: tauri::State<'_, WorkspaceState>) -> bool {
+    let workspace = state.path.lock().unwrap().clone();
+    let config = LlmConfig::load(&workspace);
+
+    if let Some(model_id) = config.active_model_id {
+        llm::is_model_downloaded(&workspace, &model_id)
+    } else {
+        false
+    }
+}
+
 #[tauri::command]
 fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
     let workspace = state.path.lock().unwrap();
@@ -436,10 +777,24 @@ pub fn run() {
             let index_path = default_path.join(".sol").join("embedding_index.bin");
             let embedding_index = EmbeddingIndex::load(&index_path).unwrap_or_default();
 
+            // Load or create the label store
+            let labels_path = default_path.join(".sol").join("labels.bin");
+            let label_store = LabelStore::load(&labels_path).unwrap_or_default();
+
+            // Load or create the discovery state
+            let discovery_path = default_path.join(".sol").join("discovery.bin");
+            let discovery_state = DiscoveryState::load(&discovery_path).unwrap_or_default();
+
+            // Create download state for LLM model downloads
+            let download_state = llm::download::new_download_state();
+
             app.manage(WorkspaceState {
                 path: Mutex::new(default_path),
                 watcher: Mutex::new(watcher),
                 embedding_index: Mutex::new(embedding_index),
+                label_store: Mutex::new(label_store),
+                discovery_state: Mutex::new(discovery_state),
+                download_state,
             });
             Ok(())
         })
@@ -458,6 +813,28 @@ pub fn run() {
             rebuild_embedding_index,
             update_embedding_index,
             get_similar_to_note,
+            // Label commands
+            get_labels,
+            create_label,
+            rename_label,
+            delete_label,
+            get_label_notes,
+            // Discovery commands
+            get_discovery_suggestions,
+            trigger_discovery_scan,
+            accept_suggestion,
+            dismiss_suggestion,
+            // LLM commands
+            get_models,
+            get_active_model,
+            set_active_model,
+            start_model_download,
+            pause_model_download,
+            resume_model_download,
+            cancel_model_download,
+            delete_model,
+            generate_topic_name,
+            is_model_ready,
             // File/directory commands
             create_directory,
             select_directory,

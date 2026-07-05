@@ -1,6 +1,12 @@
 import React from "react";
 import { AppSettings } from "../types";
 
+export interface EmbeddingStatusInfo {
+  indexedCount: number;
+  isReady: boolean;
+  isIndexing?: boolean;
+}
+
 export interface StatusBarProps {
   activeFile: string | null;
   isDirty: boolean;
@@ -8,6 +14,8 @@ export interface StatusBarProps {
   vimMode: boolean;
   vimModeName: string;
   wordCount: number;
+  viewMode: "editor" | "cloud";
+  embeddingStatus?: EmbeddingStatusInfo;
   updateSettings: (newSettings: Partial<AppSettings>) => Promise<void>;
 }
 
@@ -18,13 +26,28 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   vimMode,
   vimModeName,
   wordCount,
+  viewMode,
+  embeddingStatus,
   updateSettings
 }) => {
   return (
     <footer className="app-status-bar">
       <div className="status-section">
-        <span className="status-filename">{activeFile || "No file open"}</span>
-        {isDirty && <span className="status-dirty-dot" title="Unsaved changes" />}
+        {viewMode === "editor" ? (
+          <>
+            <span className="status-filename">{activeFile || "No file open"}</span>
+            {isDirty && <span className="status-dirty-dot" title="Unsaved changes" />}
+          </>
+        ) : (
+          <>
+            <span className="status-filename">Semantic Cloud</span>
+            {embeddingStatus && (
+              <span className="status-embedding" title="Embedding index status">
+                {embeddingStatus.isIndexing ? "Indexing..." : `${embeddingStatus.indexedCount} notes`}
+              </span>
+            )}
+          </>
+        )}
       </div>
       {prefixActive && (
         <div className="status-section" style={{ animation: "pulse 1s infinite" }}>

@@ -1,8 +1,9 @@
 import React, { useState } from "react";
 import { AppSettings, Keybindings, AccessPolicy } from "../types";
 import { DEFAULT_KEYBINDINGS } from "../constants";
+import { ModelSettings } from "./ModelSettings";
 
-export type SettingsTabType = "general" | "appearance" | "hotkeys" | "privacy";
+export type SettingsTabType = "general" | "appearance" | "hotkeys" | "privacy" | "models";
 
 export interface SettingsModalProps {
   showSettingsModal: boolean;
@@ -339,6 +340,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </svg>
               Privacy
             </button>
+            <button
+              className={`settings-tab-btn ${activeSettingsTab === "models" ? "active" : ""}`}
+              onClick={() => setActiveSettingsTab("models")}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                <path d="M2 17l10 5 10-5" />
+                <path d="M2 12l10 5 10-5" />
+              </svg>
+              AI Models
+            </button>
           </div>
 
           {/* Right Content Area */}
@@ -515,6 +527,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             {activeSettingsTab === "privacy" && (
               <PrivacySettings settings={settings} updateSettings={updateSettings} />
+            )}
+
+            {activeSettingsTab === "models" && (
+              <ModelSettings />
             )}
 
             {activeSettingsTab === "hotkeys" && (

@@ -16,7 +16,7 @@ import { computeWordCount, findHeaderLine } from "./utils/editorUtils";
 // Components
 import { Sidebar, VisibleItem } from "./components/Sidebar";
 import { SettingsModal, SettingsTabType } from "./components/SettingsModal";
-import { StatusBar } from "./components/StatusBar";
+import { StatusBar, EmbeddingStatusInfo } from "./components/StatusBar";
 import { EditorPaneComponent } from "./components/EditorPane/EditorPane";
 
 // Lazy load SemanticCloud to avoid loading heavy dependencies when not needed
@@ -32,6 +32,7 @@ function App() {
   const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabType>("general");
   const [recordingHotkey, setRecordingHotkey] = useState<keyof Keybindings | null>(null);
   const [viewMode, setViewMode] = useState<"editor" | "cloud">("editor");
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatusInfo | undefined>(undefined);
 
   const [creatingNode, setCreatingNode] = useState<{ type: "file" | "dir"; parentPath: string } | null>(null);
   const [newInputName, setNewInputName] = useState("");
@@ -581,6 +582,53 @@ function App() {
     };
   }, [triggerTreeReload]);
 
+  // Listen for open-settings event from other components (e.g., SemanticCloud model prompt)
+  useEffect(() => {
+    const handleOpenSettings = (e: Event) => {
+      const customEvent = e as CustomEvent<{ tab?: SettingsTabType }>;
+      setShowSettingsModal(true);
+      if (customEvent.detail?.tab) {
+        setActiveSettingsTab(customEvent.detail.tab);
+      }
+    };
+    window.addEventListener("open-settings", handleOpenSettings);
+    return () => window.removeEventListener("open-settings", handleOpenSettings);
+  }, []);
+
+  // Fetch embedding status when entering cloud mode and listen for progress
+  useEffect(() => {
+    if (viewMode !== "cloud") return;
+
+    // Fetch initial status
+    const fetchStatus = async () => {
+      try {
+        const status = await invoke<{ indexed_count: number; is_ready: boolean }>("get_embedding_status");
+        setEmbeddingStatus({
+          indexedCount: status.indexed_count,
+          isReady: status.is_ready,
+          isIndexing: false,
+        });
+      } catch (err) {
+        console.error("Failed to fetch embedding status", err);
+      }
+    };
+    fetchStatus();
+
+    // Listen for progress events
+    const unlisten = listen<{ current: number; total: number; phase: string }>("embedding-progress", (event) => {
+      const { phase, current, total } = event.payload;
+      if (phase === "complete") {
+        setEmbeddingStatus(prev => prev ? { ...prev, isIndexing: false, indexedCount: total } : prev);
+      } else if (phase === "embedding" || phase === "initializing" || phase === "saving") {
+        setEmbeddingStatus(prev => prev ? { ...prev, isIndexing: true } : { indexedCount: current, isReady: false, isIndexing: true });
+      }
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [viewMode]);
+
   // Save the current file
   const saveFile = useCallback(async () => {
     if (!activePaneId) return;
@@ -1043,6 +1091,13 @@ function App() {
         return;
       }
 
+      // Ctrl+G to toggle Semantic Cloud view
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        setViewMode(prev => prev === "editor" ? "cloud" : "editor");
+        return;
+      }
+
       // Ctrl+H (or Ctrl+Shift+H/Tab) to focus sidebar / editor
       if (matchKeybinding(e, keybindings.toggleFocus) && !isEditing) {
         e.preventDefault();
@@ -1413,6 +1468,8 @@ function App() {
         vimMode={settings.vimMode}
         vimModeName={vimModeName}
         wordCount={wordCount}
+        viewMode={viewMode}
+        embeddingStatus={embeddingStatus}
         updateSettings={updateSettings}
       />
 
