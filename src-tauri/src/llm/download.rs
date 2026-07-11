@@ -88,6 +88,8 @@ pub fn download_model(
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("sol-app/0.1")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(None)
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
