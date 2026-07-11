@@ -26,7 +26,7 @@ struct WorkspaceState {
     policy_engine: Mutex<Option<policy::PolicyEngine>>,
 }
 
-fn is_ai_allowed(state: &WorkspaceState, workspace: &Path, note_path: &Path) -> bool {
+pub(crate) fn is_ai_allowed(state: &WorkspaceState, workspace: &Path, note_path: &Path) -> bool {
     let mut policy_lock = state.policy_engine.lock().unwrap();
     if policy_lock.is_none() {
         *policy_lock = Some(policy::PolicyEngine::new(workspace.to_path_buf()));
@@ -213,7 +213,7 @@ fn build_tree_rec(
     Ok(nodes)
 }
 
-fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<PathBuf, String> {
     let user_path = Path::new(user_path);
     if user_path.is_absolute() {
         return Err("Absolute paths are not allowed".to_string());
@@ -733,7 +733,8 @@ fn is_model_ready(state: tauri::State<'_, WorkspaceState>) -> bool {
 #[derive(serde::Deserialize, Clone)]
 struct CompletionParams {
     path: String,
-    prompt: String,
+    text: String,
+    cursor_offset: usize,
     max_tokens: usize,
     temperature: Option<f64>,
     top_p: Option<f64>,
@@ -769,7 +770,7 @@ async fn generate_completion(
     };
 
     // 2. Resolve workspace and completion model ID, checking privacy rules first
-    let (workspace, model_id) = {
+    let (workspace, model_id, prompt) = {
         let path_lock = lock!(state.path);
         let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
         
@@ -783,7 +784,9 @@ async fn generate_completion(
         let model_id = config.completion_model_id
             .or(config.active_model_id)
             .ok_or_else(|| "No model selected for completion".to_string())?;
-        (workspace, model_id)
+
+        let prompt = llm::context::assemble_context(&workspace, &resolved, &params.text, params.cursor_offset, &state);
+        (workspace, model_id, prompt)
     };
 
     // 3. Spawn blocking generation task off the main IPC thread
@@ -807,7 +810,7 @@ async fn generate_completion(
         let channel_clone = channel.clone();
 
         model.generate_stream(
-            &params.prompt,
+            &prompt,
             params.max_tokens,
             params.temperature,
             params.top_p,

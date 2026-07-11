@@ -26,6 +26,7 @@ notify = "6.1.1"
 rfd = "0.14"
 sha2 = "0.10"
 ignore = "0.4"
+regex = "1"
 
 # LLM inference with Candle
 candle-core = "0.8"

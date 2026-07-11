@@ -1,6 +1,7 @@
 pub mod download;
 pub mod inference;
 pub mod registry;
+pub mod context;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
