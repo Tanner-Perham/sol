@@ -4,9 +4,13 @@ use std::sync::Mutex;
 use notify::{Watcher, RecommendedWatcher, RecursiveMode};
 use tauri::{Emitter, Manager};
 
+mod llm;
+use llm::{ModelStatus, ModelWithStatus, LlmConfig};
+
 struct WorkspaceState {
     path: Mutex<PathBuf>,
     watcher: Mutex<RecommendedWatcher>,
+    download_state: llm::download::SharedDownloadState,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -215,6 +219,164 @@ fn write_settings(settings_json: String, state: tauri::State<'_, WorkspaceState>
     fs::write(&settings_file, settings_json).map_err(|e| e.to_string())
 }
 
+// ============================================================================
+// LLM / Model Management Commands
+// ============================================================================
+
+/// Get list of available models with their status
+#[tauri::command]
+fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
+    let workspace = state.path.lock().unwrap().clone();
+    let config = LlmConfig::load(&workspace);
+
+    llm::registry::get_available_models()
+        .into_iter()
+        .map(|info| {
+            let is_downloaded = llm::is_model_downloaded(&workspace, &info.id);
+            let is_active = config.active_model_id.as_ref() == Some(&info.id);
+
+            let status = if is_active && is_downloaded {
+                ModelStatus::Active
+            } else if is_downloaded {
+                ModelStatus::Downloaded
+            } else {
+                ModelStatus::NotDownloaded
+            };
+
+            ModelWithStatus { info, status }
+        })
+        .collect()
+}
+
+/// Get the currently active model ID
+#[tauri::command]
+fn get_active_model(state: tauri::State<'_, WorkspaceState>) -> Option<String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let config = LlmConfig::load(&workspace);
+    config.active_model_id
+}
+
+/// Set the active model
+#[tauri::command]
+fn set_active_model(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<(), String> {
+    let workspace = state.path.lock().unwrap().clone();
+
+    if !llm::is_model_downloaded(&workspace, &model_id) {
+        return Err("Model not downloaded".to_string());
+    }
+
+    let mut config = LlmConfig::load(&workspace);
+    config.active_model_id = Some(model_id);
+    config.save(&workspace)
+}
+
+/// Start downloading a model
+#[tauri::command]
+fn start_model_download(
+    model_id: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<(), String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let download_state = state.download_state.clone();
+
+    // Spawn download in background thread
+    std::thread::spawn(move || {
+        let result = llm::download::download_model(&workspace, &model_id, &app, &download_state);
+        if let Err(e) = result {
+            let _ = app.emit("model-download-progress", llm::download::DownloadProgress {
+                model_id: model_id.clone(),
+                file_name: "".to_string(),
+                file_index: 0,
+                total_files: 0,
+                bytes_downloaded: 0,
+                total_bytes: 0,
+                status: "error".to_string(),
+                error: Some(e),
+            });
+        }
+    });
+
+    Ok(())
+}
+
+/// Pause a model download
+#[tauri::command]
+fn pause_model_download(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) {
+    llm::download::pause_download(&model_id, &state.download_state);
+}
+
+/// Resume a model download
+#[tauri::command]
+fn resume_model_download(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) {
+    llm::download::resume_download(&model_id, &state.download_state);
+}
+
+/// Cancel a model download
+#[tauri::command]
+fn cancel_model_download(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) {
+    llm::download::cancel_download(&model_id, &state.download_state);
+}
+
+/// Delete a downloaded model
+#[tauri::command]
+fn delete_model(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<(), String> {
+    let workspace = state.path.lock().unwrap().clone();
+
+    // If this was the active model, clear it
+    let mut config = LlmConfig::load(&workspace);
+    if config.active_model_id.as_ref() == Some(&model_id) {
+        config.active_model_id = None;
+        config.save(&workspace)?;
+    }
+
+    llm::download::delete_model(&workspace, &model_id)
+}
+
+/// Generate a topic name using the active LLM
+#[tauri::command]
+fn generate_topic_name(
+    note_snippets: Vec<String>,
+    state: tauri::State<'_, WorkspaceState>
+) -> Result<String, String> {
+    let workspace = state.path.lock().unwrap().clone();
+    let config = LlmConfig::load(&workspace);
+
+    let model_id = config.active_model_id
+        .ok_or("No model selected")?;
+
+    llm::inference::generate_topic_name(&workspace, &model_id, &note_snippets)
+}
+
+/// Check if a model is ready (downloaded and can be selected)
+#[tauri::command]
+fn is_model_ready(state: tauri::State<'_, WorkspaceState>) -> bool {
+    let workspace = state.path.lock().unwrap().clone();
+    let config = LlmConfig::load(&workspace);
+
+    if let Some(model_id) = config.active_model_id {
+        llm::is_model_downloaded(&workspace, &model_id)
+    } else {
+        false
+    }
+}
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -229,9 +391,14 @@ pub fn run() {
 
             let default_path = std::fs::canonicalize("..").unwrap_or_else(|_| PathBuf::from(".."));
             watcher.watch(&default_path, RecursiveMode::Recursive).map_err(|e| e.to_string())?;
+
+            // Create download state for LLM model downloads
+            let download_state = llm::download::new_download_state();
+
             app.manage(WorkspaceState {
                 path: Mutex::new(default_path),
                 watcher: Mutex::new(watcher),
+                download_state,
             });
             Ok(())
         })
@@ -247,7 +414,18 @@ pub fn run() {
             select_directory,
             set_workspace_path,
             read_settings,
-            write_settings
+            write_settings,
+            // LLM commands
+            get_models,
+            get_active_model,
+            set_active_model,
+            start_model_download,
+            pause_model_download,
+            resume_model_download,
+            cancel_model_download,
+            delete_model,
+            generate_topic_name,
+            is_model_ready
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

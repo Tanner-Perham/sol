@@ -15,7 +15,7 @@ import { computeWordCount, findHeaderLine } from "./utils/editorUtils";
 
 // Components
 import { Sidebar, VisibleItem } from "./components/Sidebar";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsModal, SettingsTabType } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
 import { EditorPaneComponent } from "./components/EditorPane/EditorPane";
 
@@ -26,7 +26,7 @@ function App() {
   
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"general" | "appearance" | "hotkeys">("general");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabType>("general");
   const [recordingHotkey, setRecordingHotkey] = useState<keyof Keybindings | null>(null);
 
   const [creatingNode, setCreatingNode] = useState<{ type: "file" | "dir"; parentPath: string } | null>(null);
