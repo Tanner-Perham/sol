@@ -9,6 +9,7 @@ import {
 import { RangeSetBuilder } from "@codemirror/state";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCM } from "@replit/codemirror-vim";
+import { syntaxTree } from "@codemirror/language";
 
 // --- Helpers ---
 function isAbsolute(path: string): boolean {
@@ -93,6 +94,9 @@ class ImageWidget extends WidgetType {
   ignoreEvent(): boolean {
     return true;
   }
+  eq(other: ImageWidget): boolean {
+    return this.url === other.url && this.alt === other.alt;
+  }
 }
 
 class TableRowWidget extends WidgetType {
@@ -112,6 +116,11 @@ class TableRowWidget extends WidgetType {
   }
   ignoreEvent(): boolean {
     return true;
+  }
+  eq(other: TableRowWidget): boolean {
+    if (this.isHeader !== other.isHeader) return false;
+    if (this.cells.length !== other.cells.length) return false;
+    return this.cells.every((cell, i) => cell === other.cells[i]);
   }
 }
 
@@ -143,7 +152,7 @@ function rangeIntersectsSelection(from: number, to: number, selection: any): boo
   return false;
 }
 
-function collectInlineMarks(
+function collectWikiMarks(
   lineFrom: number,
   text: string,
   workspacePath: string,
@@ -167,18 +176,15 @@ function collectInlineMarks(
 
     const isCursorInside = isLineRaw && rangeIntersectsSelection(s + 2, e - 2, selection);
 
-    // Hide opening brackets if cursor is not inside the raw link
     if (!isCursorInside) {
       marks.push({ from: s, to: s + 2, dec: REPLACE });
     }
 
-    // Hide the linkTarget and '|' if cursor is not inside AND there is an alias
     if (!isCursorInside && parts.length > 1) {
       const aliasOffset = targetRaw.indexOf("|");
       marks.push({ from: s + 2, to: s + 2 + aliasOffset + 1, dec: REPLACE });
     }
 
-    // Check if target note exists in workspace
     const cleanName = linkTarget.split("#")[0].trim();
     const isLocalHeader = cleanName === "";
     const targetFileName = (cleanName.toLowerCase().endsWith(".md") ? cleanName : `${cleanName}.md`).toLowerCase();
@@ -188,7 +194,6 @@ function collectInlineMarks(
       ? "cm-prose-link cm-prose-note-link"
       : "cm-prose-link cm-prose-note-link broken";
 
-    // Style the display text as the link
     const displayStart = parts.length > 1 ? s + 2 + targetRaw.indexOf("|") + 1 : s + 2;
     marks.push({
       from: displayStart,
@@ -199,42 +204,13 @@ function collectInlineMarks(
       })
     });
 
-    // Hide closing brackets if cursor is not inside the raw link
     if (!isCursorInside) {
       marks.push({ from: displayStart + displayText.length, to: e, dec: REPLACE });
     }
   }
 
-  // 2. Regular Links: [Text](URL) (ignore if preceded by !)
-  const linkRe = /(?<!\!)\[([^\]\n]+)\]\(([^)\n]+)\)/g;
-  while ((m = linkRe.exec(text)) !== null) {
-    const s = lineFrom + m.index;
-    const e = s + m[0].length;
-    const linkText = m[1];
-    const url = m[2];
-
-    const isCursorInside = isLineRaw && rangeIntersectsSelection(s + 1, s + 1 + linkText.length, selection);
-
-    if (!isCursorInside) {
-      marks.push({ from: s, to: s + 1, dec: REPLACE });
-    }
-    marks.push({
-      from: s + 1,
-      to: s + 1 + linkText.length,
-      dec: Decoration.mark({
-        class: "cm-prose-link",
-        attributes: { href: url, target: "_blank", title: url }
-      })
-    });
-    if (!isCursorInside) {
-      marks.push({ from: s + 1 + linkText.length, to: e, dec: REPLACE });
-    }
-  }
-
-  // Under raw lines, only links (Wiki Links & Regular Links) can be rendered if not focused.
-  // Bold, italic, inline code, strike-through, images, etc. should not be rendered if the line contains selection cursor.
+  // 2. Wiki Images: ![[ImageName.png]]
   if (!isLineRaw) {
-    // 3. Wiki Images: ![[ImageName.png]]
     const wikiImageRe = /!\[\[([^\]\n]+)\]\]/g;
     while ((m = wikiImageRe.exec(text)) !== null) {
       const s = lineFrom + m.index;
@@ -247,166 +223,30 @@ function collectInlineMarks(
         dec: Decoration.replace({ widget: new ImageWidget(resolvedUrl, imgPath) })
       });
     }
-
-    // 4. Images: ![Alt](URL)
-    const imageRe = /!\[([^\]\n]*)\]\(([^)\n]+)\)/g;
-    while ((m = imageRe.exec(text)) !== null) {
-      const s = lineFrom + m.index;
-      const e = s + m[0].length;
-      const resolvedUrl = resolveUrl(m[2], workspacePath);
-      marks.push({
-        from: s,
-        to: e,
-        dec: Decoration.replace({ widget: new ImageWidget(resolvedUrl, m[1]) })
-      });
-    }
-
-    // 5. Inline Code: `code`
-    const codeRe = /`([^`\n]+)`/g;
-    while ((m = codeRe.exec(text)) !== null) {
-      const s = lineFrom + m.index;
-      const e = s + m[0].length;
-      const codeText = m[1];
-
-      marks.push({ from: s, to: s + 1, dec: REPLACE });
-      marks.push({
-        from: s + 1,
-        to: s + 1 + codeText.length,
-        dec: Decoration.mark({ class: "cm-prose-inline-code" })
-      });
-      marks.push({ from: e - 1, to: e, dec: REPLACE });
-    }
-
-    // 6. Bold: **text**
-    const boldRe = /\*\*([^*\n]+)\*\*/g;
-    while ((m = boldRe.exec(text)) !== null) {
-      const s = lineFrom + m.index;
-      const e = s + m[0].length;
-      marks.push({ from: s, to: s + 2, dec: REPLACE });
-      marks.push({ from: s + 2, to: e - 2, dec: BOLD });
-      marks.push({ from: e - 2, to: e, dec: REPLACE });
-    }
-
-    // 7. Italic: *text*
-    const italicStarRe = /(?<!\*)\*([^*\n]+)\*(?!\*)/g;
-    while ((m = italicStarRe.exec(text)) !== null) {
-      const s = lineFrom + m.index;
-      const e = s + m[0].length;
-      marks.push({ from: s, to: s + 1, dec: REPLACE });
-      marks.push({ from: s + 1, to: e - 1, dec: ITALIC });
-      marks.push({ from: e - 1, to: e, dec: REPLACE });
-    }
-
-    // 8. Italic: _text_
-    const italicUnderRe = /(?<!_)_([^_\n]+)_(?!_)/g;
-    while ((m = italicUnderRe.exec(text)) !== null) {
-      const s = lineFrom + m.index;
-      const e = s + m[0].length;
-      marks.push({ from: s, to: s + 1, dec: REPLACE });
-      marks.push({ from: s + 1, to: e - 1, dec: ITALIC });
-      marks.push({ from: e - 1, to: e, dec: REPLACE });
-    }
-
-    // 9. Plain URLs: https://www.sigmajs.org/ (ignore if preceded by '(' or '[' or '"')
-    const plainUrlRe = /(?<![\(\["])(https?:\/\/[^\s\n\)]+)/g;
-    while ((m = plainUrlRe.exec(text)) !== null) {
-      const s = lineFrom + m.index;
-      const e = s + m[0].length;
-      const url = m[1];
-      marks.push({
-        from: s,
-        to: e,
-        dec: Decoration.mark({
-          class: "cm-prose-link",
-          attributes: { href: url, target: "_blank", title: url }
-        })
-      });
-    }
-
-    // 10. Strike Through: ~~text~~
-    const strikeRe = /~~([^~\n]+)~~/g;
-    while ((m = strikeRe.exec(text)) !== null) {
-      const s = lineFrom + m.index;
-      const e = s + m[0].length;
-      marks.push({ from: s, to: s + 2, dec: REPLACE });
-      marks.push({
-        from: s + 2,
-        to: e - 2,
-        dec: Decoration.mark({ class: "cm-prose-strike" })
-      });
-      marks.push({ from: e - 2, to: e, dec: REPLACE });
-    }
   }
 
-  // Sort and filter out overlapping ranges to prevent CodeMirror RangeSetBuilder crashes
-  marks.sort((a, b) => a.from - b.from || a.to - b.to);
-
-  const nonOverlapping: Mark[] = [];
-  let lastEnd = -1;
-  for (const mark of marks) {
-    if (mark.from >= lastEnd) {
-      nonOverlapping.push(mark);
-      lastEnd = mark.to;
-    }
-  }
-
-  return nonOverlapping;
+  return marks;
 }
 
 // --- Main builder ---
 
+interface DecSpec {
+  from: number;
+  to: number;
+  dec: Decoration;
+  category: number; // 1: Line, 2: Replace, 3: Mark
+}
+
 function buildDecorations(view: EditorView, workspacePath: string, markdownFiles: Set<string>): DecorationSet {
-  const builder = new RangeSetBuilder<Decoration>();
-
-  const lowercaseFiles = new Set(
-    Array.from(markdownFiles).map((f) => f.toLowerCase())
-  );
-
-  // Document scan to pre-calculate block levels (Code blocks and Tables)
-  const doc = view.state.doc;
-  const codeBlockLines = new Set<number>();
-  const codeDelimiterLines = new Set<number>();
-  const codeFirstLines = new Set<number>();
-  const codeLastLines = new Set<number>();
-  const tableLines = new Set<number>();
-  const tableSeparatorLines = new Set<number>();
-
-  let inCode = false;
-  let codeStartLine = -1;
-  for (let i = 1; i <= doc.lines; i++) {
-    const text = doc.line(i).text;
-    const trimmed = text.trim();
-    if (trimmed.startsWith("```")) {
-      if (!inCode) {
-        inCode = true;
-        codeStartLine = i + 1;
-      } else {
-        inCode = false;
-        codeLastLines.add(i - 1);
-      }
-      codeDelimiterLines.add(i);
-      codeBlockLines.add(i);
-    } else if (inCode) {
-      codeBlockLines.add(i);
-      if (i === codeStartLine) {
-        codeFirstLines.add(i);
-      }
-    } else {
-      if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
-        if (/^\s*\|?\s*(:?-+:?\s*\|?\s*)+$/.test(trimmed)) {
-          tableSeparatorLines.add(i);
-        } else {
-          tableLines.add(i);
-        }
-      }
-    }
-  }
+  const state = view.state;
+  const tree = syntaxTree(state);
+  const lowercaseFiles = new Set(Array.from(markdownFiles).map((f) => f.toLowerCase()));
 
   // Lines containing selection head — show raw markdown on these
   const cursorLines = new Set<number>();
-  for (const range of view.state.selection.ranges) {
-    const from = view.state.doc.lineAt(range.from).number;
-    const to = view.state.doc.lineAt(range.to).number;
+  for (const range of state.selection.ranges) {
+    const from = state.doc.lineAt(range.from).number;
+    const to = state.doc.lineAt(range.to).number;
     for (let n = from; n <= to; n++) cursorLines.add(n);
   }
 
@@ -416,185 +256,348 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
   if (vimState?.visualBlock && vimState?.sel) {
     const anchor = vimState.sel.anchor;
     const head = vimState.sel.head;
-    const startLine = Math.min(anchor.line, head.line) + 1; // vim uses 0-indexed
+    const startLine = Math.min(anchor.line, head.line) + 1;
     const endLine = Math.max(anchor.line, head.line) + 1;
     for (let n = startLine; n <= endLine; n++) {
       cursorLines.add(n);
     }
   }
 
-  for (const { from, to } of view.visibleRanges) {
-    let pos = view.state.doc.lineAt(from).from;
+  const collected: DecSpec[] = [];
 
-    while (pos <= to) {
-      const line = view.state.doc.lineAt(pos);
-      const text = line.text;
-      const raw = cursorLines.has(line.number);
+  // Iterate over visible ranges for maximum performance
+  for (const { from: rangeFrom, to: rangeTo } of view.visibleRanges) {
+    tree.iterate({
+      from: rangeFrom,
+      to: rangeTo,
+      enter(nodeRef) {
+        const node = nodeRef.node;
+        const from = node.from;
+        const to = node.to;
+        const name = node.name;
 
-      // 1. Code Block Delimiter
-      if (codeDelimiterLines.has(line.number)) {
-        if (!raw) {
-          builder.add(line.from, line.to, REPLACE);
-        } else {
-          builder.add(line.from, line.from, lineClass("cm-prose-code-delimiter"));
+        // Skip document root node
+        if (name === "Document") return;
+
+        // Check if node intersects cursor/raw lines
+        const nodeStartLine = state.doc.lineAt(from).number;
+        const nodeEndLine = state.doc.lineAt(to).number;
+        let isRaw = false;
+        for (let n = nodeStartLine; n <= nodeEndLine; n++) {
+          if (cursorLines.has(n)) {
+            isRaw = true;
+            break;
+          }
         }
-        pos = line.to + 1;
-        continue;
-      }
 
-      // 2. Inside Code Block
-      if (codeBlockLines.has(line.number)) {
-        let cls = "cm-prose-code-line";
-        const attrs: Record<string, string> = {};
-        if (codeFirstLines.has(line.number)) {
-          cls += " first";
-          const openingLineNum = line.number - 1;
-          if (openingLineNum >= 1) {
-            const openingText = view.state.doc.line(openingLineNum).text.trim();
-            const lang = openingText.slice(3).trim();
-            if (lang) {
-              attrs["data-lang"] = lang.toUpperCase();
+        // 1. Headings
+        if (name.startsWith("ATXHeading") || name.startsWith("SetextHeading")) {
+          let level = 1;
+          const levelMatch = /Heading(\d)/.exec(name);
+          if (levelMatch) {
+            level = parseInt(levelMatch[1], 10);
+          }
+          const lineStart = state.doc.lineAt(from).from;
+          collected.push({ from: lineStart, to: lineStart, dec: lineClass(`cm-prose-h${level}`), category: 1 });
+
+          if (!isRaw && name.startsWith("ATXHeading")) {
+            // Find HeaderMark (the "#" signs) and hide it along with the space
+            let firstChild = node.firstChild;
+            if (firstChild && firstChild.name === "HeaderMark") {
+              collected.push({ from: firstChild.from, to: Math.min(firstChild.to + 1, to), dec: REPLACE, category: 2 });
             }
           }
         }
-        if (codeLastLines.has(line.number)) cls += " last";
-        builder.add(line.from, line.from, lineClass(cls, attrs));
-        if (text.length === 0) {
-          builder.add(
-            line.from,
-            line.from,
-            Decoration.widget({
-              widget: new EmptyLineSpacerWidget(),
-              side: 1
-            })
-          );
+
+        // 2. Fenced Code Blocks
+        else if (name === "FencedCode") {
+          const startLineNum = state.doc.lineAt(from).number;
+          const endLineNum = state.doc.lineAt(to).number;
+
+          // Delimiter lines
+          const startLine = state.doc.line(startLineNum);
+          const endLine = state.doc.line(endLineNum);
+
+          if (!isRaw) {
+            collected.push({ from: startLine.from, to: startLine.to, dec: REPLACE, category: 2 });
+            collected.push({ from: endLine.from, to: endLine.to, dec: REPLACE, category: 2 });
+          } else {
+            collected.push({ from: startLine.from, to: startLine.from, dec: lineClass("cm-prose-code-delimiter"), category: 1 });
+            collected.push({ from: endLine.from, to: endLine.from, dec: lineClass("cm-prose-code-delimiter"), category: 1 });
+          }
+
+          // Content lines in-between
+          let lang = "";
+          let firstChild = node.firstChild;
+          while (firstChild) {
+            if (firstChild.name === "CodeInfo") {
+              lang = state.doc.sliceString(firstChild.from, firstChild.to).trim();
+              break;
+            }
+            firstChild = firstChild.nextSibling;
+          }
+
+          for (let l = startLineNum + 1; l < endLineNum; l++) {
+            const line = state.doc.line(l);
+            let cls = "cm-prose-code-line";
+            const attrs: Record<string, string> = {};
+            if (l === startLineNum + 1) {
+              cls += " first";
+              if (lang) {
+                attrs["data-lang"] = lang.toUpperCase();
+              }
+            }
+            if (l === endLineNum - 1) cls += " last";
+
+            collected.push({ from: line.from, to: line.from, dec: lineClass(cls, attrs), category: 1 });
+
+            if (line.text.length === 0) {
+              collected.push({
+                from: line.from,
+                to: line.from,
+                dec: Decoration.widget({ widget: new EmptyLineSpacerWidget(), side: 1 }),
+                category: 2
+              });
+            }
+          }
         }
-        pos = line.to + 1;
+
+        // 3. Lists
+        else if (name === "ListItem") {
+          const parentType = node.parent?.name;
+          const isOrdered = parentType === "OrderedList";
+          const lineStart = state.doc.lineAt(from).from;
+          collected.push({
+            from: lineStart,
+            to: lineStart,
+            dec: lineClass(isOrdered ? "cm-prose-list-item number" : "cm-prose-list-item"),
+            category: 1
+          });
+
+          if (!isOrdered && !isRaw) {
+            let firstChild = node.firstChild;
+            while (firstChild) {
+              if (firstChild.name === "ListMarker") {
+                collected.push({
+                  from: firstChild.from,
+                  to: firstChild.to,
+                  dec: Decoration.replace({ widget: new BulletWidget() }),
+                  category: 2
+                });
+                break;
+              }
+              firstChild = firstChild.nextSibling;
+            }
+          }
+        }
+
+        // 4. Tables
+        else if (name === "Table") {
+          // Handled via child rows
+        } else if (name === "TableDelim") {
+          if (!isRaw) {
+            collected.push({ from: from, to: to, dec: REPLACE, category: 2 });
+          }
+        } else if (name === "TableRow" || name === "TableHeader") {
+          if (!isRaw) {
+            const text = state.doc.sliceString(from, to);
+            const parts = text.split("|");
+            // Check for leading/trailing pipe
+            const startIdx = text.startsWith("|") ? 1 : 0;
+            const endIdx = text.endsWith("|") ? parts.length - 1 : parts.length;
+            const cells = parts.slice(startIdx, endIdx);
+            const isHeader = name === "TableHeader";
+            collected.push({
+              from: from,
+              to: to,
+              dec: Decoration.replace({ widget: new TableRowWidget(cells, isHeader) }),
+              category: 2
+            });
+          } else {
+            collected.push({ from: from, to: from, dec: lineClass("cm-prose-table-line-raw"), category: 1 });
+          }
+        }
+
+        // 5. Horizontal Rule
+        else if (name === "HorizontalRule") {
+          if (!isRaw) {
+            collected.push({
+              from: from,
+              to: to,
+              dec: Decoration.replace({ widget: new SceneBreakWidget() }),
+              category: 2
+            });
+          }
+        }
+
+        // 6. Inline Strong (Bold)
+        else if (name === "StrongEmphasis") {
+          let markerLen = 2;
+          let firstChild = node.firstChild;
+          if (firstChild && firstChild.name === "EmphasisMark") {
+            markerLen = firstChild.to - firstChild.from;
+          }
+          if (!isRaw) {
+            collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
+            collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
+          }
+          collected.push({ from: from + markerLen, to: to - markerLen, dec: BOLD, category: 3 });
+        }
+
+        // 7. Inline Emphasis (Italic)
+        else if (name === "Emphasis") {
+          let markerLen = 1;
+          let firstChild = node.firstChild;
+          if (firstChild && firstChild.name === "EmphasisMark") {
+            markerLen = firstChild.to - firstChild.from;
+          }
+          if (!isRaw) {
+            collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
+            collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
+          }
+          collected.push({ from: from + markerLen, to: to - markerLen, dec: ITALIC, category: 3 });
+        }
+
+        // 8. Inline Code (Code Span)
+        else if (name === "InlineCode") {
+          let markerLen = 1;
+          let firstChild = node.firstChild;
+          if (firstChild && firstChild.name === "CodeMark") {
+            markerLen = firstChild.to - firstChild.from;
+          }
+          if (!isRaw) {
+            collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
+            collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
+          }
+          collected.push({
+            from: from + markerLen,
+            to: to - markerLen,
+            dec: Decoration.mark({ class: "cm-prose-inline-code" }),
+            category: 3
+          });
+        }
+
+        // 9. Inline Strikethrough
+        else if (name === "Strikethrough") {
+          let markerLen = 2;
+          let firstChild = node.firstChild;
+          if (firstChild && firstChild.name === "StrikethroughMark") {
+            markerLen = firstChild.to - firstChild.from;
+          }
+          if (!isRaw) {
+            collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
+            collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
+          }
+          collected.push({
+            from: from + markerLen,
+            to: to - markerLen,
+            dec: Decoration.mark({ class: "cm-prose-strike" }),
+            category: 3
+          });
+        }
+
+        // 10. Links and Images
+        else if (name === "Link") {
+          let titleNode = null;
+          let targetNode = null;
+          let child = node.firstChild;
+          while (child) {
+            if (child.name === "LinkTitle") titleNode = child;
+            if (child.name === "LinkTarget") targetNode = child;
+            child = child.nextSibling;
+          }
+
+          if (titleNode && targetNode) {
+            const url = state.doc.sliceString(targetNode.from, targetNode.to);
+            if (!isRaw) {
+              collected.push({ from: from, to: titleNode.from, dec: REPLACE, category: 2 });
+              collected.push({ from: titleNode.to, to: to, dec: REPLACE, category: 2 });
+            }
+            collected.push({
+              from: titleNode.from,
+              to: titleNode.to,
+              dec: Decoration.mark({
+                class: "cm-prose-link",
+                attributes: { href: url, target: "_blank", title: url }
+              }),
+              category: 3
+            });
+          }
+        }
+
+        else if (name === "Image") {
+          let titleNode = null;
+          let targetNode = null;
+          let child = node.firstChild;
+          while (child) {
+            if (child.name === "LinkTitle") titleNode = child;
+            if (child.name === "LinkTarget") targetNode = child;
+            child = child.nextSibling;
+          }
+
+          if (targetNode && !isRaw) {
+            const url = state.doc.sliceString(targetNode.from, targetNode.to);
+            const alt = titleNode ? state.doc.sliceString(titleNode.from, titleNode.to) : "";
+            const resolvedUrl = resolveUrl(url, workspacePath);
+            collected.push({
+              from: from,
+              to: to,
+              dec: Decoration.replace({ widget: new ImageWidget(resolvedUrl, alt) }),
+              category: 2
+            });
+          }
+        }
+
+        // 11. Custom Wiki Link & Wiki Image scan on plain text / paragraph nodes
+        else if (name === "Paragraph" || name === "Text") {
+          const text = state.doc.sliceString(from, to);
+          if (text.includes("[[")) {
+            const wikiMarks = collectWikiMarks(from, text, workspacePath, state.selection, isRaw, lowercaseFiles);
+            for (const wm of wikiMarks) {
+              // Add wiki links to collected
+              const isReplace = wm.dec.spec.widget !== undefined || wm.dec.spec.destroy !== undefined; // replace decs
+              collected.push({
+                from: wm.from,
+                to: wm.to,
+                dec: wm.dec,
+                category: isReplace ? 2 : 3
+              });
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // Sort collected decorations to ensure valid RangeSetBuilder order:
+  // 1. Position from ascending
+  // 2. Class type category: Line (1) -> Replace (2) -> Mark (3)
+  collected.sort((a, b) => {
+    if (a.from !== b.from) return a.from - b.from;
+    return a.category - b.category;
+  });
+
+  const builder = new RangeSetBuilder<Decoration>();
+  let lastReplaceEnd = -1;
+
+  for (const item of collected) {
+    if (item.category === 2) { // Replace
+      if (item.from < lastReplaceEnd) {
+        // Skip overlapping replacements to prevent crash
         continue;
       }
-
-      // 3. Table Separator Line
-      if (tableSeparatorLines.has(line.number)) {
-        if (!raw) {
-          builder.add(line.from, line.to, REPLACE);
-        }
-        pos = line.to + 1;
-        continue;
-      }
-
-      // 4. Table Row Line
-      if (tableLines.has(line.number)) {
-        if (!raw) {
-          const parts = text.split("|");
-          const cells = parts.slice(1, parts.length - 1);
-          const isHeader = tableSeparatorLines.has(line.number + 1);
-          builder.add(
-            line.from,
-            line.to,
-            Decoration.replace({ widget: new TableRowWidget(cells, isHeader) })
-          );
-        } else {
-          builder.add(line.from, line.from, lineClass("cm-prose-table-line-raw"));
-        }
-        pos = line.to + 1;
-        continue;
-      }
-
-      // Scene break: --- alone on the line
-      if (!raw && /^\s*---\s*$/.test(text)) {
-        builder.add(
-          line.from,
-          line.to,
-          Decoration.replace({ widget: new SceneBreakWidget() })
-        );
-        pos = line.to + 1;
-        continue;
-      }
-
-      // Heading 4: #### …
-      const h4 = /^#### (.*)/.exec(text);
-      if (h4) {
-        builder.add(line.from, line.from, lineClass("cm-prose-h4"));
-        if (!raw) {
-          builder.add(line.from, line.from + 5, REPLACE);
-        }
-        pos = line.to + 1;
-        continue;
-      }
-
-      // Heading 3: ### …
-      const h3 = /^### (.*)/.exec(text);
-      if (h3) {
-        builder.add(line.from, line.from, lineClass("cm-prose-h3"));
-        if (!raw) {
-          builder.add(line.from, line.from + 4, REPLACE);
-        }
-        pos = line.to + 1;
-        continue;
-      }
-
-      // Heading 2: ## …
-      const h2 = /^## (.*)/.exec(text);
-      if (h2) {
-        builder.add(line.from, line.from, lineClass("cm-prose-h2"));
-        if (!raw) {
-          builder.add(line.from, line.from + 3, REPLACE);
-        }
-        pos = line.to + 1;
-        continue;
-      }
-
-      // Heading 1: # …
-      const h1 = /^# (.*)/.exec(text);
-      if (h1) {
-        builder.add(line.from, line.from, lineClass("cm-prose-h1"));
-        if (!raw) {
-          builder.add(line.from, line.from + 2, REPLACE);
-        }
-        pos = line.to + 1;
-        continue;
-      }
-
-      // Bullet Lists: - item or * item
-      const bulletMatch = /^\s*([-*+])\s+(.*)/.exec(text);
-      if (bulletMatch) {
-        builder.add(line.from, line.from, lineClass("cm-prose-list-item"));
-        if (!raw) {
-          const markerStart = line.from + text.indexOf(bulletMatch[1]);
-          builder.add(
-            markerStart,
-            markerStart + 2,
-            Decoration.replace({ widget: new BulletWidget() })
-          );
-        }
-      }
-
-      // Numbered Lists: 1. item
-      const numberMatch = /^\s*(\d+\.)\s+(.*)/.exec(text);
-      if (numberMatch) {
-        builder.add(line.from, line.from, lineClass("cm-prose-list-item number"));
-      }
-
-      // Inline bold / italic / links / inline-code / images / wiki-images
-      if (text.length > 0) {
-        for (const { from: f, to: t, dec } of collectInlineMarks(line.from, text, workspacePath, view.state.selection, raw, lowercaseFiles)) {
-          builder.add(f, t, dec);
-        }
-      }
-
-      if (text.length === 0) {
-        builder.add(
-          line.from,
-          line.from,
-          Decoration.widget({
-            widget: new EmptyLineSpacerWidget(),
-            side: 1
-          })
-        );
-      }
-
-      pos = line.to + 1;
+      lastReplaceEnd = item.to;
     }
+
+    if (item.from > state.doc.length || item.to > state.doc.length) {
+      continue;
+    }
+
+    // For line decorations, 'to' must be equal to 'from'
+    const finalTo = item.category === 1 ? item.from : item.to;
+
+    // Safety check to ensure we only insert in increasing order
+    builder.add(item.from, finalTo, item.dec);
   }
 
   return builder.finish();

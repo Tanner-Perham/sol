@@ -9,6 +9,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::collections::HashSet;
 use std::io::Write;
 use tauri::{Emitter, Manager};
 
@@ -19,6 +20,7 @@ struct WorkspaceState {
     path: Mutex<Option<PathBuf>>,
     watcher: Mutex<Option<RecommendedWatcher>>,
     download_state: llm::download::SharedDownloadState,
+    loaded_model: Mutex<Option<(String, llm::inference::LoadedModel)>>,
 }
 
 fn get_saved_workspace(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -122,10 +124,37 @@ pub struct FileNode {
 }
 
 fn build_tree(dir: &Path, base: &Path) -> Result<Vec<FileNode>, String> {
+    use std::collections::HashSet;
+    let mut visited = HashSet::new();
+    let canonical_workspace = std::fs::canonicalize(base)
+        .map_err(|e| format!("Failed to canonicalize workspace: {}", e))?;
+    build_tree_rec(dir, base, &canonical_workspace, &mut visited)
+}
+
+fn build_tree_rec(
+    dir: &Path,
+    base: &Path,
+    canonical_workspace: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<Vec<FileNode>, String> {
     let mut nodes = Vec::new();
     if !dir.exists() {
         return Ok(nodes);
     }
+
+    let canonical_dir = match std::fs::canonicalize(dir) {
+        Ok(c) => c,
+        Err(_) => return Ok(nodes),
+    };
+
+    if !canonical_dir.starts_with(canonical_workspace) {
+        return Ok(nodes);
+    }
+
+    if !visited.insert(canonical_dir) {
+        return Ok(nodes);
+    }
+
     let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -142,14 +171,13 @@ fn build_tree(dir: &Path, base: &Path) -> Result<Vec<FileNode>, String> {
         let relative_path = path
             .strip_prefix(base)
             .map_err(|e| e.to_string())?
-            .to_str()
-            .unwrap_or("")
-            .to_string();
+            .to_string_lossy()
+            .replace('\\', "/");
 
         let is_dir = path.is_dir();
         let mut children = Vec::new();
         if is_dir {
-            children = build_tree(&path, base)?;
+            children = build_tree_rec(&path, base, canonical_workspace, visited)?;
             children.sort_by(|a, b| match (a.is_dir, b.is_dir) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
@@ -280,33 +308,13 @@ fn write_markdown_file(
 fn get_workspace_path(state: tauri::State<'_, WorkspaceState>) -> String {
     lock!(state.path)
         .as_ref()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| {
+            let s = p.to_string_lossy().into_owned();
+            #[cfg(target_os = "windows")]
+            let s = if s.starts_with(r"\\?\") { s[4..].to_string() } else { s };
+            s.replace('\\', "/")
+        })
         .unwrap_or_default()
-}
-
-#[tauri::command]
-fn list_workspace_files(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<String>, String> {
-    let path_lock = lock!(state.path);
-    if let Some(ref workspace) = *path_lock {
-        let entries = fs::read_dir(workspace).map_err(|e| e.to_string())?;
-        let mut files = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "md" {
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            files.push(name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        files.sort();
-        Ok(files)
-    } else {
-        Ok(Vec::new())
-    }
 }
 
 #[tauri::command]
@@ -432,7 +440,12 @@ async fn change_workspace(
 
     let tree = build_tree(&new_path, &new_path)?;
     Ok(Some(ChangeWorkspaceResult {
-        workspace_path: new_path.to_string_lossy().into_owned(),
+        workspace_path: {
+            let s = new_path.to_string_lossy().into_owned();
+            #[cfg(target_os = "windows")]
+            let s = if s.starts_with(r"\\?\") { s[4..].to_string() } else { s };
+            s.replace('\\', "/")
+        },
         tree,
     }))
 }
@@ -446,7 +459,16 @@ fn read_settings(state: tauri::State<'_, WorkspaceState>) -> Result<String, Stri
         if !settings_file.exists() {
             return Ok("{}".to_string());
         }
-        fs::read_to_string(&settings_file).map_err(|e| e.to_string())
+        let content = fs::read_to_string(&settings_file).map_err(|e| e.to_string())?;
+        
+        // Validate JSON
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(&content) {
+            let backup_file = settings_dir.join("settings.json.corrupt");
+            let _ = fs::rename(&settings_file, &backup_file);
+            return Err(format!("Settings file was corrupt and has been backed up to settings.json.corrupt. Error: {}", e));
+        }
+        
+        Ok(content)
     } else {
         Ok("{}".to_string())
     }
@@ -630,17 +652,29 @@ fn delete_model(model_id: String, state: tauri::State<'_, WorkspaceState>) -> Re
 
 /// Generate a topic name using the active LLM
 #[tauri::command]
-fn generate_topic_name(
+async fn generate_topic_name(
     note_snippets: Vec<String>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<String, String> {
-    let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
-    let config = LlmConfig::load(workspace);
+    let (workspace, model_id) = {
+        let path_lock = lock!(state.path);
+        let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
+        let config = LlmConfig::load(&workspace);
+        let model_id = config.active_model_id.ok_or("No model selected")?;
+        (workspace, model_id)
+    };
 
-    let model_id = config.active_model_id.ok_or("No model selected")?;
+    let mut loaded_model_lock = lock!(state.loaded_model);
+    let model = match &mut *loaded_model_lock {
+        Some((cached_id, model)) if cached_id == &model_id => model,
+        _ => {
+            let new_model = llm::inference::LoadedModel::load(&workspace, &model_id)?;
+            *loaded_model_lock = Some((model_id.clone(), new_model));
+            &mut loaded_model_lock.as_mut().unwrap().1
+        }
+    };
 
-    llm::inference::generate_topic_name(workspace, &model_id, &note_snippets)
+    llm::inference::generate_topic_name(model, &note_snippets)
 }
 
 /// Check if a model is ready (downloaded and can be selected)
@@ -708,6 +742,7 @@ pub fn run() {
                 path: Mutex::new(path),
                 watcher: Mutex::new(watcher),
                 download_state,
+                loaded_model: Mutex::new(None),
             });
             Ok(())
         })
@@ -715,7 +750,6 @@ pub fn run() {
             read_markdown_file,
             write_markdown_file,
             get_workspace_path,
-            list_workspace_files,
             create_markdown_file,
             get_file_tree,
             create_directory,

@@ -17,7 +17,7 @@ import { computeWordCount, findHeaderLine, threeWayMerge, computeSimpleLineDiff 
 import { Sidebar, VisibleItem } from "./components/Sidebar";
 import { SettingsModal, SettingsTabType } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
-import { EditorPaneComponent } from "./components/EditorPane/EditorPane";
+import { EditorPaneComponent, pruneEditorState } from "./components/EditorPane/EditorPane";
 
 function App() {
   const [workspacePath, setWorkspacePath] = useState("");
@@ -53,13 +53,18 @@ function App() {
   const [sidebarSelectedIndex, setSidebarSelectedIndex] = useState(0);
 
   const updateSettings = useCallback(async (newSettings: Partial<AppSettings>) => {
-    setSettings(prev => {
-      const updated = { ...prev, ...newSettings };
-      invoke("write_settings", { settingsJson: JSON.stringify(updated, null, 2) })
-        .catch(err => console.error("Failed to save settings", err));
-      return updated;
-    });
+    setSettings(prev => ({ ...prev, ...newSettings }));
   }, []);
+
+  useEffect(() => {
+    if (!workspacePath) return;
+    if (isSettingsLoadingRef.current) {
+      isSettingsLoadingRef.current = false;
+      return;
+    }
+    invoke("write_settings", { settingsJson: JSON.stringify(settings, null, 2) })
+      .catch(err => console.error("Failed to save settings", err));
+  }, [settings, workspacePath]);
 
   // Recording keybindings effect
   useEffect(() => {
@@ -132,6 +137,11 @@ function App() {
   const activeLeaf = findLeafNode(layout, activePaneId);
   const activeFile = activeLeaf ? activeLeaf.activeFile : null;
 
+  const activeFileRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeFileRef.current = activeFile;
+  }, [activeFile]);
+
   // Refs
   const editorViewsRef = useRef<Map<PaneId, any>>(new Map());
   const paneStatesRef = useRef<Map<PaneId, { isDirty: boolean; wordCount: number }>>(new Map());
@@ -141,10 +151,20 @@ function App() {
   const inputFocusedRef = useRef(false);
   const fileMtimesRef = useRef<Map<string, number>>(new Map());
   const fileBasesRef = useRef<Map<string, string>>(new Map());
+  const isSettingsLoadingRef = useRef(false);
 
-  // Conflict Resolution State
   const [conflictInfo, setConflictInfo] = useState<{ path: string; localContent: string; diskContent: string } | null>(null);
   const conflictResolveRef = useRef<((value: "overwrite" | "reload" | "cancel") => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (conflictResolveRef.current) {
+        conflictResolveRef.current("cancel");
+        conflictResolveRef.current = null;
+      }
+      setConflictInfo(null);
+    };
+  }, [workspacePath]);
 
   const writeMarkdownFileWithConflictCheck = useCallback(async (relativePath: string, content: string, force: boolean = false) => {
     const expectedMtime = force ? undefined : fileMtimesRef.current.get(relativePath);
@@ -277,6 +297,7 @@ function App() {
 
       // Load settings
       try {
+        isSettingsLoadingRef.current = true;
         const settingsStr = await invoke<string>("read_settings");
         const parsed = JSON.parse(settingsStr);
         setSettings({ ...DEFAULT_SETTINGS, ...parsed });
@@ -294,15 +315,11 @@ function App() {
         });
         setActivePaneId("pane-root");
       } else {
-        // Create test.md automatically if workspace is empty
-        await invoke<string>("create_markdown_file", { name: "test.md" });
-        const updatedTree = await invoke<FileNode[]>("get_file_tree");
-        setFileTree(updatedTree);
         setLayout({
           type: "leaf",
           id: "pane-root",
-          activeFile: "test.md",
-          tabs: ["test.md"]
+          activeFile: null,
+          tabs: []
         });
         setActivePaneId("pane-root");
       }
@@ -347,6 +364,7 @@ function App() {
 
       // Load settings for the new workspace
       try {
+        isSettingsLoadingRef.current = true;
         const settingsStr = await invoke<string>("read_settings");
         const parsed = JSON.parse(settingsStr);
         setSettings({ ...DEFAULT_SETTINGS, ...parsed });
@@ -364,14 +382,11 @@ function App() {
         });
         setActivePaneId("pane-root");
       } else {
-        await invoke("create_markdown_file", { name: "test.md" });
-        const updatedTree = await invoke<FileNode[]>("get_file_tree");
-        setFileTree(updatedTree);
         setLayout({
           type: "leaf",
           id: "pane-root",
-          activeFile: "test.md",
-          tabs: ["test.md"]
+          activeFile: null,
+          tabs: []
         });
         setActivePaneId("pane-root");
       }
@@ -516,6 +531,8 @@ function App() {
 
     const closedIdx = leaf.tabs.indexOf(fileName);
     const newTabs = leaf.tabs.filter((t) => t !== fileName);
+
+    pruneEditorState(paneId, fileName);
 
     let nextActiveFile = leaf.activeFile;
     if (leaf.activeFile === fileName) {
@@ -737,6 +754,15 @@ function App() {
                 try {
                   const res = await invoke<{ content: string; mtime: number }>("read_markdown_file", { path: openFile });
                   
+                  // Re-check dirty state after await to prevent overwriting user typing
+                  const isDirtyNow = leafIds.some(otherId => {
+                    const otherLeaf = findLeafNode(currentLayout, otherId);
+                    return otherLeaf && otherLeaf.activeFile === openFile && paneStatesRef.current.get(otherId)?.isDirty;
+                  });
+                  if (isDirtyNow) {
+                    continue;
+                  }
+
                   const knownMtime = fileMtimesRef.current.get(openFile);
                   if (res.mtime === knownMtime) {
                     continue;
@@ -804,8 +830,6 @@ function App() {
         setIsDirty(false);
       }
 
-      const tree = await invoke<FileNode[]>("get_file_tree");
-      setFileTree(tree);
     } catch (err) {
       console.error("Failed to save file", err);
     }
@@ -842,10 +866,10 @@ function App() {
     const splitNode = (node: PaneNode): PaneNode => {
       if (node.type === "leaf") {
         if (node.id === activePaneId) {
-          const newPaneId = `pane-${Date.now()}`;
+          const newPaneId = `pane-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
           return {
             type: "split",
-            id: `split-${Date.now()}`,
+            id: `split-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
             direction,
             children: [
               {
@@ -1325,8 +1349,9 @@ function App() {
 
           // If it is a heading-only link (starts with #)
           if (namePart === "") {
-            if (activeFile) {
-              const fullTarget = headerPart ? `${activeFile}#${headerPart}` : activeFile;
+            const currentActiveFile = activeFileRef.current;
+            if (currentActiveFile) {
+              const fullTarget = headerPart ? `${currentActiveFile}#${headerPart}` : currentActiveFile;
               openFileRef.current(fullTarget);
             }
             return;

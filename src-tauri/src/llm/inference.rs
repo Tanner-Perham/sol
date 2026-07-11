@@ -1,17 +1,48 @@
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::qwen2::{Config, ModelForCausalLM as Qwen2Model};
-use std::path::PathBuf;
+use candle_transformers::models::qwen2::{Config as Qwen2Config, ModelForCausalLM as Qwen2Model};
+use candle_transformers::models::llama::{Llama as LlamaModel, LlamaConfig, Config as LlamaConfigRaw, Cache as LlamaCache};
+
+use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
 use super::models_dir;
 
+fn read_eos_token_id(model_dir: &Path, default_id: u32) -> u32 {
+    let gen_config_path = model_dir.join("generation_config.json");
+    if gen_config_path.exists() {
+        if let Ok(gen_config_data) = std::fs::read_to_string(&gen_config_path) {
+            if let Ok(gen_val) = serde_json::from_str::<serde_json::Value>(&gen_config_data) {
+                if let Some(eos_id) = gen_val.get("eos_token_id") {
+                    if let Some(id_u64) = eos_id.as_u64() {
+                        return id_u64 as u32;
+                    } else if let Some(id_arr) = eos_id.as_array() {
+                        if let Some(first_id) = id_arr.first().and_then(|v| v.as_u64()) {
+                            return first_id as u32;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    default_id
+}
+
+pub enum Model {
+    Qwen2(Qwen2Model),
+    Llama {
+        model: LlamaModel,
+        config: LlamaConfigRaw,
+    },
+}
+
 /// Loaded model ready for inference
 pub struct LoadedModel {
-    model: Qwen2Model,
+    model: Model,
     tokenizer: Tokenizer,
     device: Device,
+    eos_token_id: u32,
 }
 
 impl LoadedModel {
@@ -29,8 +60,13 @@ impl LoadedModel {
         let config_path = model_dir.join("config.json");
         let config_data = std::fs::read_to_string(&config_path)
             .map_err(|e| format!("Failed to read config: {}", e))?;
-        let config: Config = serde_json::from_str(&config_data)
-            .map_err(|e| format!("Failed to parse config: {}", e))?;
+        let config_val: serde_json::Value = serde_json::from_str(&config_data)
+            .map_err(|e| format!("Failed to parse config as JSON: {}", e))?;
+
+        let model_type = config_val
+            .get("model_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("qwen2");
 
         // Load tokenizer
         let tokenizer_path = model_dir.join("tokenizer.json");
@@ -44,13 +80,31 @@ impl LoadedModel {
                 .map_err(|e| format!("Failed to load weights: {}", e))?
         };
 
-        let model =
-            Qwen2Model::new(&config, vb).map_err(|e| format!("Failed to create model: {}", e))?;
+        let (model, eos_token_id) = match model_type {
+            "llama" => {
+                let llama_config: LlamaConfig = serde_json::from_str(&config_data)
+                    .map_err(|e| format!("Failed to parse Llama config: {}", e))?;
+                let config = llama_config.into_config(false);
+                let model = LlamaModel::load(vb, &config)
+                    .map_err(|e| format!("Failed to create Llama model: {}", e))?;
+                let eos_id = read_eos_token_id(&model_dir, 2); // Llama uses 2 as default EOS
+                (Model::Llama { model, config }, eos_id)
+            }
+            _ => {
+                let config: Qwen2Config = serde_json::from_str(&config_data)
+                    .map_err(|e| format!("Failed to parse Qwen2 config: {}", e))?;
+                let model = Qwen2Model::new(&config, vb)
+                    .map_err(|e| format!("Failed to create Qwen2 model: {}", e))?;
+                let eos_id = read_eos_token_id(&model_dir, 151643); // Qwen2 uses 151643 as default EOS
+                (Model::Qwen2(model), eos_id)
+            }
+        };
 
         Ok(Self {
             model,
             tokenizer,
             device,
+            eos_token_id,
         })
     }
 
@@ -67,17 +121,45 @@ impl LoadedModel {
 
         let mut logits_processor = LogitsProcessor::new(42, Some(0.7), Some(0.9));
 
+        // Initialize Llama cache if needed
+        let mut llama_cache = match &self.model {
+            Model::Llama { config, .. } => {
+                let cache = LlamaCache::new(true, DType::F32, config, &self.device)
+                    .map_err(|e| format!("Failed to create Llama cache: {}", e))?;
+                Some(cache)
+            }
+            _ => None,
+        };
+
+        // Position offset
+        let mut pos_offset = 0;
+
         // Generate tokens one by one
-        for _ in 0..max_tokens {
-            let input = Tensor::new(&tokens[..], &self.device)
+        for step in 0..max_tokens {
+            let input_slice = if step == 0 {
+                &tokens[..]
+            } else {
+                &tokens[tokens.len() - 1..]
+            };
+
+            let input = Tensor::new(input_slice, &self.device)
                 .map_err(|e| format!("Tensor creation failed: {}", e))?
                 .unsqueeze(0)
                 .map_err(|e| format!("Unsqueeze failed: {}", e))?;
 
-            let logits = self
-                .model
-                .forward(&input, tokens.len())
-                .map_err(|e| format!("Forward pass failed: {}", e))?;
+            let logits = match &mut self.model {
+                Model::Qwen2(model) => {
+                    model.forward(&input, pos_offset)
+                        .map_err(|e| format!("Qwen2 forward pass failed: {}", e))?
+                }
+                Model::Llama { model, .. } => {
+                    let cache = llama_cache.as_mut().ok_or("Llama cache missing")?;
+                    model.forward(&input, pos_offset, cache)
+                        .map_err(|e| format!("Llama forward pass failed: {}", e))?
+                }
+            };
+
+            pos_offset += input_slice.len();
 
             let logits = logits
                 .squeeze(0)
@@ -91,9 +173,7 @@ impl LoadedModel {
                 .sample(&logits)
                 .map_err(|e| format!("Sampling failed: {}", e))?;
 
-            // Check for EOS token (Qwen2 uses 151643 as EOS)
-            const EOS_TOKEN_ID: u32 = 151643;
-            if next_token == EOS_TOKEN_ID {
+            if next_token == self.eos_token_id {
                 break;
             }
 
@@ -111,13 +191,11 @@ impl LoadedModel {
     }
 }
 
-/// Generate a topic name for a cluster of notes
+/// Generate a topic name for a cluster of notes using a pre-loaded model
 pub fn generate_topic_name(
-    workspace: &PathBuf,
-    model_id: &str,
+    model: &mut LoadedModel,
     note_snippets: &[String],
 ) -> Result<String, String> {
-    let mut model = LoadedModel::load(workspace, model_id)?;
 
     // Build prompt
     let combined_snippets = note_snippets

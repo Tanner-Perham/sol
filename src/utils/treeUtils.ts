@@ -59,7 +59,5 @@ export const findFirstMdFile = (nodes: FileNode[]): string | null => {
 };
 
 export const findDefaultFile = (nodes: FileNode[]): string | null => {
-  const rootTest = nodes.find(n => !n.is_dir && n.path === "test.md");
-  if (rootTest) return "test.md";
   return findFirstMdFile(nodes);
 };

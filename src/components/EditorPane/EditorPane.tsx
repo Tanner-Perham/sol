@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { EditorState, Compartment, Transaction } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
@@ -27,7 +27,7 @@ export interface EditorPaneProps {
   onOpenFile: (file: string) => void;
   registerView: (paneId: string, view: EditorView | null) => void;
   registerState: (paneId: string, isDirty: boolean, wordCount: number) => void;
-  onDocChange: (paneId: string, content: string) => void;
+  onDocChange: (paneId: string, content: string, changes?: any) => void;
   onVimModeChange: (mode: string) => void;
 }
 
@@ -38,6 +38,18 @@ interface SavedEditorState {
 }
 
 const editorStates = new Map<string, SavedEditorState>();
+const fileEditorStates = new Map<string, EditorState>();
+
+export function pruneEditorState(paneId: string, file: string) {
+  const key = `${paneId}:${file}`;
+  editorStates.delete(key);
+  fileEditorStates.delete(key);
+}
+
+export function clearAllEditorStates() {
+  editorStates.clear();
+  fileEditorStates.clear();
+}
 
 export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   paneId,
@@ -65,7 +77,10 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
   const { vimMode, livePreview, lineWrapping, theme } = settings;
 
-  const prosePreviewCompartment = useMemo(() => new Compartment(), []);
+  const vimCompartment = useMemo(() => new Compartment(), []);
+  const wrapCompartment = useMemo(() => new Compartment(), []);
+  const previewCompartment = useMemo(() => new Compartment(), []);
+  const themeCompartment = useMemo(() => new Compartment(), []);
 
   const markdownFilesSet = useMemo(() => {
     const set = new Set<string>();
@@ -91,7 +106,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
   // Clear saved editor states when workspace path changes
   useEffect(() => {
-    editorStates.clear();
+    clearAllEditorStates();
   }, [workspacePath]);
 
   // Load content when activeFile changes
@@ -126,13 +141,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     };
   }, [activeFile, workspacePath, paneId]);
 
-  // CodeMirror initialization & lifecycle
-  useEffect(() => {
-    if (!containerRef.current || !fileData) return;
-
-    const { file: loadedFile, content: loadedContent } = fileData;
-
-    const extensions = [
+  const buildExtensions = useCallback(() => {
+    return [
       history(),
       EditorView.inputHandler.of((view, from, to, text) => {
         if (text === "[") {
@@ -185,21 +195,10 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ...historyKeymap
       ]),
       markdown(),
-      ...(lineWrapping ? [EditorView.lineWrapping] : []),
-      customSelectionHighlightPlugin,
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          const isReload = update.transactions.some(tr => tr.annotation(Transaction.userEvent) === "reload");
-          if (isReload) return;
-
-          const docString = update.state.doc.toString();
-          const wCount = computeWordCount(docString);
-          setIsLocalDirty(true);
-          registerState(paneId, true, wCount);
-          onDocChange(paneId, docString);
-        }
-      }),
-      EditorView.theme({
+      vimCompartment.of(vimMode ? [vim()] : []),
+      wrapCompartment.of(lineWrapping ? [EditorView.lineWrapping] : []),
+      previewCompartment.of(livePreview ? [prosePreviewPlugin(workspacePath, markdownFilesSet)] : []),
+      themeCompartment.of(EditorView.theme({
         "&": {
           backgroundColor: "var(--bg-dark)",
           height: "100%",
@@ -214,6 +213,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         },
         ".cm-cursor:not(.cm-fat-cursor)": {
           borderLeftColor: "var(--accent) !important",
+          borderLeftWidth: "2px !important",
         },
         ".cm-fat-cursor": {
           backgroundColor: "var(--accent) !important",
@@ -222,46 +222,80 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ".cm-activeLine": {
           backgroundColor: "transparent",
         },
-      }, { dark: !["sepia", "light"].includes(theme) })
+      }, { dark: !["sepia", "light"].includes(theme) })),
+      customSelectionHighlightPlugin,
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          const isReload = update.transactions.some(tr => tr.annotation(Transaction.userEvent) === "reload");
+          if (isReload) return;
+
+          const docString = update.state.doc.toString();
+          const wCount = computeWordCount(docString);
+          setIsLocalDirty(true);
+          registerState(paneId, true, wCount);
+          onDocChange(paneId, docString, update.changes);
+        }
+      })
     ];
+  }, [paneId, workspacePath, vimMode, lineWrapping, livePreview, theme, vimCompartment, wrapCompartment, previewCompartment, themeCompartment, onDocChange, registerState]);
 
-    if (vimMode) {
-      extensions.unshift(vim());
-    }
-
-    if (livePreview) {
-      extensions.push(prosePreviewCompartment.of(prosePreviewPlugin(workspacePath, markdownFilesSet)));
-    }
-
-    const savedState = editorStates.get(loadedFile);
-    let selection = undefined;
-    if (savedState && savedState.selection) {
-      const maxPos = loadedContent.length;
-      const savedSel = savedState.selection;
-      if (savedSel.main && savedSel.main.to <= maxPos) {
-        selection = savedSel;
+  // Clean up view on unmount
+  useEffect(() => {
+    return () => {
+      if (viewRef.current) {
+        viewRef.current.destroy();
+        viewRef.current = null;
+        registerView(paneId, null);
       }
+    };
+  }, [paneId, registerView]);
+
+  // CodeMirror initialization & tab state changes
+  useEffect(() => {
+    if (!containerRef.current || !fileData) return;
+
+    const { file: loadedFile, content: loadedContent } = fileData;
+    const cacheKey = `${paneId}:${loadedFile}`;
+
+    let state = fileEditorStates.get(cacheKey);
+
+    if (!state) {
+      const savedState = editorStates.get(cacheKey);
+      let selection = undefined;
+      if (savedState && savedState.selection) {
+        const maxPos = loadedContent.length;
+        const savedSel = savedState.selection;
+        if (savedSel.main && savedSel.main.to <= maxPos) {
+          selection = savedSel;
+        }
+      }
+
+      state = EditorState.create({
+        doc: loadedContent,
+        selection,
+        extensions: buildExtensions()
+      });
+      fileEditorStates.set(cacheKey, state);
     }
 
-    const startState = EditorState.create({
-      doc: loadedContent,
-      selection,
-      extensions
-    });
-
-    const view = new EditorView({
-      state: startState,
-      parent: containerRef.current
-    });
-
-    viewRef.current = view;
-    registerView(paneId, view);
+    let view = viewRef.current;
+    if (!view) {
+      view = new EditorView({
+        state,
+        parent: containerRef.current
+      });
+      viewRef.current = view;
+      registerView(paneId, view);
+    } else {
+      view.setState(state);
+    }
 
     // Scroll to pending header if exists, otherwise restore scroll position
     const pendingHeader = pendingHeadersRef.current.get(paneId);
     if (pendingHeader) {
       pendingHeadersRef.current.delete(paneId);
       setTimeout(() => {
+        if (!view) return;
         const lineNum = findHeaderLine(view.state.doc, pendingHeader);
         if (lineNum !== null) {
           const line = view.state.doc.line(lineNum);
@@ -271,16 +305,19 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           });
         }
       }, 50);
-    } else if (savedState) {
-      const restoreScroll = () => {
-        if (view.scrollDOM) {
-          view.scrollDOM.scrollTop = savedState.scrollTop;
-          view.scrollDOM.scrollLeft = savedState.scrollLeft;
-        }
-      };
-      restoreScroll();
-      setTimeout(restoreScroll, 10);
-      setTimeout(restoreScroll, 50);
+    } else {
+      const savedState = editorStates.get(cacheKey);
+      if (savedState) {
+        const restoreScroll = () => {
+          if (view && view.scrollDOM) {
+            view.scrollDOM.scrollTop = savedState.scrollTop;
+            view.scrollDOM.scrollLeft = savedState.scrollLeft;
+          }
+        };
+        restoreScroll();
+        setTimeout(restoreScroll, 10);
+        setTimeout(restoreScroll, 50);
+      }
     }
 
     if (isActive) {
@@ -288,6 +325,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     }
 
     const handlePaste = (e: ClipboardEvent) => {
+      if (!view) return;
       const cm = getCM(view);
       if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {
         e.preventDefault();
@@ -297,9 +335,12 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
     // Track visual block selection for blockwise insert
     let savedBlockSelection: { startLine: number; endLine: number; col: number; originalText: string } | null = null;
+    let isReplayingBlockInsert = false;
 
     // Global keydown handler to intercept Ctrl+V, Ctrl+Q, Shift+I, and x in visual block
     const handleDocumentKeyDown = (e: KeyboardEvent) => {
+      if (!view || !view.hasFocus || isReplayingBlockInsert) return;
+
       const isCtrlV = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && !e.altKey && !e.shiftKey;
       const isCtrlQ = e.ctrlKey && e.key.toLowerCase() === 'q' && !e.altKey && !e.shiftKey && !e.metaKey;
       const isShiftI = e.shiftKey && e.key === 'I';
@@ -319,14 +360,12 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       } else if (isShiftI && cm && cm.state && cm.state.vim) {
         const vimState = cm.state.vim;
         if (vimState.visualBlock && vimState.sel) {
-          // Save the block selection bounds and original line content before entering insert mode
           const anchor = vimState.sel.anchor;
           const head = vimState.sel.head;
           const startLine = Math.min(anchor.line, head.line);
           const endLine = Math.max(anchor.line, head.line);
           const col = Math.min(anchor.ch, head.ch);
 
-          // Save the original first line text to compare later
           const firstLine = view.state.doc.line(startLine + 1);
           const originalText = firstLine.text;
 
@@ -338,15 +377,13 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           e.preventDefault();
           e.stopPropagation();
 
-          // Get the block selection bounds
           const anchor = vimState.sel.anchor;
           const head = vimState.sel.head;
           const startLineNum = Math.min(anchor.line, head.line);
           const endLineNum = Math.max(anchor.line, head.line);
           const startCol = Math.min(anchor.ch, head.ch);
-          const endCol = Math.max(anchor.ch, head.ch) + 1; // inclusive
+          const endCol = Math.max(anchor.ch, head.ch) + 1;
 
-          // Build delete changes for all lines in the block
           const changes: { from: number; to: number; insert: string }[] = [];
 
           for (let lineNum = startLineNum; lineNum <= endLineNum; lineNum++) {
@@ -363,48 +400,34 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           }
 
           if (changes.length > 0) {
-            // Exit visual mode first
             Vim.exitVisualMode(cm as any, false);
-
-            // Apply all deletions as a single transaction
             view.dispatch({ changes });
           }
 
           return false;
         }
       } else if (isEscape && savedBlockSelection && cm && cm.state && cm.state.vim) {
-        // Blockwise insert: duplicate inserted text to all lines
         const { col, originalText } = savedBlockSelection;
         const blockSel = savedBlockSelection;
         savedBlockSelection = null;
 
-        // Wait for vim to process the Escape and update the document
         setTimeout(() => {
-          // Get the updated first line and find what was inserted
+          if (!view || !cm) return;
           const firstLine = view.state.doc.line(blockSel.startLine + 1);
           const newText = firstLine.text;
 
-          // Find the inserted text by comparing original and new text at the insert column
-          const originalAfterCol = originalText.slice(col);
-          const newAfterCol = newText.slice(col);
-
-          // Find where the original text resumes in the new text
-          let insertedText = "";
-          if (newAfterCol.endsWith(originalAfterCol)) {
-            insertedText = newAfterCol.slice(0, newAfterCol.length - originalAfterCol.length);
-          } else {
-            // Fallback: assume everything between col and cursor is inserted
-            const cursorPos = view.state.selection.main.head;
-            const insertEnd = cursorPos - firstLine.from;
-            insertedText = newText.slice(col, insertEnd + 1);
-          }
+          // Precise diff formula
+          const insertedText = newText.slice(col, newText.length - (originalText.length - col));
 
           if (insertedText.length > 0) {
-            // Use vim's undo to revert the first line change
+            isReplayingBlockInsert = true;
             Vim.handleKey(cm, "u", "mapping");
 
-            // Wait for undo to complete, then insert on ALL lines as single transaction
             setTimeout(() => {
+              if (!view) {
+                isReplayingBlockInsert = false;
+                return;
+              }
               const changes: { from: number; to: number; insert: string }[] = [];
 
               for (let lineNum = blockSel.startLine; lineNum <= blockSel.endLine; lineNum++) {
@@ -417,6 +440,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
               if (changes.length > 0) {
                 view.dispatch({ changes });
               }
+              isReplayingBlockInsert = false;
             }, 10);
           }
         }, 20);
@@ -440,25 +464,55 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         const selection = view.state.selection;
         const scrollTop = view.scrollDOM ? view.scrollDOM.scrollTop : 0;
         const scrollLeft = view.scrollDOM ? view.scrollDOM.scrollLeft : 0;
-        editorStates.set(loadedFile, { selection, scrollTop, scrollLeft });
+        editorStates.set(cacheKey, { selection, scrollTop, scrollLeft });
+        fileEditorStates.set(cacheKey, view.state);
       }
 
-      view.dom.removeEventListener("paste", handlePaste, true);
+      if (view) {
+        view.dom.removeEventListener("paste", handlePaste, true);
+      }
       document.removeEventListener("keydown", handleDocumentKeyDown, true);
-      view.destroy();
-      viewRef.current = null;
-      registerView(paneId, null);
     };
-  }, [fileData, vimMode, livePreview, lineWrapping, theme, paneId, workspacePath]);
+  }, [fileData, paneId, buildExtensions, isActive, pendingHeadersRef, registerView, onVimModeChange, vimMode]);
 
-  // Dynamic compartment update when file list changes
+  // Reconfigure settings compartments on settings changes
   useEffect(() => {
-    if (viewRef.current && livePreview) {
-      viewRef.current.dispatch({
-        effects: prosePreviewCompartment.reconfigure(prosePreviewPlugin(workspacePath, markdownFilesSet))
+    const view = viewRef.current;
+    if (view) {
+      view.dispatch({
+        effects: [
+          vimCompartment.reconfigure(vimMode ? [vim()] : []),
+          wrapCompartment.reconfigure(lineWrapping ? [EditorView.lineWrapping] : []),
+          previewCompartment.reconfigure(livePreview ? [prosePreviewPlugin(workspacePath, markdownFilesSet)] : []),
+          themeCompartment.reconfigure(EditorView.theme({
+            "&": {
+              backgroundColor: "var(--bg-dark)",
+              height: "100%",
+              color: "var(--text-primary)",
+            },
+            ".cm-scroller": {
+              overflow: "auto",
+              height: "100%",
+            },
+            ".cm-content": {
+              caretColor: "var(--accent)",
+            },
+            ".cm-cursor:not(.cm-fat-cursor)": {
+              borderLeftColor: "var(--accent) !important",
+              borderLeftWidth: "2px !important",
+            },
+            ".cm-fat-cursor": {
+              backgroundColor: "var(--accent) !important",
+              borderLeft: "none !important",
+            },
+            ".cm-activeLine": {
+              backgroundColor: "transparent",
+            },
+          }, { dark: !["sepia", "light"].includes(theme) }))
+        ]
       });
     }
-  }, [markdownFilesSet, workspacePath, livePreview, prosePreviewCompartment]);
+  }, [vimMode, lineWrapping, livePreview, theme, workspacePath, markdownFilesSet, vimCompartment, wrapCompartment, previewCompartment, themeCompartment]);
 
   // Handle focus sync
   useEffect(() => {
@@ -531,3 +585,5 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     </div>
   );
 };
+
+export default EditorPaneComponent;
