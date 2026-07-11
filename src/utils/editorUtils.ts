@@ -145,11 +145,24 @@ export function threeWayMerge(base: string, local: string, remote: string): Merg
     }
     
     const mergedLines: string[] = [];
-    const allHunks: { side: "L" | "R"; hunk: Hunk }[] = [
+    const allHunksRaw: { side: "L" | "R"; hunk: Hunk }[] = [
       ...hunksL.map(h => ({ side: "L" as const, hunk: h })),
       ...hunksR.map(h => ({ side: "R" as const, hunk: h }))
     ];
-    allHunks.sort((a, b) => a.hunk.baseStart - b.hunk.baseStart);
+    allHunksRaw.sort((a, b) => a.hunk.baseStart - b.hunk.baseStart);
+    
+    const allHunks: { side: "L" | "R"; hunk: Hunk }[] = [];
+    for (const item of allHunksRaw) {
+      const isDuplicate = allHunks.some(existing => 
+        existing.hunk.baseStart === item.hunk.baseStart &&
+        existing.hunk.baseEnd === item.hunk.baseEnd &&
+        existing.hunk.lines.length === item.hunk.lines.length &&
+        existing.hunk.lines.every((line, idx) => line === item.hunk.lines[idx])
+      );
+      if (!isDuplicate) {
+        allHunks.push(item);
+      }
+    }
     
     let lastAppliedEnd = 0;
     for (const { hunk } of allHunks) {

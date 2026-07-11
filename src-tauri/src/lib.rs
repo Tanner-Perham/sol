@@ -1,3 +1,4 @@
+#[macro_export]
 macro_rules! lock {
     ($mutex:expr) => {
         $mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -86,6 +87,12 @@ fn is_ignored_path(path: &Path, workspace: &Path) -> bool {
     if let Ok(relative) = path.strip_prefix(workspace) {
         if relative.starts_with(".sol") {
             return true;
+        }
+        if let Some(file_name) = path.file_name() {
+            let name_str = file_name.to_string_lossy();
+            if name_str.starts_with('.') && name_str.contains(".tmp-") {
+                return true;
+            }
         }
     }
     false
@@ -590,8 +597,13 @@ fn pause_model_download(model_id: String, state: tauri::State<'_, WorkspaceState
 
 /// Resume a model download
 #[tauri::command]
-fn resume_model_download(model_id: String, state: tauri::State<'_, WorkspaceState>) {
+fn resume_model_download(
+    model_id: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
     llm::download::resume_download(&model_id, &state.download_state);
+    start_model_download(model_id, app, state)
 }
 
 /// Cancel a model download

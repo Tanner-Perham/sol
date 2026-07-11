@@ -1,8 +1,3 @@
-macro_rules! lock {
-    ($mutex:expr) => {
-        $mutex.lock().unwrap_or_else(|e| e.into_inner())
-    };
-}
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -76,13 +71,13 @@ pub fn download_model(
 ) -> Result<(), String> {
     let result = download_model_inner(workspace, model_id, app_handle, download_state);
     if let Err(ref e) = result {
-        // Clean up the model directory
-        let _ = delete_model(workspace, model_id);
-        
-        // Check if it was cancelled (we don't emit error if it was cancelled)
         let was_cancelled = {
             let state = lock!(download_state);
             *state.cancelled.get(model_id).unwrap_or(&false)
+        };
+        let was_paused = {
+            let state = lock!(download_state);
+            *state.paused.get(model_id).unwrap_or(&false)
         };
         
         if was_cancelled {
@@ -96,6 +91,20 @@ pub fn download_model(
                     bytes_downloaded: 0,
                     total_bytes: 0,
                     status: "cancelled".to_string(),
+                    error: None,
+                },
+            );
+        } else if was_paused {
+            let _ = app_handle.emit(
+                "model-download-progress",
+                DownloadProgress {
+                    model_id: model_id.to_string(),
+                    file_name: "".to_string(),
+                    file_index: 0,
+                    total_files: 0,
+                    bytes_downloaded: 0,
+                    total_bytes: 0,
+                    status: "paused".to_string(),
                     error: None,
                 },
             );
@@ -152,64 +161,14 @@ fn download_model_inner(
     let total_files = info.files.len();
 
     for (idx, file) in info.files.iter().enumerate() {
-        // Check if cancelled
+        // Check if cancelled or paused
         {
             let state = lock!(download_state);
             if *state.cancelled.get(model_id).unwrap_or(&false) {
                 return Err("Download cancelled".to_string());
             }
-        }
-
-        // Wait while paused
-        let mut was_paused = false;
-        loop {
-            let is_paused = {
-                let state = lock!(download_state);
-                *state.paused.get(model_id).unwrap_or(&false)
-            };
-            if !is_paused {
-                if was_paused {
-                    let _ = app_handle.emit(
-                        "model-download-progress",
-                        DownloadProgress {
-                            model_id: model_id.to_string(),
-                            file_name: file.name.clone(),
-                            file_index: idx,
-                            total_files,
-                            bytes_downloaded: 0,
-                            total_bytes: 0,
-                            status: "downloading".to_string(),
-                            error: None,
-                        },
-                    );
-                }
-                break;
-            }
-            if !was_paused {
-                was_paused = true;
-                let _ = app_handle.emit(
-                    "model-download-progress",
-                    DownloadProgress {
-                        model_id: model_id.to_string(),
-                        file_name: file.name.clone(),
-                        file_index: idx,
-                        total_files,
-                        bytes_downloaded: 0,
-                        total_bytes: 0,
-                        status: "paused".to_string(),
-                        error: None,
-                    },
-                );
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-
-            // Check for cancel while paused
-            let is_cancelled = {
-                let state = lock!(download_state);
-                *state.cancelled.get(model_id).unwrap_or(&false)
-            };
-            if is_cancelled {
-                return Err("Download cancelled".to_string());
+            if *state.paused.get(model_id).unwrap_or(&false) {
+                return Err("Download paused".to_string());
             }
         }
 
@@ -306,7 +265,7 @@ fn download_model_inner(
         let mut buffer = [0u8; 65536]; // 64KB chunks
 
         loop {
-            // Check for cancellation
+            // Check for cancellation or pause
             {
                 let state = lock!(download_state);
                 if *state.cancelled.get(model_id).unwrap_or(&false) {
@@ -314,60 +273,9 @@ fn download_model_inner(
                     let _ = std::fs::remove_file(&part_path);
                     return Err("Download cancelled".to_string());
                 }
-            }
-
-            // Check for pause
-            let mut was_paused = false;
-            loop {
-                let is_paused = {
-                    let state = lock!(download_state);
-                    *state.paused.get(model_id).unwrap_or(&false)
-                };
-                if !is_paused {
-                    if was_paused {
-                        let _ = app_handle.emit(
-                            "model-download-progress",
-                            DownloadProgress {
-                                model_id: model_id.to_string(),
-                                file_name: file_name.to_string(),
-                                file_index: idx,
-                                total_files,
-                                bytes_downloaded: downloaded,
-                                total_bytes: total_size,
-                                status: "downloading".to_string(),
-                                error: None,
-                            },
-                        );
-                    }
-                    break;
-                }
-                if !was_paused {
-                    was_paused = true;
-                    let _ = app_handle.emit(
-                        "model-download-progress",
-                        DownloadProgress {
-                            model_id: model_id.to_string(),
-                            file_name: file_name.to_string(),
-                            file_index: idx,
-                            total_files,
-                            bytes_downloaded: downloaded,
-                            total_bytes: total_size,
-                            status: "paused".to_string(),
-                            error: None,
-                        },
-                    );
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-
-                // Check for cancel while paused
-                let is_cancelled = {
-                    let state = lock!(download_state);
-                    *state.cancelled.get(model_id).unwrap_or(&false)
-                };
-                if is_cancelled {
+                if *state.paused.get(model_id).unwrap_or(&false) {
                     drop(output_file);
-                    let _ = std::fs::remove_file(&part_path);
-                    return Err("Download cancelled".to_string());
+                    return Err("Download paused".to_string());
                 }
             }
 
@@ -375,7 +283,6 @@ fn download_model_inner(
                 Ok(n) => n,
                 Err(e) => {
                     drop(output_file);
-                    let _ = std::fs::remove_file(&part_path);
                     return Err(format!("Failed to read data: {}", e));
                 }
             };
@@ -386,7 +293,6 @@ fn download_model_inner(
 
             if let Err(e) = output_file.write_all(&buffer[..bytes_read]) {
                 drop(output_file);
-                let _ = std::fs::remove_file(&part_path);
                 return Err(format!("Failed to write data: {}", e));
             }
 

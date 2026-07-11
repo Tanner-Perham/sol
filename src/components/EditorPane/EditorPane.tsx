@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { EditorState, Compartment } from "@codemirror/state";
+import { EditorState, Compartment, Transaction } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, historyKeymap, history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
@@ -189,6 +189,9 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       customSelectionHighlightPlugin,
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
+          const isReload = update.transactions.some(tr => tr.annotation(Transaction.userEvent) === "reload");
+          if (isReload) return;
+
           const docString = update.state.doc.toString();
           const wCount = computeWordCount(docString);
           setIsLocalDirty(true);

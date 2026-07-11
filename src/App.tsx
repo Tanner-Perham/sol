@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import { Vim } from "@replit/codemirror-vim";
-
+import { Transaction } from "@codemirror/state";
 // Shared Types and Constants
 import { PaneId, LeafPane, PaneNode, FileNode, Keybindings, AppSettings } from "./types";
 import { DEFAULT_KEYBINDINGS, DEFAULT_SETTINGS } from "./constants";
@@ -736,6 +736,12 @@ function App() {
               if (!isDirtyInAnyPane) {
                 try {
                   const res = await invoke<{ content: string; mtime: number }>("read_markdown_file", { path: openFile });
+                  
+                  const knownMtime = fileMtimesRef.current.get(openFile);
+                  if (res.mtime === knownMtime) {
+                    continue;
+                  }
+
                   fileMtimesRef.current.set(openFile, res.mtime);
                   fileBasesRef.current.set(openFile, res.content);
 
@@ -744,9 +750,12 @@ function App() {
                     if (l2 && l2.activeFile === openFile) {
                       const view = editorViewsRef.current.get(pId2);
                       if (view) {
-                        view.dispatch({
-                          changes: { from: 0, to: view.state.doc.length, insert: res.content }
-                        });
+                        if (view.state.doc.toString() !== res.content) {
+                          view.dispatch({
+                            changes: { from: 0, to: view.state.doc.length, insert: res.content },
+                            annotations: Transaction.userEvent.of("reload")
+                          });
+                        }
                       }
                       paneStatesRef.current.set(pId2, { isDirty: false, wordCount: computeWordCount(res.content) });
                       if (pId2 === activePaneIdRef.current) {
