@@ -1,3 +1,9 @@
+macro_rules! lock {
+    ($mutex:expr) => {
+        $mutex.lock().unwrap_or_else(|e| e.into_inner())
+    };
+}
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -16,7 +22,7 @@ pub struct DownloadProgress {
     pub total_files: usize,
     pub bytes_downloaded: u64,
     pub total_bytes: u64,
-    pub status: String, // "downloading", "completed", "error", "cancelled"
+    pub status: String, // "downloading", "completed", "error", "cancelled", "paused"
     pub error: Option<String>,
 }
 
@@ -68,6 +74,56 @@ pub fn download_model(
     app_handle: &tauri::AppHandle,
     download_state: &SharedDownloadState,
 ) -> Result<(), String> {
+    let result = download_model_inner(workspace, model_id, app_handle, download_state);
+    if let Err(ref e) = result {
+        // Clean up the model directory
+        let _ = delete_model(workspace, model_id);
+        
+        // Check if it was cancelled (we don't emit error if it was cancelled)
+        let was_cancelled = {
+            let state = lock!(download_state);
+            *state.cancelled.get(model_id).unwrap_or(&false)
+        };
+        
+        if was_cancelled {
+            let _ = app_handle.emit(
+                "model-download-progress",
+                DownloadProgress {
+                    model_id: model_id.to_string(),
+                    file_name: "".to_string(),
+                    file_index: 0,
+                    total_files: 0,
+                    bytes_downloaded: 0,
+                    total_bytes: 0,
+                    status: "cancelled".to_string(),
+                    error: None,
+                },
+            );
+        } else {
+            let _ = app_handle.emit(
+                "model-download-progress",
+                DownloadProgress {
+                    model_id: model_id.to_string(),
+                    file_name: "".to_string(),
+                    file_index: 0,
+                    total_files: 0,
+                    bytes_downloaded: 0,
+                    total_bytes: 0,
+                    status: "error".to_string(),
+                    error: Some(e.clone()),
+                },
+            );
+        }
+    }
+    result
+}
+
+fn download_model_inner(
+    workspace: &PathBuf,
+    model_id: &str,
+    app_handle: &tauri::AppHandle,
+    download_state: &SharedDownloadState,
+) -> Result<(), String> {
     println!("[LLM] Starting download for model: {}", model_id);
 
     let info =
@@ -81,7 +137,7 @@ pub fn download_model(
 
     // Reset cancelled/paused state
     {
-        let mut state = download_state.lock().unwrap();
+        let mut state = lock!(download_state);
         state.cancelled.insert(model_id.to_string(), false);
         state.paused.insert(model_id.to_string(), false);
     }
@@ -98,8 +154,39 @@ pub fn download_model(
     for (idx, file) in info.files.iter().enumerate() {
         // Check if cancelled
         {
-            let state = download_state.lock().unwrap();
+            let state = lock!(download_state);
             if *state.cancelled.get(model_id).unwrap_or(&false) {
+                return Err("Download cancelled".to_string());
+            }
+        }
+
+        // Wait while paused
+        let mut was_paused = false;
+        loop {
+            let is_paused = {
+                let state = lock!(download_state);
+                *state.paused.get(model_id).unwrap_or(&false)
+            };
+            if !is_paused {
+                if was_paused {
+                    let _ = app_handle.emit(
+                        "model-download-progress",
+                        DownloadProgress {
+                            model_id: model_id.to_string(),
+                            file_name: file.name.clone(),
+                            file_index: idx,
+                            total_files,
+                            bytes_downloaded: 0,
+                            total_bytes: 0,
+                            status: "downloading".to_string(),
+                            error: None,
+                        },
+                    );
+                }
+                break;
+            }
+            if !was_paused {
+                was_paused = true;
                 let _ = app_handle.emit(
                     "model-download-progress",
                     DownloadProgress {
@@ -109,28 +196,16 @@ pub fn download_model(
                         total_files,
                         bytes_downloaded: 0,
                         total_bytes: 0,
-                        status: "cancelled".to_string(),
+                        status: "paused".to_string(),
                         error: None,
                     },
                 );
-                return Err("Download cancelled".to_string());
-            }
-        }
-
-        // Wait while paused
-        loop {
-            let is_paused = {
-                let state = download_state.lock().unwrap();
-                *state.paused.get(model_id).unwrap_or(&false)
-            };
-            if !is_paused {
-                break;
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
 
             // Check for cancel while paused
             let is_cancelled = {
-                let state = download_state.lock().unwrap();
+                let state = lock!(download_state);
                 *state.cancelled.get(model_id).unwrap_or(&false)
             };
             if is_cancelled {
@@ -175,39 +250,65 @@ pub fn download_model(
         );
         println!("[LLM] URL: {}", url);
 
-        // Start the download
-        let response = client.get(&url).send().map_err(|e| {
-            println!("[LLM] ERROR starting download: {}", e);
-            let _ = std::fs::remove_file(&part_path);
-            format!("Failed to start download for {}: {}", file_name, e)
-        })?;
+        // Range resume logic
+        let mut downloaded: u64 = 0;
+        let mut open_options = std::fs::OpenOptions::new();
+        
+        if part_path.exists() {
+            if let Ok(metadata) = std::fs::metadata(&part_path) {
+                downloaded = metadata.len();
+            }
+        }
+
+        let response = if downloaded > 0 {
+            // Try sending a Range request
+            let range_header = format!("bytes={}-", downloaded);
+            let req = client.get(&url).header(reqwest::header::RANGE, range_header);
+            match req.send() {
+                Ok(resp) if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT => {
+                    println!("[LLM] Resuming download from byte {}", downloaded);
+                    open_options.append(true);
+                    resp
+                }
+                _ => {
+                    // Fallback: download from scratch
+                    println!("[LLM] Range request not supported or failed, downloading from scratch");
+                    downloaded = 0;
+                    open_options.write(true).truncate(true).create(true);
+                    client.get(&url).send().map_err(|e| {
+                        let _ = std::fs::remove_file(&part_path);
+                        format!("Failed to start download for {}: {}", file_name, e)
+                    })?
+                }
+            }
+        } else {
+            open_options.write(true).truncate(true).create(true);
+            client.get(&url).send().map_err(|e| {
+                let _ = std::fs::remove_file(&part_path);
+                format!("Failed to start download for {}: {}", file_name, e)
+            })?
+        };
 
         if !response.status().is_success() {
             let status = response.status();
-            println!("[LLM] ERROR: HTTP {}", status);
             let _ = std::fs::remove_file(&part_path);
             return Err(format!("HTTP error {} downloading {}", status, file_name));
         }
 
-        let total_size = response.content_length().unwrap_or(0);
-        println!("[LLM] File size: {} bytes", total_size);
+        let total_size = response.content_length().unwrap_or(0) + downloaded;
 
-        // Create output .part file
-        let mut output_file = std::fs::File::create(&part_path)
-            .map_err(|e| format!("Failed to create file {}.part: {}", file_name, e))?;
+        // Open/create the file
+        let mut output_file = open_options.open(&part_path)
+            .map_err(|e| format!("Failed to open file {}.part: {}", file_name, e))?;
 
-        // Download with progress
-        let mut downloaded: u64 = 0;
         let mut last_emit_time = std::time::Instant::now();
-
-        // Read in chunks
         let mut reader = response;
         let mut buffer = [0u8; 65536]; // 64KB chunks
 
         loop {
             // Check for cancellation
             {
-                let state = download_state.lock().unwrap();
+                let state = lock!(download_state);
                 if *state.cancelled.get(model_id).unwrap_or(&false) {
                     drop(output_file);
                     let _ = std::fs::remove_file(&part_path);
@@ -216,15 +317,58 @@ pub fn download_model(
             }
 
             // Check for pause
+            let mut was_paused = false;
             loop {
                 let is_paused = {
-                    let state = download_state.lock().unwrap();
+                    let state = lock!(download_state);
                     *state.paused.get(model_id).unwrap_or(&false)
                 };
                 if !is_paused {
+                    if was_paused {
+                        let _ = app_handle.emit(
+                            "model-download-progress",
+                            DownloadProgress {
+                                model_id: model_id.to_string(),
+                                file_name: file_name.to_string(),
+                                file_index: idx,
+                                total_files,
+                                bytes_downloaded: downloaded,
+                                total_bytes: total_size,
+                                status: "downloading".to_string(),
+                                error: None,
+                            },
+                        );
+                    }
                     break;
                 }
+                if !was_paused {
+                    was_paused = true;
+                    let _ = app_handle.emit(
+                        "model-download-progress",
+                        DownloadProgress {
+                            model_id: model_id.to_string(),
+                            file_name: file_name.to_string(),
+                            file_index: idx,
+                            total_files,
+                            bytes_downloaded: downloaded,
+                            total_bytes: total_size,
+                            status: "paused".to_string(),
+                            error: None,
+                        },
+                    );
+                }
                 std::thread::sleep(std::time::Duration::from_millis(100));
+
+                // Check for cancel while paused
+                let is_cancelled = {
+                    let state = lock!(download_state);
+                    *state.cancelled.get(model_id).unwrap_or(&false)
+                };
+                if is_cancelled {
+                    drop(output_file);
+                    let _ = std::fs::remove_file(&part_path);
+                    return Err("Download cancelled".to_string());
+                }
             }
 
             let bytes_read = match reader.read(&mut buffer) {
@@ -333,19 +477,19 @@ pub fn download_model(
 
 /// Cancel a model download
 pub fn cancel_download(model_id: &str, download_state: &SharedDownloadState) {
-    let mut state = download_state.lock().unwrap();
+    let mut state = lock!(download_state);
     state.cancelled.insert(model_id.to_string(), true);
 }
 
 /// Pause a model download
 pub fn pause_download(model_id: &str, download_state: &SharedDownloadState) {
-    let mut state = download_state.lock().unwrap();
+    let mut state = lock!(download_state);
     state.paused.insert(model_id.to_string(), true);
 }
 
 /// Resume a model download
 pub fn resume_download(model_id: &str, download_state: &SharedDownloadState) {
-    let mut state = download_state.lock().unwrap();
+    let mut state = lock!(download_state);
     state.paused.insert(model_id.to_string(), false);
 }
 

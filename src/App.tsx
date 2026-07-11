@@ -11,7 +11,7 @@ import { DEFAULT_KEYBINDINGS, DEFAULT_SETTINGS } from "./constants";
 // Utilities
 import { matchKeybinding } from "./utils/keybindingUtils";
 import { findLeafNode, getLeafPaneIds, removePaneFromTree, findDefaultFile } from "./utils/treeUtils";
-import { computeWordCount, findHeaderLine } from "./utils/editorUtils";
+import { computeWordCount, findHeaderLine, threeWayMerge, computeSimpleLineDiff } from "./utils/editorUtils";
 
 // Components
 import { Sidebar, VisibleItem } from "./components/Sidebar";
@@ -139,6 +139,128 @@ function App() {
   const reloadTreeRef = useRef<any>(null);
   const prevActiveFileRef = useRef<string | null>(null);
   const inputFocusedRef = useRef(false);
+  const fileMtimesRef = useRef<Map<string, number>>(new Map());
+  const fileBasesRef = useRef<Map<string, string>>(new Map());
+
+  // Conflict Resolution State
+  const [conflictInfo, setConflictInfo] = useState<{ path: string; localContent: string; diskContent: string } | null>(null);
+  const conflictResolveRef = useRef<((value: "overwrite" | "reload" | "cancel") => void) | null>(null);
+
+  const writeMarkdownFileWithConflictCheck = useCallback(async (relativePath: string, content: string, force: boolean = false) => {
+    const expectedMtime = force ? undefined : fileMtimesRef.current.get(relativePath);
+    try {
+      const newMtime = await invoke<number>("write_markdown_file", {
+        path: relativePath,
+        content,
+        expectedMtime
+      });
+      fileMtimesRef.current.set(relativePath, newMtime);
+      fileBasesRef.current.set(relativePath, content);
+      return true;
+    } catch (err: any) {
+      if (err === "conflict") {
+        console.log(`Conflict detected for ${relativePath}`);
+        let diskRes;
+        try {
+          diskRes = await invoke<{ content: string; mtime: number }>("read_markdown_file", { path: relativePath });
+        } catch (readErr) {
+          console.error("Failed to read conflicting file from disk", readErr);
+          alert(`Failed to save: ${err}`);
+          return false;
+        }
+
+        const baseContent = fileBasesRef.current.get(relativePath) || "";
+        const mergeRes = threeWayMerge(baseContent, content, diskRes.content);
+        if (mergeRes.success) {
+          console.log(`Auto-merged external changes successfully for ${relativePath}`);
+          try {
+            const newMtime = await invoke<number>("write_markdown_file", {
+              path: relativePath,
+              content: mergeRes.mergedText,
+              expectedMtime: undefined
+            });
+            fileMtimesRef.current.set(relativePath, newMtime);
+            fileBasesRef.current.set(relativePath, mergeRes.mergedText);
+
+            const currentLayout = layoutRef.current;
+            const leafIds = getLeafPaneIds(currentLayout);
+            leafIds.forEach((pId) => {
+              const leaf = findLeafNode(currentLayout, pId);
+              if (leaf && leaf.activeFile === relativePath) {
+                const view = editorViewsRef.current.get(pId);
+                if (view) {
+                  view.dispatch({
+                    changes: { from: 0, to: view.state.doc.length, insert: mergeRes.mergedText }
+                  });
+                }
+                paneStatesRef.current.set(pId, { isDirty: false, wordCount: computeWordCount(mergeRes.mergedText) });
+                if (pId === activePaneIdRef.current) {
+                  setIsDirty(false);
+                  setWordCount(computeWordCount(mergeRes.mergedText));
+                }
+              }
+            });
+            return true;
+          } catch (mergeWriteErr) {
+            console.error("Failed to write merged content", mergeWriteErr);
+          }
+        }
+
+        const choice = await new Promise<"overwrite" | "reload" | "cancel">((resolve) => {
+          conflictResolveRef.current = resolve;
+          setConflictInfo({ path: relativePath, localContent: content, diskContent: diskRes.content });
+        });
+        setConflictInfo(null);
+        conflictResolveRef.current = null;
+
+        if (choice === "overwrite") {
+          try {
+            const newMtime = await invoke<number>("write_markdown_file", {
+              path: relativePath,
+              content,
+              expectedMtime: undefined
+            });
+            fileMtimesRef.current.set(relativePath, newMtime);
+            fileBasesRef.current.set(relativePath, content);
+            return true;
+          } catch (retryErr) {
+            console.error("Force write failed", retryErr);
+            alert(`Failed to save: ${retryErr}`);
+            return false;
+          }
+        } else if (choice === "reload") {
+          fileMtimesRef.current.set(relativePath, diskRes.mtime);
+          fileBasesRef.current.set(relativePath, diskRes.content);
+          
+          const currentLayout = layoutRef.current;
+          const leafIds = getLeafPaneIds(currentLayout);
+          leafIds.forEach((pId) => {
+            const leaf = findLeafNode(currentLayout, pId);
+            if (leaf && leaf.activeFile === relativePath) {
+              const view = editorViewsRef.current.get(pId);
+              if (view) {
+                view.dispatch({
+                  changes: { from: 0, to: view.state.doc.length, insert: diskRes.content }
+                });
+              }
+              paneStatesRef.current.set(pId, { isDirty: false, wordCount: computeWordCount(diskRes.content) });
+              if (pId === activePaneIdRef.current) {
+                setIsDirty(false);
+                setWordCount(computeWordCount(diskRes.content));
+              }
+            }
+          });
+          return false;
+        } else {
+          return false;
+        }
+      } else {
+        console.error("Failed to write file:", err);
+        alert(`Failed to save: ${err}`);
+        return false;
+      }
+    }
+  }, []);
 
   // Load workspace path and files
   const loadWorkspace = useCallback(async () => {
@@ -197,8 +319,13 @@ function App() {
         const paneState = paneStatesRef.current.get(activePaneId);
         if (paneState?.isDirty && view) {
           const content = view.state.doc.toString();
+          const timeout = saveTimeoutsRef.current.get(activeLeaf.activeFile);
+          if (timeout) {
+            clearTimeout(timeout);
+            saveTimeoutsRef.current.delete(activeLeaf.activeFile);
+          }
           try {
-            await invoke("write_markdown_file", { path: activeLeaf.activeFile, content });
+            await writeMarkdownFileWithConflictCheck(activeLeaf.activeFile, content);
           } catch (err) {
             console.error("Failed to auto-save file on workspace change", err);
           }
@@ -314,8 +441,13 @@ function App() {
     const paneState = paneStatesRef.current.get(activePaneId);
     if (leaf.activeFile && paneState?.isDirty && view) {
       const content = view.state.doc.toString();
+      const timeout = saveTimeoutsRef.current.get(leaf.activeFile);
+      if (timeout) {
+        clearTimeout(timeout);
+        saveTimeoutsRef.current.delete(leaf.activeFile);
+      }
       try {
-        await invoke("write_markdown_file", { path: leaf.activeFile, content });
+        await writeMarkdownFileWithConflictCheck(leaf.activeFile, content);
       } catch (err) {
         console.error("Failed to auto-save file on switch", err);
       }
@@ -327,7 +459,10 @@ function App() {
     }
 
     try {
-      const content = await invoke<string>("read_markdown_file", { path: relativePath });
+      const res = await invoke<{ content: string; mtime: number }>("read_markdown_file", { path: relativePath });
+      fileMtimesRef.current.set(relativePath, res.mtime);
+      fileBasesRef.current.set(relativePath, res.content);
+      const content = res.content;
       
       paneStatesRef.current.set(activePaneId, { isDirty: false, wordCount: computeWordCount(content) });
       setIsDirty(false);
@@ -367,8 +502,13 @@ function App() {
     const paneState = paneStatesRef.current.get(paneId);
     if (leaf.activeFile === fileName && paneState?.isDirty && view) {
       const content = view.state.doc.toString();
+      const timeout = saveTimeoutsRef.current.get(fileName);
+      if (timeout) {
+        clearTimeout(timeout);
+        saveTimeoutsRef.current.delete(fileName);
+      }
       try {
-        await invoke("write_markdown_file", { path: fileName, content });
+        await writeMarkdownFileWithConflictCheck(fileName, content);
       } catch (err) {
         console.error("Failed to auto-save file on close", err);
       }
@@ -448,11 +588,13 @@ function App() {
         const view = editorViewsRef.current.get(leaf.id);
         if (leaf.activeFile === tab && paneState?.isDirty && view) {
           const content = view.state.doc.toString();
+          const timeout = saveTimeoutsRef.current.get(tab);
+          if (timeout) {
+            clearTimeout(timeout);
+            saveTimeoutsRef.current.delete(tab);
+          }
           try {
-            await invoke("write_markdown_file", {
-              path: tab,
-              content,
-            });
+            await writeMarkdownFileWithConflictCheck(tab, content);
           } catch (err) {
             console.error("Failed to auto-save file on close all", err);
           }
@@ -571,8 +713,55 @@ function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     const setupListener = async () => {
-      unlisten = await listen("workspace-changed", () => {
+      unlisten = await listen<string[]>("workspace-changed", async (event) => {
         triggerTreeReload();
+
+        const modifiedPaths = event.payload;
+        if (!modifiedPaths || !Array.isArray(modifiedPaths)) return;
+
+        const currentLayout = layoutRef.current;
+        const leafIds = getLeafPaneIds(currentLayout);
+
+        for (const pId of leafIds) {
+          const leaf = findLeafNode(currentLayout, pId);
+          if (leaf && leaf.activeFile) {
+            const openFile = leaf.activeFile;
+            if (modifiedPaths.includes(openFile)) {
+              // Check if it is dirty in any pane showing it
+              const isDirtyInAnyPane = leafIds.some(otherId => {
+                const otherLeaf = findLeafNode(currentLayout, otherId);
+                return otherLeaf && otherLeaf.activeFile === openFile && paneStatesRef.current.get(otherId)?.isDirty;
+              });
+
+              if (!isDirtyInAnyPane) {
+                try {
+                  const res = await invoke<{ content: string; mtime: number }>("read_markdown_file", { path: openFile });
+                  fileMtimesRef.current.set(openFile, res.mtime);
+                  fileBasesRef.current.set(openFile, res.content);
+
+                  leafIds.forEach((pId2) => {
+                    const l2 = findLeafNode(currentLayout, pId2);
+                    if (l2 && l2.activeFile === openFile) {
+                      const view = editorViewsRef.current.get(pId2);
+                      if (view) {
+                        view.dispatch({
+                          changes: { from: 0, to: view.state.doc.length, insert: res.content }
+                        });
+                      }
+                      paneStatesRef.current.set(pId2, { isDirty: false, wordCount: computeWordCount(res.content) });
+                      if (pId2 === activePaneIdRef.current) {
+                        setIsDirty(false);
+                        setWordCount(computeWordCount(res.content));
+                      }
+                    }
+                  });
+                } catch (reloadErr) {
+                  console.error("Auto-reload failed for external change", reloadErr);
+                }
+              }
+            }
+          }
+        }
       });
     };
     setupListener();
@@ -591,19 +780,27 @@ function App() {
     const activeView = editorViewsRef.current.get(activePaneId);
     if (!activeView) return;
 
+    const timeout = saveTimeoutsRef.current.get(leaf.activeFile);
+    if (timeout) {
+      clearTimeout(timeout);
+      saveTimeoutsRef.current.delete(leaf.activeFile);
+    }
+
     try {
       const currentContent = activeView.state.doc.toString();
-      await invoke("write_markdown_file", { path: leaf.activeFile, content: currentContent });
+      const success = await writeMarkdownFileWithConflictCheck(leaf.activeFile, currentContent);
       
-      paneStatesRef.current.set(activePaneId, { isDirty: false, wordCount: computeWordCount(currentContent) });
-      setIsDirty(false);
+      if (success) {
+        paneStatesRef.current.set(activePaneId, { isDirty: false, wordCount: computeWordCount(currentContent) });
+        setIsDirty(false);
+      }
 
       const tree = await invoke<FileNode[]>("get_file_tree");
       setFileTree(tree);
     } catch (err) {
       console.error("Failed to save file", err);
     }
-  }, [activePaneId, layout, workspacePath]);
+  }, [activePaneId, layout, workspacePath, writeMarkdownFileWithConflictCheck]);
 
   // Save ref for Vim ex-command handler
   const triggerSaveRef = useRef(saveFile);
@@ -671,16 +868,19 @@ function App() {
     const activeLeafNode = findLeafNode(layout, activePaneId);
     if (activeView && activePaneState?.isDirty && activeLeafNode?.activeFile) {
       const content = activeView.state.doc.toString();
-      invoke("write_markdown_file", {
-        path: activeLeafNode.activeFile,
-        content
-      }).catch(err => console.error("Auto-save before split failed", err));
+      const timeout = saveTimeoutsRef.current.get(activeLeafNode.activeFile);
+      if (timeout) {
+        clearTimeout(timeout);
+        saveTimeoutsRef.current.delete(activeLeafNode.activeFile);
+      }
+      writeMarkdownFileWithConflictCheck(activeLeafNode.activeFile, content)
+        .catch(err => console.error("Auto-save before split failed", err));
       paneStatesRef.current.set(activePaneId, { isDirty: false, wordCount: activePaneState.wordCount });
       setIsDirty(false);
     }
 
     setLayout(prevLayout => splitNode(prevLayout));
-  }, [activePaneId, layout, workspacePath]);
+  }, [activePaneId, layout, workspacePath, writeMarkdownFileWithConflictCheck]);
 
   // Close active pane
   const closeActivePane = useCallback(async () => {
@@ -691,8 +891,13 @@ function App() {
     const paneState = paneStatesRef.current.get(activePaneId);
     if (leaf && leaf.activeFile && paneState?.isDirty && view) {
       const content = view.state.doc.toString();
+      const timeout = saveTimeoutsRef.current.get(leaf.activeFile);
+      if (timeout) {
+        clearTimeout(timeout);
+        saveTimeoutsRef.current.delete(leaf.activeFile);
+      }
       try {
-        await invoke("write_markdown_file", { path: leaf.activeFile, content });
+        await writeMarkdownFileWithConflictCheck(leaf.activeFile, content);
       } catch (err) {
         console.error("Failed to auto-save file on pane close", err);
       }
@@ -820,7 +1025,7 @@ function App() {
     }
   }, []);
 
-  const saveTimeoutRef = useRef<any>(null);
+  const saveTimeoutsRef = useRef<Map<string, any>>(new Map());
 
   const onDocChange = useCallback((paneId: string, content: string) => {
     const currentLayout = layoutRef.current;
@@ -858,11 +1063,12 @@ function App() {
     });
 
     // 3. Trigger debounced save
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    saveTimeoutRef.current = setTimeout(async () => {
-      try {
-        await invoke("write_markdown_file", { path: fileName, content });
-
+    let fileTimeout = saveTimeoutsRef.current.get(fileName);
+    if (fileTimeout) clearTimeout(fileTimeout);
+    fileTimeout = setTimeout(async () => {
+      saveTimeoutsRef.current.delete(fileName);
+      const success = await writeMarkdownFileWithConflictCheck(fileName, content);
+      if (success) {
         // Auto-save completed: Mark all panes displaying this file as clean
         const latestLayout = layoutRef.current;
         const latestLeafIds = getLeafPaneIds(latestLayout);
@@ -875,11 +1081,10 @@ function App() {
             }
           }
         });
-      } catch (err) {
-        console.error("Auto-save failed", err);
       }
     }, 300);
-  }, [workspacePath]);
+    saveTimeoutsRef.current.set(fileName, fileTimeout);
+  }, [workspacePath, writeMarkdownFileWithConflictCheck]);
 
   const onVimModeChange = useCallback((mode: string) => {
     setVimModeName(mode);
@@ -1172,7 +1377,8 @@ function App() {
       window.removeEventListener("mousedown", handleGlobalClick, true);
       window.removeEventListener("keydown", handleKeyDown, true);
       if (prefixTimeoutRef.current) clearTimeout(prefixTimeoutRef.current);
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutsRef.current.forEach((t) => clearTimeout(t));
+      saveTimeoutsRef.current.clear();
     };
   }, []);
 
@@ -1260,6 +1466,8 @@ function App() {
           workspacePath={workspacePath}
           fileTree={fileTree}
           pendingHeadersRef={pendingHeadersRef}
+          fileMtimesRef={fileMtimesRef}
+          fileBasesRef={fileBasesRef}
           onFocus={() => {
             setActivePaneId(node.id);
             setFocusedComponent("editor");
@@ -1477,6 +1685,51 @@ function App() {
         recordingHotkey={recordingHotkey}
         setRecordingHotkey={setRecordingHotkey}
       />
+
+      {conflictInfo && (
+        <div className="conflict-modal-overlay">
+          <div className="conflict-modal-card">
+            <div className="conflict-modal-header">
+              <h2>Conflict Detected: {conflictInfo.path}</h2>
+            </div>
+            <div className="conflict-modal-body">
+              <p className="conflict-modal-desc">
+                This file was modified externally. Below are the differences between your local changes (red/minus) and the version on disk (green/plus).
+              </p>
+              <div className="conflict-diff-container">
+                {computeSimpleLineDiff(conflictInfo.localContent, conflictInfo.diskContent).map((line, idx) => (
+                  <div key={idx} className={`diff-line ${line.type}`}>
+                    <span className="diff-marker">
+                      {line.type === "added" ? "+" : line.type === "removed" ? "-" : " "}
+                    </span>
+                    <pre className="diff-text">{line.value}</pre>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="conflict-modal-footer">
+              <button
+                className="btn-conflict-action overwrite"
+                onClick={() => conflictResolveRef.current?.("overwrite")}
+              >
+                Overwrite Disk Version
+              </button>
+              <button
+                className="btn-conflict-action reload"
+                onClick={() => conflictResolveRef.current?.("reload")}
+              >
+                Reload from Disk
+              </button>
+              <button
+                className="btn-conflict-action cancel"
+                onClick={() => conflictResolveRef.current?.("cancel")}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
