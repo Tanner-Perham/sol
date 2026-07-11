@@ -43,6 +43,12 @@ export interface AppSettings {
   keybindings?: Keybindings;
 }
 
+export interface ModelFile {
+  name: string;
+  size: number;
+  sha256?: string;
+}
+
 // LLM Model types
 export interface ModelInfo {
   id: string;
@@ -50,7 +56,7 @@ export interface ModelInfo {
   description: string;
   size_bytes: number;
   repo_id: string;
-  files: string[];
+  files: ModelFile[];
 }
 
 export type ModelStatusType =

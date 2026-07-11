@@ -8,9 +8,42 @@ mod llm;
 use llm::{LlmConfig, ModelStatus, ModelWithStatus};
 
 struct WorkspaceState {
-    path: Mutex<PathBuf>,
-    watcher: Mutex<RecommendedWatcher>,
+    path: Mutex<Option<PathBuf>>,
+    watcher: Mutex<Option<RecommendedWatcher>>,
     download_state: llm::download::SharedDownloadState,
+}
+
+fn get_saved_workspace(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let config_dir = app.path().app_config_dir().ok()?;
+    let config_file = config_dir.join("config.json");
+    if config_file.exists() {
+        if let Ok(content) = std::fs::read_to_string(config_file) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(path_str) = val.get("last_workspace").and_then(|v| v.as_str()) {
+                    let path = PathBuf::from(path_str);
+                    if path.is_dir() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn save_workspace(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
+    let config_file = config_dir.join("config.json");
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "last_workspace".to_string(),
+        serde_json::Value::String(path.to_string_lossy().into_owned()),
+    );
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(config_file, content).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -74,57 +107,114 @@ fn build_tree(dir: &Path, base: &Path) -> Result<Vec<FileNode>, String> {
     Ok(nodes)
 }
 
-#[tauri::command]
-fn display() -> String {
-    let file_path = "../test.md";
-    println!("In file {file_path}");
+fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<PathBuf, String> {
+    let user_path = Path::new(user_path);
+    if user_path.is_absolute() {
+        return Err("Absolute paths are not allowed".to_string());
+    }
 
-    let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
+    for component in user_path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                return Err("Path traversal detected: '..' is not allowed".to_string());
+            }
+            _ => {}
+        }
+    }
 
-    println!("With text:\n{contents}");
-
-    let parser = pulldown_cmark::Parser::new(&contents);
-
-    let mut html_output = String::new();
-    pulldown_cmark::html::push_html(&mut html_output, parser);
-
-    html_output
+    let joined = workspace.join(user_path);
+    
+    // Find the closest existing ancestor
+    let mut ancestor = joined.as_path();
+    let mut remaining = Vec::new();
+    while !ancestor.exists() {
+        if let Some(parent) = ancestor.parent() {
+            if let Some(file_name) = ancestor.file_name() {
+                remaining.push(file_name);
+            }
+            ancestor = parent;
+        } else {
+            break;
+        }
+    }
+    
+    // Canonicalize the ancestor (which exists)
+    let canonical_ancestor = std::fs::canonicalize(ancestor)
+        .map_err(|e| format!("Failed to canonicalize ancestor path: {}", e))?;
+    
+    // Canonicalize the workspace path to compare
+    let canonical_workspace = std::fs::canonicalize(workspace)
+        .map_err(|e| format!("Failed to canonicalize workspace path: {}", e))?;
+        
+    // Check if the canonicalized ancestor starts with the canonicalized workspace
+    if !canonical_ancestor.starts_with(&canonical_workspace) {
+        return Err("Path traversal detected: path is outside the workspace".to_string());
+    }
+    
+    // Reconstruct the full canonical path by joining the remaining components onto the canonical ancestor
+    let mut final_path = canonical_ancestor;
+    for part in remaining.into_iter().rev() {
+        // Double check that each part is a normal component (no ".." or similar)
+        let part_path = Path::new(part);
+        for component in part_path.components() {
+            match component {
+                std::path::Component::Normal(_) => {}
+                _ => return Err("Invalid path component in new file/directory path".to_string()),
+            }
+        }
+        final_path.push(part);
+    }
+    
+    Ok(final_path)
 }
 
 #[tauri::command]
-fn read_markdown_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|e| e.to_string())
+fn read_markdown_file(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<String, String> {
+    let path_lock = state.path.lock().unwrap();
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let resolved = resolve_safe_path(workspace, &path)?;
+    fs::read_to_string(&resolved).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn write_markdown_file(path: String, content: String) -> Result<(), String> {
-    fs::write(&path, content).map_err(|e| e.to_string())
+fn write_markdown_file(path: String, content: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+    let path_lock = state.path.lock().unwrap();
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let resolved = resolve_safe_path(workspace, &path)?;
+    fs::write(&resolved, content).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_workspace_path(state: tauri::State<'_, WorkspaceState>) -> String {
-    state.path.lock().unwrap().to_string_lossy().into_owned()
+    state.path.lock().unwrap()
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 #[tauri::command]
 fn list_workspace_files(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<String>, String> {
-    let workspace = state.path.lock().unwrap();
-    let entries = fs::read_dir(&*workspace).map_err(|e| e.to_string())?;
-    let mut files = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "md" {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        files.push(name.to_string());
+    let path_lock = state.path.lock().unwrap();
+    if let Some(ref workspace) = *path_lock {
+        let entries = fs::read_dir(workspace).map_err(|e| e.to_string())?;
+        let mut files = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "md" {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            files.push(name.to_string());
+                        }
                     }
                 }
             }
         }
+        files.sort();
+        Ok(files)
+    } else {
+        Ok(Vec::new())
     }
-    files.sort();
-    Ok(files)
 }
 
 #[tauri::command]
@@ -137,8 +227,9 @@ fn create_markdown_file(
     } else {
         format!("{}.md", name)
     };
-    let workspace = state.path.lock().unwrap();
-    let path = workspace.join(&name_clean);
+    let path_lock = state.path.lock().unwrap();
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let path = resolve_safe_path(workspace, &name_clean)?;
     if path.exists() {
         return Err("File already exists".to_string());
     }
@@ -153,63 +244,106 @@ fn create_markdown_file(
 
 #[tauri::command]
 fn get_file_tree(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<FileNode>, String> {
-    let workspace = state.path.lock().unwrap();
-    build_tree(&workspace, &workspace)
+    let path_lock = state.path.lock().unwrap();
+    if let Some(ref workspace) = *path_lock {
+        build_tree(workspace, workspace)
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 #[tauri::command]
 fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
-    let workspace = state.path.lock().unwrap();
-    let full_path = workspace.join(&path);
+    let path_lock = state.path.lock().unwrap();
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let full_path = resolve_safe_path(workspace, &path)?;
     if full_path.exists() {
         return Err("Directory or file already exists".to_string());
     }
     fs::create_dir_all(&full_path).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn select_directory() -> Option<String> {
-    rfd::AsyncFileDialog::new().pick_folder().await.map(|p| {
-        let path = p.path().to_path_buf();
-        std::fs::canonicalize(&path)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned()
-    })
+#[derive(serde::Serialize)]
+struct ChangeWorkspaceResult {
+    workspace_path: String,
+    tree: Vec<FileNode>,
 }
 
 #[tauri::command]
-fn set_workspace_path(
-    path: String,
+async fn change_workspace(
     state: tauri::State<'_, WorkspaceState>,
-) -> Result<Vec<FileNode>, String> {
-    let new_path = std::fs::canonicalize(PathBuf::from(&path)).map_err(|e| e.to_string())?;
+    app: tauri::AppHandle,
+) -> Result<Option<ChangeWorkspaceResult>, String> {
+    let selected_path = match rfd::AsyncFileDialog::new().pick_folder().await {
+        Some(p) => p.path().to_path_buf(),
+        None => return Ok(None),
+    };
+
+    let new_path = std::fs::canonicalize(&selected_path)
+        .map_err(|e| format!("Failed to canonicalize path: {}", e))?;
+
     if !new_path.is_dir() {
-        return Err("Path is not a directory".to_string());
+        return Err("Selected path is not a directory".to_string());
     }
 
-    let mut path_lock = state.path.lock().unwrap();
-    let old_path = path_lock.clone();
-    *path_lock = new_path.clone();
+    let old_path = {
+        let mut path_lock = state.path.lock().unwrap();
+        let old = path_lock.clone();
+        *path_lock = Some(new_path.clone());
+        old
+    };
 
-    let mut watcher_lock = state.watcher.lock().unwrap();
-    let _ = watcher_lock.unwatch(&old_path);
-    watcher_lock
-        .watch(&new_path, RecursiveMode::Recursive)
-        .map_err(|e| e.to_string())?;
+    if let Some(old) = old_path {
+        let _ = app.asset_protocol_scope().forbid_directory(&old, true);
+        
+        let mut watcher_lock = state.watcher.lock().unwrap();
+        if let Some(ref mut watcher) = *watcher_lock {
+            let _ = watcher.unwatch(&old);
+        }
+    }
 
-    build_tree(&new_path, &new_path)
+    let _ = app.asset_protocol_scope().allow_directory(&new_path, true);
+
+    {
+        let mut watcher_lock = state.watcher.lock().unwrap();
+        let app_handle = app.clone();
+        let mut watcher =
+            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(_event) = res {
+                    let _ = app_handle.emit("workspace-changed", ());
+                }
+            })
+            .map_err(|e| e.to_string())?;
+
+        watcher
+            .watch(&new_path, RecursiveMode::Recursive)
+            .map_err(|e| e.to_string())?;
+            
+        *watcher_lock = Some(watcher);
+    }
+
+    save_workspace(&app, &new_path)?;
+
+    let tree = build_tree(&new_path, &new_path)?;
+    Ok(Some(ChangeWorkspaceResult {
+        workspace_path: new_path.to_string_lossy().into_owned(),
+        tree,
+    }))
 }
 
 #[tauri::command]
 fn read_settings(state: tauri::State<'_, WorkspaceState>) -> Result<String, String> {
-    let workspace = state.path.lock().unwrap();
-    let settings_dir = workspace.join(".sol");
-    let settings_file = settings_dir.join("settings.json");
-    if !settings_file.exists() {
-        return Ok("{}".to_string());
+    let path_lock = state.path.lock().unwrap();
+    if let Some(ref workspace) = *path_lock {
+        let settings_dir = workspace.join(".sol");
+        let settings_file = settings_dir.join("settings.json");
+        if !settings_file.exists() {
+            return Ok("{}".to_string());
+        }
+        fs::read_to_string(&settings_file).map_err(|e| e.to_string())
+    } else {
+        Ok("{}".to_string())
     }
-    fs::read_to_string(&settings_file).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -217,13 +351,17 @@ fn write_settings(
     settings_json: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
-    let workspace = state.path.lock().unwrap();
-    let settings_dir = workspace.join(".sol");
-    if !settings_dir.exists() {
-        fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+    let path_lock = state.path.lock().unwrap();
+    if let Some(ref workspace) = *path_lock {
+        let settings_dir = workspace.join(".sol");
+        if !settings_dir.exists() {
+            fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+        }
+        let settings_file = settings_dir.join("settings.json");
+        fs::write(&settings_file, settings_json).map_err(|e| e.to_string())
+    } else {
+        Err("No workspace active".to_string())
     }
-    let settings_file = settings_dir.join("settings.json");
-    fs::write(&settings_file, settings_json).map_err(|e| e.to_string())
 }
 
 // ============================================================================
@@ -233,7 +371,11 @@ fn write_settings(
 /// Get list of available models with their status
 #[tauri::command]
 fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
-    let workspace = state.path.lock().unwrap().clone();
+    let path_lock = state.path.lock().unwrap();
+    let workspace = match path_lock.as_ref() {
+        Some(w) => w.clone(),
+        None => return Vec::new(),
+    };
     let config = LlmConfig::load(&workspace);
 
     llm::registry::get_available_models()
@@ -258,8 +400,9 @@ fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
 /// Get the currently active model ID
 #[tauri::command]
 fn get_active_model(state: tauri::State<'_, WorkspaceState>) -> Option<String> {
-    let workspace = state.path.lock().unwrap().clone();
-    let config = LlmConfig::load(&workspace);
+    let path_lock = state.path.lock().unwrap();
+    let workspace = path_lock.as_ref()?;
+    let config = LlmConfig::load(workspace);
     config.active_model_id
 }
 
@@ -269,15 +412,28 @@ fn set_active_model(
     model_id: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
-    let workspace = state.path.lock().unwrap().clone();
+    let path_lock = state.path.lock().unwrap();
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
 
-    if !llm::is_model_downloaded(&workspace, &model_id) {
+    if !llm::is_model_downloaded(workspace, &model_id) {
         return Err("Model not downloaded".to_string());
     }
 
-    let mut config = LlmConfig::load(&workspace);
+    let mut config = LlmConfig::load(workspace);
     config.active_model_id = Some(model_id);
-    config.save(&workspace)
+    config.save(workspace)
+}
+
+struct DownloadDropGuard {
+    model_id: String,
+    download_state: llm::download::SharedDownloadState,
+}
+
+impl Drop for DownloadDropGuard {
+    fn drop(&mut self) {
+        let mut ds = self.download_state.lock().unwrap();
+        ds.in_flight.insert(self.model_id.clone(), false);
+    }
 }
 
 /// Start downloading a model
@@ -287,11 +443,25 @@ fn start_model_download(
     app: tauri::AppHandle,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
-    let workspace = state.path.lock().unwrap().clone();
+    let path_lock = state.path.lock().unwrap();
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
     let download_state = state.download_state.clone();
+
+    // Check and set in_flight atomically
+    {
+        let mut ds = download_state.lock().unwrap();
+        if *ds.in_flight.get(&model_id).unwrap_or(&false) {
+            return Err("Download already in progress".to_string());
+        }
+        ds.in_flight.insert(model_id.clone(), true);
+    }
 
     // Spawn download in background thread
     std::thread::spawn(move || {
+        let _guard = DownloadDropGuard {
+            model_id: model_id.clone(),
+            download_state: download_state.clone(),
+        };
         let result = llm::download::download_model(&workspace, &model_id, &app, &download_state);
         if let Err(e) = result {
             let _ = app.emit(
@@ -334,16 +504,17 @@ fn cancel_model_download(model_id: String, state: tauri::State<'_, WorkspaceStat
 /// Delete a downloaded model
 #[tauri::command]
 fn delete_model(model_id: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
-    let workspace = state.path.lock().unwrap().clone();
+    let path_lock = state.path.lock().unwrap();
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
 
     // If this was the active model, clear it
-    let mut config = LlmConfig::load(&workspace);
+    let mut config = LlmConfig::load(workspace);
     if config.active_model_id.as_ref() == Some(&model_id) {
         config.active_model_id = None;
-        config.save(&workspace)?;
+        config.save(workspace)?;
     }
 
-    llm::download::delete_model(&workspace, &model_id)
+    llm::download::delete_model(workspace, &model_id)
 }
 
 /// Generate a topic name using the active LLM
@@ -352,22 +523,26 @@ fn generate_topic_name(
     note_snippets: Vec<String>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<String, String> {
-    let workspace = state.path.lock().unwrap().clone();
-    let config = LlmConfig::load(&workspace);
+    let path_lock = state.path.lock().unwrap();
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let config = LlmConfig::load(workspace);
 
     let model_id = config.active_model_id.ok_or("No model selected")?;
 
-    llm::inference::generate_topic_name(&workspace, &model_id, &note_snippets)
+    llm::inference::generate_topic_name(workspace, &model_id, &note_snippets)
 }
 
 /// Check if a model is ready (downloaded and can be selected)
 #[tauri::command]
 fn is_model_ready(state: tauri::State<'_, WorkspaceState>) -> bool {
-    let workspace = state.path.lock().unwrap().clone();
-    let config = LlmConfig::load(&workspace);
-
-    if let Some(model_id) = config.active_model_id {
-        llm::is_model_downloaded(&workspace, &model_id)
+    let path_lock = state.path.lock().unwrap();
+    if let Some(ref workspace) = *path_lock {
+        let config = LlmConfig::load(workspace);
+        if let Some(model_id) = config.active_model_id {
+            llm::is_model_downloaded(workspace, &model_id)
+        } else {
+            false
+        }
     } else {
         false
     }
@@ -379,31 +554,38 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
-            let mut watcher =
-                notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                    if let Ok(_event) = res {
-                        let _ = app_handle.emit("workspace-changed", ());
-                    }
-                })
-                .map_err(|e| e.to_string())?;
+            let saved_path = get_saved_workspace(&app_handle);
 
-            let default_path = std::fs::canonicalize("..").unwrap_or_else(|_| PathBuf::from(".."));
-            watcher
-                .watch(&default_path, RecursiveMode::Recursive)
-                .map_err(|e| e.to_string())?;
+            let (path, watcher) = if let Some(p) = saved_path {
+                let mut watcher =
+                    notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                        if let Ok(_event) = res {
+                            let _ = app_handle.emit("workspace-changed", ());
+                        }
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                watcher
+                    .watch(&p, RecursiveMode::Recursive)
+                    .map_err(|e| e.to_string())?;
+
+                let _ = app.asset_protocol_scope().allow_directory(&p, true);
+                (Some(p), Some(watcher))
+            } else {
+                (None, None)
+            };
 
             // Create download state for LLM model downloads
             let download_state = llm::download::new_download_state();
 
             app.manage(WorkspaceState {
-                path: Mutex::new(default_path),
+                path: Mutex::new(path),
                 watcher: Mutex::new(watcher),
                 download_state,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            display,
             read_markdown_file,
             write_markdown_file,
             get_workspace_path,
@@ -411,8 +593,7 @@ pub fn run() {
             create_markdown_file,
             get_file_tree,
             create_directory,
-            select_directory,
-            set_workspace_path,
+            change_workspace,
             read_settings,
             write_settings,
             // LLM commands
@@ -429,4 +610,56 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_safe_path() {
+        let temp_dir = std::env::temp_dir();
+        let unique_dir = temp_dir.join(format!("sol_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&unique_dir).unwrap();
+        let workspace = std::fs::canonicalize(&unique_dir).unwrap();
+
+        // 1. Valid file directly in workspace
+        let res = resolve_safe_path(&workspace, "test.md");
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), workspace.join("test.md"));
+
+        // 2. Valid file in subdirectory
+        let res = resolve_safe_path(&workspace, "sub/dir/test.md");
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), workspace.join("sub/dir/test.md"));
+
+        // 3. Absolute path should be rejected
+        let res = resolve_safe_path(&workspace, "/etc/passwd");
+        assert!(res.is_err());
+
+        // 4. Directory traversal attempting to escape workspace
+        let res = resolve_safe_path(&workspace, "../escape.md");
+        assert!(res.is_err());
+
+        let res = resolve_safe_path(&workspace, "subdir/../../escape.md");
+        assert!(res.is_err());
+
+        // 5. Symlinks pointing outside workspace
+        let outside_dir = temp_dir.join(format!("sol_outside_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        
+        let link_path = workspace.join("link");
+        #[cfg(unix)]
+        let link_created = std::os::unix::fs::symlink(&outside_dir, &link_path).is_ok();
+        #[cfg(windows)]
+        let link_created = std::os::windows::fs::symlink_dir(&outside_dir, &link_path).is_ok();
+        
+        if link_created {
+            let res = resolve_safe_path(&workspace, "link/x.md");
+            assert!(res.is_err());
+        }
+        
+        let _ = std::fs::remove_dir_all(&outside_dir);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
 }

@@ -102,8 +102,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     let active = true;
     const loadContent = async () => {
       try {
-        const filePath = `${workspacePath}/${activeFile}`;
-        const fileContent = await invoke<string>("read_markdown_file", { path: filePath });
+        const fileContent = await invoke<string>("read_markdown_file", { path: activeFile });
         if (!active) return;
         setFileData({ file: activeFile, content: fileContent });
         setIsLocalDirty(false);
