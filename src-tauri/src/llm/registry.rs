@@ -6,7 +6,8 @@ pub fn get_available_models() -> Vec<ModelInfo> {
         ModelInfo {
             id: "qwen2-0.5b".to_string(),
             name: "Qwen2 0.5B".to_string(),
-            description: "Compact 0.5B parameter model, fast inference, good for topic naming".to_string(),
+            description: "Compact 0.5B parameter model, fast inference, good for topic naming"
+                .to_string(),
             size_bytes: 500_000_000, // ~500MB
             repo_id: "Qwen/Qwen2-0.5B-Instruct".to_string(),
             files: vec![
@@ -47,5 +48,7 @@ pub fn get_available_models() -> Vec<ModelInfo> {
 
 /// Get info for a specific model
 pub fn get_model_info(model_id: &str) -> Option<ModelInfo> {
-    get_available_models().into_iter().find(|m| m.id == model_id)
+    get_available_models()
+        .into_iter()
+        .find(|m| m.id == model_id)
 }

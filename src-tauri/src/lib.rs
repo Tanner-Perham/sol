@@ -1,11 +1,11 @@
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use notify::{Watcher, RecommendedWatcher, RecursiveMode};
 use tauri::{Emitter, Manager};
 
 mod llm;
-use llm::{ModelStatus, ModelWithStatus, LlmConfig};
+use llm::{LlmConfig, ModelStatus, ModelWithStatus};
 
 struct WorkspaceState {
     path: Mutex<PathBuf>,
@@ -29,7 +29,8 @@ fn build_tree(dir: &Path, base: &Path) -> Result<Vec<FileNode>, String> {
     let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = path.file_name()
+        let name = path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
@@ -38,7 +39,8 @@ fn build_tree(dir: &Path, base: &Path) -> Result<Vec<FileNode>, String> {
             continue;
         }
 
-        let relative_path = path.strip_prefix(base)
+        let relative_path = path
+            .strip_prefix(base)
             .map_err(|e| e.to_string())?
             .to_str()
             .unwrap_or("")
@@ -48,12 +50,10 @@ fn build_tree(dir: &Path, base: &Path) -> Result<Vec<FileNode>, String> {
         let mut children = Vec::new();
         if is_dir {
             children = build_tree(&path, base)?;
-            children.sort_by(|a, b| {
-                match (a.is_dir, b.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                }
+            children.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             });
         }
 
@@ -65,12 +65,10 @@ fn build_tree(dir: &Path, base: &Path) -> Result<Vec<FileNode>, String> {
         });
     }
 
-    nodes.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    nodes.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     Ok(nodes)
@@ -81,8 +79,7 @@ fn display() -> String {
     let file_path = "../test.md";
     println!("In file {file_path}");
 
-    let contents = fs::read_to_string(file_path)
-        .expect("Should have been able to read the file");
+    let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
 
     println!("With text:\n{contents}");
 
@@ -131,8 +128,15 @@ fn list_workspace_files(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<S
 }
 
 #[tauri::command]
-fn create_markdown_file(name: String, state: tauri::State<'_, WorkspaceState>) -> Result<String, String> {
-    let name_clean = if name.ends_with(".md") { name } else { format!("{}.md", name) };
+fn create_markdown_file(
+    name: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<String, String> {
+    let name_clean = if name.ends_with(".md") {
+        name
+    } else {
+        format!("{}.md", name)
+    };
     let workspace = state.path.lock().unwrap();
     let path = workspace.join(&name_clean);
     if path.exists() {
@@ -165,13 +169,13 @@ fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Re
 
 #[tauri::command]
 async fn select_directory() -> Option<String> {
-    rfd::AsyncFileDialog::new()
-        .pick_folder()
-        .await
-        .map(|p| {
-            let path = p.path().to_path_buf();
-            std::fs::canonicalize(&path).unwrap_or(path).to_string_lossy().into_owned()
-        })
+    rfd::AsyncFileDialog::new().pick_folder().await.map(|p| {
+        let path = p.path().to_path_buf();
+        std::fs::canonicalize(&path)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    })
 }
 
 #[tauri::command]
@@ -209,7 +213,10 @@ fn read_settings(state: tauri::State<'_, WorkspaceState>) -> Result<String, Stri
 }
 
 #[tauri::command]
-fn write_settings(settings_json: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+fn write_settings(
+    settings_json: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
     let workspace = state.path.lock().unwrap();
     let settings_dir = workspace.join(".sol");
     if !settings_dir.exists() {
@@ -260,7 +267,7 @@ fn get_active_model(state: tauri::State<'_, WorkspaceState>) -> Option<String> {
 #[tauri::command]
 fn set_active_model(
     model_id: String,
-    state: tauri::State<'_, WorkspaceState>
+    state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let workspace = state.path.lock().unwrap().clone();
 
@@ -278,7 +285,7 @@ fn set_active_model(
 fn start_model_download(
     model_id: String,
     app: tauri::AppHandle,
-    state: tauri::State<'_, WorkspaceState>
+    state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let workspace = state.path.lock().unwrap().clone();
     let download_state = state.download_state.clone();
@@ -287,16 +294,19 @@ fn start_model_download(
     std::thread::spawn(move || {
         let result = llm::download::download_model(&workspace, &model_id, &app, &download_state);
         if let Err(e) = result {
-            let _ = app.emit("model-download-progress", llm::download::DownloadProgress {
-                model_id: model_id.clone(),
-                file_name: "".to_string(),
-                file_index: 0,
-                total_files: 0,
-                bytes_downloaded: 0,
-                total_bytes: 0,
-                status: "error".to_string(),
-                error: Some(e),
-            });
+            let _ = app.emit(
+                "model-download-progress",
+                llm::download::DownloadProgress {
+                    model_id: model_id.clone(),
+                    file_name: "".to_string(),
+                    file_index: 0,
+                    total_files: 0,
+                    bytes_downloaded: 0,
+                    total_bytes: 0,
+                    status: "error".to_string(),
+                    error: Some(e),
+                },
+            );
         }
     });
 
@@ -305,37 +315,25 @@ fn start_model_download(
 
 /// Pause a model download
 #[tauri::command]
-fn pause_model_download(
-    model_id: String,
-    state: tauri::State<'_, WorkspaceState>
-) {
+fn pause_model_download(model_id: String, state: tauri::State<'_, WorkspaceState>) {
     llm::download::pause_download(&model_id, &state.download_state);
 }
 
 /// Resume a model download
 #[tauri::command]
-fn resume_model_download(
-    model_id: String,
-    state: tauri::State<'_, WorkspaceState>
-) {
+fn resume_model_download(model_id: String, state: tauri::State<'_, WorkspaceState>) {
     llm::download::resume_download(&model_id, &state.download_state);
 }
 
 /// Cancel a model download
 #[tauri::command]
-fn cancel_model_download(
-    model_id: String,
-    state: tauri::State<'_, WorkspaceState>
-) {
+fn cancel_model_download(model_id: String, state: tauri::State<'_, WorkspaceState>) {
     llm::download::cancel_download(&model_id, &state.download_state);
 }
 
 /// Delete a downloaded model
 #[tauri::command]
-fn delete_model(
-    model_id: String,
-    state: tauri::State<'_, WorkspaceState>
-) -> Result<(), String> {
+fn delete_model(model_id: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
     let workspace = state.path.lock().unwrap().clone();
 
     // If this was the active model, clear it
@@ -352,13 +350,12 @@ fn delete_model(
 #[tauri::command]
 fn generate_topic_name(
     note_snippets: Vec<String>,
-    state: tauri::State<'_, WorkspaceState>
+    state: tauri::State<'_, WorkspaceState>,
 ) -> Result<String, String> {
     let workspace = state.path.lock().unwrap().clone();
     let config = LlmConfig::load(&workspace);
 
-    let model_id = config.active_model_id
-        .ok_or("No model selected")?;
+    let model_id = config.active_model_id.ok_or("No model selected")?;
 
     llm::inference::generate_topic_name(&workspace, &model_id, &note_snippets)
 }
@@ -376,21 +373,24 @@ fn is_model_ready(state: tauri::State<'_, WorkspaceState>) -> bool {
     }
 }
 
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
-            let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if let Ok(_event) = res {
-                    let _ = app_handle.emit("workspace-changed", ());
-                }
-            }).map_err(|e| e.to_string())?;
+            let mut watcher =
+                notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                    if let Ok(_event) = res {
+                        let _ = app_handle.emit("workspace-changed", ());
+                    }
+                })
+                .map_err(|e| e.to_string())?;
 
             let default_path = std::fs::canonicalize("..").unwrap_or_else(|_| PathBuf::from(".."));
-            watcher.watch(&default_path, RecursiveMode::Recursive).map_err(|e| e.to_string())?;
+            watcher
+                .watch(&default_path, RecursiveMode::Recursive)
+                .map_err(|e| e.to_string())?;
 
             // Create download state for LLM model downloads
             let download_state = llm::download::new_download_state();

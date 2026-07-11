@@ -51,8 +51,8 @@ pub fn download_model(
 ) -> Result<(), String> {
     println!("[LLM] Starting download for model: {}", model_id);
 
-    let info = registry::get_model_info(model_id)
-        .ok_or_else(|| format!("Unknown model: {}", model_id))?;
+    let info =
+        registry::get_model_info(model_id).ok_or_else(|| format!("Unknown model: {}", model_id))?;
 
     println!("[LLM] Model info: {:?}", info.repo_id);
 
@@ -79,16 +79,19 @@ pub fn download_model(
         {
             let state = download_state.lock().unwrap();
             if *state.cancelled.get(model_id).unwrap_or(&false) {
-                let _ = app_handle.emit("model-download-progress", DownloadProgress {
-                    model_id: model_id.to_string(),
-                    file_name: file.clone(),
-                    file_index: idx,
-                    total_files,
-                    bytes_downloaded: 0,
-                    total_bytes: 0,
-                    status: "cancelled".to_string(),
-                    error: None,
-                });
+                let _ = app_handle.emit(
+                    "model-download-progress",
+                    DownloadProgress {
+                        model_id: model_id.to_string(),
+                        file_name: file.clone(),
+                        file_index: idx,
+                        total_files,
+                        bytes_downloaded: 0,
+                        total_bytes: 0,
+                        status: "cancelled".to_string(),
+                        error: None,
+                    },
+                );
                 return Err("Download cancelled".to_string());
             }
         }
@@ -118,16 +121,19 @@ pub fn download_model(
         let url = hf_download_url(&info.repo_id, file);
         let dest_path = model_dir.join(file_name);
 
-        println!("[LLM] Downloading file {}/{}: {}", idx + 1, total_files, file);
+        println!(
+            "[LLM] Downloading file {}/{}: {}",
+            idx + 1,
+            total_files,
+            file
+        );
         println!("[LLM] URL: {}", url);
 
         // Start the download
-        let response = client.get(&url)
-            .send()
-            .map_err(|e| {
-                println!("[LLM] ERROR starting download: {}", e);
-                format!("Failed to start download for {}: {}", file, e)
-            })?;
+        let response = client.get(&url).send().map_err(|e| {
+            println!("[LLM] ERROR starting download: {}", e);
+            format!("Failed to start download for {}: {}", file, e)
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -174,49 +180,59 @@ pub fn download_model(
             }
 
             use std::io::Read;
-            let bytes_read = reader.read(&mut buffer)
+            let bytes_read = reader
+                .read(&mut buffer)
                 .map_err(|e| format!("Failed to read data: {}", e))?;
 
             if bytes_read == 0 {
                 break; // EOF
             }
 
-            output_file.write_all(&buffer[..bytes_read])
+            output_file
+                .write_all(&buffer[..bytes_read])
                 .map_err(|e| format!("Failed to write data: {}", e))?;
 
             downloaded += bytes_read as u64;
 
             // Emit progress every 100ms or so
             if last_emit_time.elapsed().as_millis() >= 100 {
-                let _ = app_handle.emit("model-download-progress", DownloadProgress {
-                    model_id: model_id.to_string(),
-                    file_name: file_name.to_string(),
-                    file_index: idx,
-                    total_files,
-                    bytes_downloaded: downloaded,
-                    total_bytes: total_size,
-                    status: "downloading".to_string(),
-                    error: None,
-                });
+                let _ = app_handle.emit(
+                    "model-download-progress",
+                    DownloadProgress {
+                        model_id: model_id.to_string(),
+                        file_name: file_name.to_string(),
+                        file_index: idx,
+                        total_files,
+                        bytes_downloaded: downloaded,
+                        total_bytes: total_size,
+                        status: "downloading".to_string(),
+                        error: None,
+                    },
+                );
                 last_emit_time = std::time::Instant::now();
             }
         }
 
-        output_file.flush().map_err(|e| format!("Failed to flush file: {}", e))?;
+        output_file
+            .flush()
+            .map_err(|e| format!("Failed to flush file: {}", e))?;
         println!("[LLM] File {} complete ({} bytes)", file_name, downloaded);
     }
 
     // Emit completion
-    let _ = app_handle.emit("model-download-progress", DownloadProgress {
-        model_id: model_id.to_string(),
-        file_name: "".to_string(),
-        file_index: total_files,
-        total_files,
-        bytes_downloaded: info.size_bytes,
-        total_bytes: info.size_bytes,
-        status: "completed".to_string(),
-        error: None,
-    });
+    let _ = app_handle.emit(
+        "model-download-progress",
+        DownloadProgress {
+            model_id: model_id.to_string(),
+            file_name: "".to_string(),
+            file_index: total_files,
+            total_files,
+            bytes_downloaded: info.size_bytes,
+            total_bytes: info.size_bytes,
+            status: "completed".to_string(),
+            error: None,
+        },
+    );
 
     println!("[LLM] Download complete for model: {}", model_id);
 

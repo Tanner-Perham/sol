@@ -44,8 +44,8 @@ impl LoadedModel {
                 .map_err(|e| format!("Failed to load weights: {}", e))?
         };
 
-        let model = Qwen2Model::new(&config, vb)
-            .map_err(|e| format!("Failed to create model: {}", e))?;
+        let model =
+            Qwen2Model::new(&config, vb).map_err(|e| format!("Failed to create model: {}", e))?;
 
         Ok(Self {
             model,
@@ -57,7 +57,9 @@ impl LoadedModel {
     /// Generate text given a prompt
     pub fn generate(&mut self, prompt: &str, max_tokens: usize) -> Result<String, String> {
         // Tokenize input
-        let encoding = self.tokenizer.encode(prompt, true)
+        let encoding = self
+            .tokenizer
+            .encode(prompt, true)
             .map_err(|e| format!("Tokenization failed: {}", e))?;
 
         let input_ids = encoding.get_ids();
@@ -72,7 +74,9 @@ impl LoadedModel {
                 .unsqueeze(0)
                 .map_err(|e| format!("Unsqueeze failed: {}", e))?;
 
-            let logits = self.model.forward(&input, tokens.len())
+            let logits = self
+                .model
+                .forward(&input, tokens.len())
                 .map_err(|e| format!("Forward pass failed: {}", e))?;
 
             let logits = logits
@@ -98,7 +102,9 @@ impl LoadedModel {
 
         // Decode output (skip input tokens)
         let output_tokens = &tokens[input_ids.len()..];
-        let output = self.tokenizer.decode(output_tokens, true)
+        let output = self
+            .tokenizer
+            .decode(output_tokens, true)
             .map_err(|e| format!("Decoding failed: {}", e))?;
 
         Ok(output.trim().to_string())
