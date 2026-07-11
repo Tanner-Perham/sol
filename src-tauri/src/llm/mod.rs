@@ -73,7 +73,7 @@ impl LlmConfig {
         std::fs::create_dir_all(&sol_dir).map_err(|e| e.to_string())?;
         let config_path = sol_dir.join("llm_config.json");
         let data = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(&config_path, data).map_err(|e| e.to_string())
+        crate::write_atomically(&config_path, data.as_bytes()).map_err(|e| e.to_string())
     }
 }
 

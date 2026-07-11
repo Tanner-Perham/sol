@@ -2008,3 +2008,161 @@ body,
   margin-top: 4px;
   font-style: italic;
 }
+
+/* Conflict Resolution Modal Styles */
+.conflict-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conflict-modal-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 720px;
+  height: 520px;
+  max-width: 95vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+}
+
+.conflict-modal-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.conflict-modal-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.conflict-modal-body {
+  flex: 1;
+  padding: 20px;
+  overflow-y: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.conflict-modal-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.conflict-diff-container {
+  flex: 1;
+  background-color: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diff-line {
+  display: flex;
+  white-space: pre-wrap;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.diff-line.added {
+  background-color: rgba(46, 160, 67, 0.15);
+  color: #56d364;
+}
+
+.diff-line.removed {
+  background-color: rgba(248, 81, 73, 0.15);
+  color: #ff7b72;
+}
+
+.diff-line.unchanged {
+  color: var(--text-muted);
+}
+
+.diff-marker {
+  width: 18px;
+  user-select: none;
+  font-weight: bold;
+}
+
+.diff-text {
+  margin: 0;
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.conflict-modal-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+  background-color: rgba(0, 0, 0, 0.15);
+  flex-shrink: 0;
+}
+
+.btn-conflict-action {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-conflict-action.overwrite {
+  background-color: var(--accent);
+  color: var(--bg-dark);
+}
+
+.btn-conflict-action.overwrite:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.btn-conflict-action.reload {
+  background-color: transparent;
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+.btn-conflict-action.reload:hover {
+  background-color: var(--bg-hover);
+  transform: translateY(-1px);
+}
+
+.btn-conflict-action.cancel {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.btn-conflict-action.cancel:hover {
+  color: var(--text-primary);
+}

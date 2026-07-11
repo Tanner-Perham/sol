@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { EditorState, Compartment } from "@codemirror/state";
+import { EditorState, Compartment, Transaction } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, historyKeymap, history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
@@ -20,6 +20,8 @@ export interface EditorPaneProps {
   workspacePath: string;
   fileTree: FileNode[];
   pendingHeadersRef: React.MutableRefObject<Map<PaneId, string>>;
+  fileMtimesRef: React.MutableRefObject<Map<string, number>>;
+  fileBasesRef: React.MutableRefObject<Map<string, string>>;
   onFocus: () => void;
   onCloseTab: (paneId: string, file: string) => void;
   onOpenFile: (file: string) => void;
@@ -46,6 +48,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   workspacePath,
   fileTree,
   pendingHeadersRef,
+  fileMtimesRef,
+  fileBasesRef,
   onFocus,
   onCloseTab,
   onOpenFile,
@@ -102,11 +106,13 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     let active = true;
     const loadContent = async () => {
       try {
-        const fileContent = await invoke<string>("read_markdown_file", { path: activeFile });
+        const res = await invoke<{ content: string; mtime: number }>("read_markdown_file", { path: activeFile });
         if (!active) return;
-        setFileData({ file: activeFile, content: fileContent });
+        fileMtimesRef.current.set(activeFile, res.mtime);
+        fileBasesRef.current.set(activeFile, res.content);
+        setFileData({ file: activeFile, content: res.content });
         setIsLocalDirty(false);
-        const wCount = computeWordCount(fileContent);
+        const wCount = computeWordCount(res.content);
         registerState(paneId, false, wCount);
       } catch (err) {
         if (active) {
@@ -183,6 +189,9 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       customSelectionHighlightPlugin,
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
+          const isReload = update.transactions.some(tr => tr.annotation(Transaction.userEvent) === "reload");
+          if (isReload) return;
+
           const docString = update.state.doc.toString();
           const wCount = computeWordCount(docString);
           setIsLocalDirty(true);
