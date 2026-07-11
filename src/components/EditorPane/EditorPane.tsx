@@ -74,6 +74,10 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   const viewRef = useRef<EditorView | null>(null);
   const [fileData, setFileData] = useState<{ file: string; content: string } | null>(null);
   const [isLocalDirty, setIsLocalDirty] = useState(false);
+  const isLocalDirtyRef = useRef(isLocalDirty);
+  useEffect(() => {
+    isLocalDirtyRef.current = isLocalDirty;
+  }, [isLocalDirty]);
 
   const { vimMode, livePreview, lineWrapping, theme } = settings;
 
@@ -286,8 +290,20 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       });
       viewRef.current = view;
       registerView(paneId, view);
+      if (state.doc.toString() !== loadedContent && !isLocalDirtyRef.current) {
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: loadedContent },
+          annotations: Transaction.userEvent.of("reload")
+        });
+      }
     } else {
       view.setState(state);
+      if (state.doc.toString() !== loadedContent && !isLocalDirtyRef.current) {
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: loadedContent },
+          annotations: Transaction.userEvent.of("reload")
+        });
+      }
     }
 
     // Scroll to pending header if exists, otherwise restore scroll position

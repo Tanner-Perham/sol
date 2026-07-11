@@ -121,6 +121,10 @@ impl LoadedModel {
 
         let mut logits_processor = LogitsProcessor::new(42, Some(0.7), Some(0.9));
 
+        if let Model::Qwen2(model) = &mut self.model {
+            model.clear_kv_cache();
+        }
+
         // Initialize Llama cache if needed
         let mut llama_cache = match &self.model {
             Model::Llama { config, .. } => {
