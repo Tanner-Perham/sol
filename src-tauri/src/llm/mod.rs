@@ -46,12 +46,17 @@ pub struct ModelWithStatus {
     pub info: ModelInfo,
     #[serde(flatten)]
     pub status: ModelStatus,
+    pub is_completion_active: bool,
 }
 
 /// LLM configuration stored in settings
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmConfig {
+    #[serde(default)]
     pub active_model_id: Option<String>,
+    #[serde(default)]
+    pub completion_model_id: Option<String>,
+    #[serde(default)]
     pub downloaded_models: Vec<String>,
 }
 

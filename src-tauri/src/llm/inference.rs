@@ -193,6 +193,139 @@ impl LoadedModel {
 
         Ok(output.trim().to_string())
     }
+
+    /// Generate text streaming tokens and checking stop sequences/cancellation
+    pub fn generate_stream<F>(
+        &mut self,
+        prompt: &str,
+        max_tokens: usize,
+        temperature: Option<f64>,
+        top_p: Option<f64>,
+        seed: u64,
+        stop_sequences: &[String],
+        cancel_token: &std::sync::atomic::AtomicBool,
+        mut on_token: F,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&str) -> Result<(), String>,
+    {
+        // Tokenize input
+        let encoding = self
+            .tokenizer
+            .encode(prompt, true)
+            .map_err(|e| format!("Tokenization failed: {}", e))?;
+
+        let input_ids = encoding.get_ids();
+        let mut tokens: Vec<u32> = input_ids.to_vec();
+
+        let mut logits_processor = LogitsProcessor::new(seed, temperature, top_p);
+
+        if let Model::Qwen2(model) = &mut self.model {
+            model.clear_kv_cache();
+        }
+
+        // Initialize Llama cache if needed
+        let mut llama_cache = match &self.model {
+            Model::Llama { config, .. } => {
+                let cache = LlamaCache::new(true, DType::F32, config, &self.device)
+                    .map_err(|e| format!("Failed to create Llama cache: {}", e))?;
+                Some(cache)
+            }
+            _ => None,
+        };
+
+        // Position offset
+        let mut pos_offset = 0;
+
+        let mut decoded_text = String::new();
+
+        // Generate tokens one by one
+        for step in 0..max_tokens {
+            if cancel_token.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("cancelled".to_string());
+            }
+
+            let input_slice = if step == 0 {
+                &tokens[..]
+            } else {
+                &tokens[tokens.len() - 1..]
+            };
+
+            let input = Tensor::new(input_slice, &self.device)
+                .map_err(|e| format!("Tensor creation failed: {}", e))?
+                .unsqueeze(0)
+                .map_err(|e| format!("Unsqueeze failed: {}", e))?;
+
+            let logits = match &mut self.model {
+                Model::Qwen2(model) => {
+                    model.forward(&input, pos_offset)
+                        .map_err(|e| format!("Qwen2 forward pass failed: {}", e))?
+                }
+                Model::Llama { model, .. } => {
+                    let cache = llama_cache.as_mut().ok_or("Llama cache missing")?;
+                    model.forward(&input, pos_offset, cache)
+                        .map_err(|e| format!("Llama forward pass failed: {}", e))?
+                }
+            };
+
+            pos_offset += input_slice.len();
+
+            let logits = logits
+                .squeeze(0)
+                .map_err(|e| format!("Squeeze failed: {}", e))?;
+
+            let logits = logits
+                .get(logits.dim(0).map_err(|e| e.to_string())? - 1)
+                .map_err(|e| format!("Get last logits failed: {}", e))?;
+
+            let next_token = logits_processor
+                .sample(&logits)
+                .map_err(|e| format!("Sampling failed: {}", e))?;
+
+            if next_token == self.eos_token_id {
+                break;
+            }
+
+            tokens.push(next_token);
+
+            // Decode current sequence
+            let current_text = self
+                .tokenizer
+                .decode(&tokens[input_ids.len()..], true)
+                .map_err(|e| format!("Decoding failed: {}", e))?;
+
+            // Check stop sequences
+            let mut earliest_stop = None;
+            for stop_seq in stop_sequences {
+                if let Some(idx) = current_text.find(stop_seq) {
+                    match earliest_stop {
+                        None => earliest_stop = Some((idx, stop_seq.len())),
+                        Some((earliest_idx, _)) if idx < earliest_idx => {
+                            earliest_stop = Some((idx, stop_seq.len()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if let Some((idx, _len)) = earliest_stop {
+                let final_text = &current_text[..idx];
+                if final_text.len() > decoded_text.len() {
+                    let new_part = &final_text[decoded_text.len()..];
+                    on_token(new_part)?;
+                }
+                break;
+            } else {
+                if current_text.len() > decoded_text.len() {
+                    let new_part = &current_text[decoded_text.len()..];
+                    on_token(new_part)?;
+                    decoded_text = current_text;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Generate a topic name for a cluster of notes using a pre-loaded model

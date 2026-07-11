@@ -91,6 +91,64 @@ pub fn get_available_models() -> Vec<ModelInfo> {
                 },
             ],
         },
+        ModelInfo {
+            id: "qwen2.5-0.5b".to_string(),
+            name: "Qwen2.5 0.5B (Base)".to_string(),
+            description: "Base 0.5B model, excellent for fast continuation completion".to_string(),
+            size_bytes: 988_000_000,
+            repo_id: "Qwen/Qwen2.5-0.5B".to_string(),
+            files: vec![
+                ModelFile {
+                    name: "model.safetensors".to_string(),
+                    size: 988097824,
+                    sha256: Some("88c142557820ccad55bb59756bfcfcf891de9cc6202816bd346445188a0ed342".to_string()),
+                },
+                ModelFile {
+                    name: "config.json".to_string(),
+                    size: 681,
+                    sha256: None,
+                },
+                ModelFile {
+                    name: "tokenizer.json".to_string(),
+                    size: 7031645,
+                    sha256: None,
+                },
+                ModelFile {
+                    name: "generation_config.json".to_string(),
+                    size: 138,
+                    sha256: None,
+                },
+            ],
+        },
+        ModelInfo {
+            id: "smollm2-360m".to_string(),
+            name: "SmolLM2 360M (Base)".to_string(),
+            description: "Extremely lightweight base model, ultra-fast for completions".to_string(),
+            size_bytes: 723_000_000,
+            repo_id: "HuggingFaceTB/SmolLM2-360M".to_string(),
+            files: vec![
+                ModelFile {
+                    name: "model.safetensors".to_string(),
+                    size: 723674912,
+                    sha256: Some("7aaff6661428bed033abba9522bec81938678642cca3181fe752b6ca9e1e540f".to_string()),
+                },
+                ModelFile {
+                    name: "config.json".to_string(),
+                    size: 689,
+                    sha256: None,
+                },
+                ModelFile {
+                    name: "tokenizer.json".to_string(),
+                    size: 2104556,
+                    sha256: None,
+                },
+                ModelFile {
+                    name: "generation_config.json".to_string(),
+                    size: 111,
+                    sha256: None,
+                },
+            ],
+        },
     ]
 }
 

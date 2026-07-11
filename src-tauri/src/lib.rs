@@ -21,6 +21,7 @@ struct WorkspaceState {
     watcher: Mutex<Option<RecommendedWatcher>>,
     download_state: llm::download::SharedDownloadState,
     loaded_model: Mutex<Option<(String, llm::inference::LoadedModel)>>,
+    active_completion_cancel: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 fn get_saved_workspace(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -511,6 +512,7 @@ fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
         .map(|info| {
             let is_downloaded = llm::is_model_downloaded(&workspace, &info.id);
             let is_active = config.active_model_id.as_ref() == Some(&info.id);
+            let is_completion_active = config.completion_model_id.as_ref() == Some(&info.id);
 
             let status = if is_active && is_downloaded {
                 ModelStatus::Active
@@ -520,7 +522,7 @@ fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
                 ModelStatus::NotDownloaded
             };
 
-            ModelWithStatus { info, status }
+            ModelWithStatus { info, status, is_completion_active }
         })
         .collect()
 }
@@ -640,10 +642,18 @@ fn delete_model(model_id: String, state: tauri::State<'_, WorkspaceState>) -> Re
     let path_lock = lock!(state.path);
     let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
 
-    // If this was the active model, clear it
+    // If this was the active model or active completion model, clear it
     let mut config = LlmConfig::load(workspace);
+    let mut modified = false;
     if config.active_model_id.as_ref() == Some(&model_id) {
         config.active_model_id = None;
+        modified = true;
+    }
+    if config.completion_model_id.as_ref() == Some(&model_id) {
+        config.completion_model_id = None;
+        modified = true;
+    }
+    if modified {
         config.save(workspace)?;
     }
 
@@ -691,6 +701,133 @@ fn is_model_ready(state: tauri::State<'_, WorkspaceState>) -> bool {
     } else {
         false
     }
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct CompletionParams {
+    prompt: String,
+    max_tokens: usize,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    stop: Vec<String>,
+    seed: u64,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct CompletionChunk {
+    request_id: String,
+    token: String,
+}
+
+/// Generate completions streaming tokens via the provided channel
+#[tauri::command]
+async fn generate_completion(
+    request_id: String,
+    params: CompletionParams,
+    channel: tauri::ipc::Channel<CompletionChunk>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let state = app.state::<WorkspaceState>();
+
+    // 1. Manage/trigger cancellation of any existing completion
+    let cancel_token = {
+        let mut active_cancel = lock!(state.active_completion_cancel);
+        if let Some(ref old_token) = *active_cancel {
+            old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *active_cancel = Some(token.clone());
+        token
+    };
+
+    // 2. Resolve workspace and completion model ID
+    let (workspace, model_id) = {
+        let path_lock = lock!(state.path);
+        let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
+        let config = LlmConfig::load(&workspace);
+        
+        let model_id = config.completion_model_id
+            .or(config.active_model_id)
+            .ok_or_else(|| "No model selected for completion".to_string())?;
+        (workspace, model_id)
+    };
+
+    // 3. Spawn blocking generation task off the main IPC thread
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<WorkspaceState>();
+        let mut loaded_model_lock = lock!(state.loaded_model);
+        
+        let model = match &mut *loaded_model_lock {
+            Some((cached_id, model)) if cached_id == &model_id => model,
+            _ => {
+                let new_model = match llm::inference::LoadedModel::load(&workspace, &model_id) {
+                    Ok(m) => m,
+                    Err(e) => return Err(format!("Failed to load model: {}", e)),
+                };
+                *loaded_model_lock = Some((model_id.clone(), new_model));
+                &mut loaded_model_lock.as_mut().unwrap().1
+            }
+        };
+
+        let request_id_clone = request_id.clone();
+        let channel_clone = channel.clone();
+
+        model.generate_stream(
+            &params.prompt,
+            params.max_tokens,
+            params.temperature,
+            params.top_p,
+            params.seed,
+            &params.stop,
+            &cancel_token,
+            move |token| {
+                let chunk = CompletionChunk {
+                    request_id: request_id_clone.clone(),
+                    token: token.to_string(),
+                };
+                channel_clone.send(chunk).map_err(|e| e.to_string())
+            }
+        )
+    })
+    .await
+    .map_err(|e| format!("Spawn blocking failed: {}", e))?
+}
+
+/// Explicitly cancel the current completion generation
+#[tauri::command]
+fn cancel_completion(state: tauri::State<'_, WorkspaceState>) {
+    let mut active_cancel = lock!(state.active_completion_cancel);
+    if let Some(ref old_token) = *active_cancel {
+        old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    *active_cancel = None;
+}
+
+/// Get the active completion model ID
+#[tauri::command]
+fn get_completion_model(state: tauri::State<'_, WorkspaceState>) -> Option<String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref()?;
+    let config = LlmConfig::load(workspace);
+    config.completion_model_id
+}
+
+/// Set the active completion model ID
+#[tauri::command]
+fn set_completion_model(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+
+    if !llm::is_model_downloaded(workspace, &model_id) {
+        return Err("Model not downloaded".to_string());
+    }
+
+    let mut config = LlmConfig::load(workspace);
+    config.completion_model_id = Some(model_id);
+    config.save(workspace)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -743,6 +880,7 @@ pub fn run() {
                 watcher: Mutex::new(watcher),
                 download_state,
                 loaded_model: Mutex::new(None),
+                active_completion_cancel: Mutex::new(None),
             });
             Ok(())
         })
@@ -766,7 +904,11 @@ pub fn run() {
             cancel_model_download,
             delete_model,
             generate_topic_name,
-            is_model_ready
+            is_model_ready,
+            generate_completion,
+            cancel_completion,
+            get_completion_model,
+            set_completion_model
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -848,6 +990,48 @@ mod tests {
         }
         
         let _ = std::fs::remove_dir_all(&outside_dir);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn test_llm_config_serde() {
+        let temp_dir = std::env::temp_dir();
+        let unique_dir = temp_dir.join(format!("sol_config_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&unique_dir).unwrap();
+        let workspace = std::fs::canonicalize(&unique_dir).unwrap();
+
+        // Test default loading (when file doesn't exist)
+        let config = LlmConfig::load(&workspace);
+        assert!(config.active_model_id.is_none());
+        assert!(config.completion_model_id.is_none());
+        assert!(config.downloaded_models.is_empty());
+
+        // Test saving and loading
+        let mut config = LlmConfig::default();
+        config.active_model_id = Some("qwen2-0.5b".to_string());
+        config.completion_model_id = Some("qwen2.5-0.5b".to_string());
+        config.downloaded_models = vec!["qwen2-0.5b".to_string(), "qwen2.5-0.5b".to_string()];
+        config.save(&workspace).unwrap();
+
+        let loaded = LlmConfig::load(&workspace);
+        assert_eq!(loaded.active_model_id, Some("qwen2-0.5b".to_string()));
+        assert_eq!(loaded.completion_model_id, Some("qwen2.5-0.5b".to_string()));
+        assert_eq!(loaded.downloaded_models, vec!["qwen2-0.5b".to_string(), "qwen2.5-0.5b".to_string()]);
+
+        // Test loading legacy config without completion_model_id
+        let legacy_json = r#"{
+            "active_model_id": "qwen2-0.5b",
+            "downloaded_models": ["qwen2-0.5b"]
+        }"#;
+        let sol_dir = workspace.join(".sol");
+        std::fs::create_dir_all(&sol_dir).unwrap();
+        std::fs::write(sol_dir.join("llm_config.json"), legacy_json).unwrap();
+
+        let loaded_legacy = LlmConfig::load(&workspace);
+        assert_eq!(loaded_legacy.active_model_id, Some("qwen2-0.5b".to_string()));
+        assert!(loaded_legacy.completion_model_id.is_none());
+        assert_eq!(loaded_legacy.downloaded_models, vec!["qwen2-0.5b".to_string()]);
+
         let _ = std::fs::remove_dir_all(&workspace);
     }
 }
