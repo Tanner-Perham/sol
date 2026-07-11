@@ -15,6 +15,7 @@ use tauri::{Emitter, Manager};
 
 mod llm;
 use llm::{LlmConfig, ModelStatus, ModelWithStatus};
+mod policy;
 
 struct WorkspaceState {
     path: Mutex<Option<PathBuf>>,
@@ -22,6 +23,15 @@ struct WorkspaceState {
     download_state: llm::download::SharedDownloadState,
     loaded_model: Mutex<Option<(String, llm::inference::LoadedModel)>>,
     active_completion_cancel: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    policy_engine: Mutex<Option<policy::PolicyEngine>>,
+}
+
+fn is_ai_allowed(state: &WorkspaceState, workspace: &Path, note_path: &Path) -> bool {
+    let mut policy_lock = state.policy_engine.lock().unwrap();
+    if policy_lock.is_none() {
+        *policy_lock = Some(policy::PolicyEngine::new(workspace.to_path_buf()));
+    }
+    policy_lock.as_mut().unwrap().ai_allowed(note_path)
 }
 
 fn get_saved_workspace(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -394,6 +404,12 @@ async fn change_workspace(
         old
     };
 
+    // Reset policy engine with the new workspace path
+    {
+        let mut policy_lock = lock!(state.policy_engine);
+        *policy_lock = Some(policy::PolicyEngine::new(new_path.clone()));
+    }
+
     if let Some(old) = old_path {
         let _ = app.asset_protocol_scope().forbid_directory(&old, true);
         
@@ -412,6 +428,17 @@ async fn change_workspace(
         let mut watcher =
             notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
+                    // Invalidate policy cache
+                    let state = app_handle.state::<WorkspaceState>();
+                    {
+                        let mut policy_lock = lock!(state.policy_engine);
+                        if let Some(ref mut engine) = *policy_lock {
+                            for path in &event.paths {
+                                engine.invalidate_path(path);
+                            }
+                        }
+                    }
+
                     let mut modified_paths = Vec::new();
                     for path in event.paths {
                         if is_ignored_path(&path, &new_path_clone) {
@@ -705,6 +732,7 @@ fn is_model_ready(state: tauri::State<'_, WorkspaceState>) -> bool {
 
 #[derive(serde::Deserialize, Clone)]
 struct CompletionParams {
+    path: String,
     prompt: String,
     max_tokens: usize,
     temperature: Option<f64>,
@@ -740,10 +768,16 @@ async fn generate_completion(
         token
     };
 
-    // 2. Resolve workspace and completion model ID
+    // 2. Resolve workspace and completion model ID, checking privacy rules first
     let (workspace, model_id) = {
         let path_lock = lock!(state.path);
         let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
+        
+        let resolved = resolve_safe_path(&workspace, &params.path)?;
+        if !is_ai_allowed(&state, &workspace, &resolved) {
+            return Err("AI context is disabled for this file by privacy policy".to_string());
+        }
+
         let config = LlmConfig::load(&workspace);
         
         let model_id = config.completion_model_id
@@ -830,6 +864,40 @@ fn set_completion_model(
     config.save(workspace)
 }
 
+/// Check if AI features are allowed for a note
+#[tauri::command]
+fn is_note_allowed(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<bool, String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let resolved = resolve_safe_path(workspace, &path)?;
+    Ok(is_ai_allowed(&state, workspace, &resolved))
+}
+
+/// Create/open the AI policy file
+#[tauri::command]
+fn open_policy_file(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<String, String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let solai_path = workspace.join(".solai");
+    
+    if !solai_path.exists() {
+        let default_content = b"# Sol AI Policy Configuration File\n\
+# Use standard gitignore-like patterns to exclude notes and folders from AI context (embeddings, completions, etc.).\n\
+# Prepend a path with '!' to whitelist/allow it even if a parent folder is excluded.\n\n\
+# Exclude sensitive folders:\n\
+# private/\n\
+# secret.md\n";
+        std::fs::write(&solai_path, default_content).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(".solai".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -844,6 +912,17 @@ pub fn run() {
                 let mut watcher =
                     notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                         if let Ok(event) = res {
+                            // Invalidate policy cache
+                            let state = app_handle_clone.state::<WorkspaceState>();
+                            {
+                                let mut policy_lock = lock!(state.policy_engine);
+                                if let Some(ref mut engine) = *policy_lock {
+                                    for path in &event.paths {
+                                        engine.invalidate_path(path);
+                                    }
+                                }
+                            }
+
                             let mut modified_paths = Vec::new();
                             for path in event.paths {
                                 if is_ignored_path(&path, &p_clone) {
@@ -856,7 +935,7 @@ pub fn run() {
                                 }
                             }
                             if !modified_paths.is_empty() {
-                                let _ = app_handle_clone.emit("workspace-changed", modified_paths);
+                                  let _ = app_handle_clone.emit("workspace-changed", modified_paths);
                             }
                         }
                     })
@@ -875,12 +954,15 @@ pub fn run() {
             // Create download state for LLM model downloads
             let download_state = llm::download::new_download_state();
 
+            let policy_engine = path.as_ref().map(|p| policy::PolicyEngine::new(p.clone()));
+
             app.manage(WorkspaceState {
                 path: Mutex::new(path),
                 watcher: Mutex::new(watcher),
                 download_state,
                 loaded_model: Mutex::new(None),
                 active_completion_cancel: Mutex::new(None),
+                policy_engine: Mutex::new(policy_engine),
             });
             Ok(())
         })
@@ -908,7 +990,9 @@ pub fn run() {
             generate_completion,
             cancel_completion,
             get_completion_model,
-            set_completion_model
+            set_completion_model,
+            is_note_allowed,
+            open_policy_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1032,6 +1116,86 @@ mod tests {
         assert!(loaded_legacy.completion_model_id.is_none());
         assert_eq!(loaded_legacy.downloaded_models, vec!["qwen2-0.5b".to_string()]);
 
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn test_policy_engine() {
+        let temp_dir = std::env::temp_dir();
+        let unique_dir = temp_dir.join(format!("sol_policy_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&unique_dir).unwrap();
+        let workspace = std::fs::canonicalize(&unique_dir).unwrap();
+
+        // 1. Setup policy files and folders
+        let sensitive_dir = workspace.join("sensitive");
+        std::fs::create_dir_all(&sensitive_dir).unwrap();
+
+        let allowed_note = workspace.join("allowed.md");
+        let excluded_note = sensitive_dir.join("excluded.md");
+        let override_note = sensitive_dir.join("override.md");
+
+        std::fs::write(&allowed_note, "allowed text").unwrap();
+        std::fs::write(&excluded_note, "excluded text").unwrap();
+        std::fs::write(&override_note, "---\nai: true\n---\noverride text").unwrap();
+
+        // Write .solai policy: exclude "sensitive/"
+        let solai_path = workspace.join(".solai");
+        std::fs::write(&solai_path, "sensitive/\n").unwrap();
+
+        let mut engine = policy::PolicyEngine::new(workspace.clone());
+
+        // Check allowed note
+        assert!(engine.ai_allowed(&allowed_note));
+
+        // Check excluded note
+        assert!(!engine.ai_allowed(&excluded_note));
+
+        // Check override note (opts back in even though it's inside sensitive/)
+        assert!(engine.ai_allowed(&override_note));
+
+        // Test opt-out in root directory
+        let opt_out_note = workspace.join("opt_out.md");
+        std::fs::write(&opt_out_note, "---\nai: false\n---\nsome text").unwrap();
+        assert!(!engine.ai_allowed(&opt_out_note));
+
+        // 2. Test cache invalidation
+        // Change opt_out_note to allowed
+        std::fs::write(&opt_out_note, "---\nai: true\n---\nsome text").unwrap();
+        // Since it is cached, checking it now should still return false (cached)
+        assert!(!engine.ai_allowed(&opt_out_note));
+
+        // Invalidate it
+        engine.invalidate_path(&opt_out_note);
+        // Now it should retrieve the updated frontmatter and return true
+        assert!(engine.ai_allowed(&opt_out_note));
+
+        // 3. Test .solai policy file change invalidation
+        let new_allowed_note = sensitive_dir.join("new_allowed.md");
+        std::fs::write(&new_allowed_note, "new allowed text").unwrap();
+        // Checked and should be excluded because of "sensitive/"
+        assert!(!engine.ai_allowed(&new_allowed_note));
+
+        // Modify .solai to whitelist "new_allowed.md" using gitignore rules
+        std::fs::write(&solai_path, "sensitive/\n!sensitive/new_allowed.md\n").unwrap();
+        // Invalidate the .solai path
+        engine.invalidate_path(&solai_path);
+
+        // Checked again, now should be allowed
+        assert!(engine.ai_allowed(&new_allowed_note));
+
+        // 4. Test WorkspaceState helper is_ai_allowed integration (no deadlock)
+        let state = WorkspaceState {
+            path: Mutex::new(Some(workspace.clone())),
+            watcher: Mutex::new(None),
+            download_state: llm::download::new_download_state(),
+            loaded_model: Mutex::new(None),
+            active_completion_cancel: Mutex::new(None),
+            policy_engine: Mutex::new(None),
+        };
+        assert!(is_ai_allowed(&state, &workspace, &allowed_note));
+        assert!(!is_ai_allowed(&state, &workspace, &excluded_note));
+
+        // Clean up
         let _ = std::fs::remove_dir_all(&workspace);
     }
 }

@@ -3,7 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ModelWithStatus, DownloadProgress } from "../types";
 
-export const ModelSettings: React.FC = () => {
+export interface ModelSettingsProps {
+  openPolicyFile?: () => Promise<void>;
+}
+
+export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) => {
   const [models, setModels] = useState<ModelWithStatus[]>([]);
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, DownloadProgress>>({});
@@ -163,8 +167,36 @@ export const ModelSettings: React.FC = () => {
 
   return (
     <div className="model-settings">
-      <h3>AI Models</h3>
-      <p className="settings-description">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+        <h3 style={{ margin: 0 }}>AI Models</h3>
+        {openPolicyFile && (
+          <button
+            type="button"
+            className="btn-header-action"
+            onClick={openPolicyFile}
+            style={{
+              padding: "6px 12px",
+              fontSize: "12px",
+              borderRadius: "6px",
+              border: "1px solid var(--border)",
+              background: "var(--bg-light)",
+              color: "var(--text-normal)",
+              cursor: "pointer",
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px"
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            Manage AI Policy
+          </button>
+        )}
+      </div>
+      <p className="settings-description" style={{ marginTop: 0 }}>
         Download and manage AI models for topic discovery. Models are stored locally.
       </p>
 

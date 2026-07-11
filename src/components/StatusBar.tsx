@@ -9,6 +9,7 @@ export interface StatusBarProps {
   vimModeName: string;
   wordCount: number;
   updateSettings: (newSettings: Partial<AppSettings>) => Promise<void>;
+  aiStatus: "allowed" | "excluded" | "loading";
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
@@ -18,7 +19,8 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   vimMode,
   vimModeName,
   wordCount,
-  updateSettings
+  updateSettings,
+  aiStatus
 }) => {
   return (
     <footer className="app-status-bar">
@@ -26,6 +28,25 @@ export const StatusBar: React.FC<StatusBarProps> = ({
         <span className="status-filename">{activeFile || "No file open"}</span>
         {isDirty && <span className="status-dirty-dot" title="Unsaved changes" />}
       </div>
+      {activeFile && (
+        <div className="status-section">
+          {aiStatus === "loading" && (
+            <span style={{ color: "var(--text-muted)", opacity: 0.7, display: "inline-flex", alignItems: "center" }}>
+              AI: Loading...
+            </span>
+          )}
+          {aiStatus === "allowed" && (
+            <span style={{ color: "#a6e3a1", fontWeight: 600 }} title="AI context allowed for this note">
+              AI: Allowed
+            </span>
+          )}
+          {aiStatus === "excluded" && (
+            <span style={{ color: "#f9e2af", fontWeight: 600 }} title="AI context excluded for this note by policy">
+              AI: Excluded
+            </span>
+          )}
+        </div>
+      )}
       {prefixActive && (
         <div className="status-section" style={{ animation: "pulse 1s infinite" }}>
           <span style={{

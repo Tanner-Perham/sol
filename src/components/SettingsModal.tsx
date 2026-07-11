@@ -14,6 +14,7 @@ export interface SettingsModalProps {
   updateSettings: (newSettings: Partial<AppSettings>) => Promise<void>;
   recordingHotkey: keyof Keybindings | null;
   setRecordingHotkey: (hotkey: keyof Keybindings | null) => void;
+  openPolicyFile?: () => Promise<void>;
 }
 
 const renderShortcutBadges = (shortcutStr: string) => {
@@ -55,7 +56,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   settings,
   updateSettings,
   recordingHotkey,
-  setRecordingHotkey
+  setRecordingHotkey,
+  openPolicyFile
 }) => {
   return (
     <div className={`settings-modal-overlay ${showSettingsModal ? "open" : ""}`} onClick={() => setShowSettingsModal(false)}>
@@ -428,7 +430,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             )}
 
             {activeSettingsTab === "models" && (
-              <ModelSettings />
+              <ModelSettings openPolicyFile={openPolicyFile} />
             )}
           </div>
         </div>

@@ -156,6 +156,28 @@ function App() {
   const [conflictInfo, setConflictInfo] = useState<{ path: string; localContent: string; diskContent: string } | null>(null);
   const conflictResolveRef = useRef<((value: "overwrite" | "reload" | "cancel") => void) | null>(null);
 
+  const [aiStatus, setAiStatus] = useState<'allowed' | 'excluded' | 'loading'>('allowed');
+
+  const checkFileAiStatus = useCallback(async (relativePath: string | null) => {
+    if (!relativePath) {
+      setAiStatus("allowed");
+      return;
+    }
+    try {
+      setAiStatus("loading");
+      const allowed = await invoke<boolean>("is_note_allowed", { path: relativePath });
+      setAiStatus(allowed ? "allowed" : "excluded");
+    } catch (err) {
+      console.error("Error checking AI status:", err);
+      setAiStatus("allowed");
+    }
+  }, []);
+
+  useEffect(() => {
+    checkFileAiStatus(activeFile);
+  }, [activeFile, checkFileAiStatus]);
+
+
   useEffect(() => {
     return () => {
       if (conflictResolveRef.current) {
@@ -508,6 +530,21 @@ function App() {
     }
   };
 
+  const openPolicyFile = useCallback(async () => {
+    try {
+      setShowSettingsModal(false);
+      const policyFile = await invoke<string>("open_policy_file");
+      await openFile(policyFile);
+    } catch (err) {
+      console.error("Failed to open policy file:", err);
+    }
+  }, [openFile]);
+
+  const openPolicyFileRef = useRef(openPolicyFile);
+  useEffect(() => {
+    openPolicyFileRef.current = openPolicyFile;
+  }, [openPolicyFile]);
+
   // Close a tab
   const closeTab = async (paneId: PaneId, fileName: string) => {
     const leaf = findLeafNode(layout, paneId);
@@ -735,6 +772,11 @@ function App() {
 
         const modifiedPaths = event.payload;
         if (!modifiedPaths || !Array.isArray(modifiedPaths)) return;
+
+        // Re-check AI policy status if policy or the active file changed
+        if (modifiedPaths.includes(".solai") || (activeFileRef.current && modifiedPaths.includes(activeFileRef.current))) {
+          checkFileAiStatus(activeFileRef.current);
+        }
 
         const currentLayout = layoutRef.current;
         const leafIds = getLeafPaneIds(currentLayout);
@@ -1166,6 +1208,14 @@ function App() {
 
     Vim.defineEx("qall", "qa", () => {
       closeAllTabsRef.current();
+    });
+
+    Vim.defineEx("policy", "policy", () => {
+      openPolicyFileRef.current();
+    });
+
+    Vim.defineEx("solai", "solai", () => {
+      openPolicyFileRef.current();
     });
   }, []);
 
@@ -1707,6 +1757,7 @@ function App() {
         vimModeName={vimModeName}
         wordCount={wordCount}
         updateSettings={updateSettings}
+        aiStatus={aiStatus}
       />
 
       <SettingsModal
@@ -1718,6 +1769,7 @@ function App() {
         updateSettings={updateSettings}
         recordingHotkey={recordingHotkey}
         setRecordingHotkey={setRecordingHotkey}
+        openPolicyFile={openPolicyFile}
       />
 
       {conflictInfo && (
