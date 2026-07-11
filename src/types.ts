@@ -39,6 +39,7 @@ export interface AppSettings {
   lineWrapping: boolean;
   vimMode: boolean;
   livePreview: boolean;
+  completionEnabled?: boolean;
   showHidden: boolean;
   keybindings?: Keybindings;
 }

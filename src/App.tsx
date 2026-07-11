@@ -1181,8 +1181,10 @@ function App() {
   const fileTreeRef = useRef(fileTree);
   const pendingHeadersRef = useRef<Map<PaneId, string>>(new Map());
   const settingsRef = useRef(settings);
+  const updateSettingsRef = useRef(updateSettings);
 
   useEffect(() => { layoutRef.current = layout; }, [layout]);
+  useEffect(() => { updateSettingsRef.current = updateSettings; }, [updateSettings]);
   useEffect(() => { activePaneIdRef.current = activePaneId; }, [activePaneId]);
   useEffect(() => { prefixActiveRef.current = prefixActive; }, [prefixActive]);
   useEffect(() => { openFileRef.current = openFile; }, [openFile]);
@@ -1216,6 +1218,16 @@ function App() {
 
     Vim.defineEx("solai", "solai", () => {
       openPolicyFileRef.current();
+    });
+
+    Vim.defineEx("completion", "completion", () => {
+      const current = settingsRef.current.completionEnabled !== false;
+      updateSettingsRef.current({ completionEnabled: !current });
+    });
+
+    Vim.defineEx("togglecompletion", "togglecompletion", () => {
+      const current = settingsRef.current.completionEnabled !== false;
+      updateSettingsRef.current({ completionEnabled: !current });
     });
   }, []);
 
@@ -1758,6 +1770,7 @@ function App() {
         wordCount={wordCount}
         updateSettings={updateSettings}
         aiStatus={aiStatus}
+        completionEnabled={settings.completionEnabled !== false}
       />
 
       <SettingsModal

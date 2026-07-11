@@ -16,6 +16,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lineWrapping: true,
   vimMode: true,
   livePreview: true,
+  completionEnabled: true,
   showHidden: false,
   keybindings: DEFAULT_KEYBINDINGS
 };

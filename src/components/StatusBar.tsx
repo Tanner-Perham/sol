@@ -10,6 +10,7 @@ export interface StatusBarProps {
   wordCount: number;
   updateSettings: (newSettings: Partial<AppSettings>) => Promise<void>;
   aiStatus: "allowed" | "excluded" | "loading";
+  completionEnabled: boolean;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
@@ -20,7 +21,8 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   vimModeName,
   wordCount,
   updateSettings,
-  aiStatus
+  aiStatus,
+  completionEnabled
 }) => {
   return (
     <footer className="app-status-bar">
@@ -66,6 +68,14 @@ export const StatusBar: React.FC<StatusBarProps> = ({
         title="Toggle Vim Mode"
       >
         Vim
+      </button>
+      <button
+        className={`status-toggle ${completionEnabled ? "active" : ""}`}
+        onClick={() => updateSettings({ completionEnabled: !completionEnabled })}
+        title="Toggle AI Completion"
+        style={{ marginLeft: "4px" }}
+      >
+        AI Completion
       </button>
       <div className="status-spacer" />
       {vimMode && (

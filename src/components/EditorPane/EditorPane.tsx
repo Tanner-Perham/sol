@@ -9,6 +9,7 @@ import { vim, Vim, getCM } from "@replit/codemirror-vim";
 import { prosePreviewPlugin } from "../../prosePreviewPlugin";
 import { PaneId, AppSettings, FileNode } from "../../types";
 import { customSelectionHighlightPlugin } from "./editorPlugins";
+import { ghostTextExtension } from "./ghostTextExtension";
 import { findHeaderLine, computeWordCount, wikiCompletionSource } from "../../utils/editorUtils";
 
 export interface EditorPaneProps {
@@ -228,6 +229,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         },
       }, { dark: !["sepia", "light"].includes(theme) })),
       customSelectionHighlightPlugin,
+      ghostTextExtension(settings, activeFile),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const isReload = update.transactions.some(tr => tr.annotation(Transaction.userEvent) === "reload");
@@ -241,7 +243,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         }
       })
     ];
-  }, [paneId, workspacePath, vimMode, lineWrapping, livePreview, theme, vimCompartment, wrapCompartment, previewCompartment, themeCompartment, onDocChange, registerState]);
+  }, [paneId, workspacePath, vimMode, lineWrapping, livePreview, theme, settings, activeFile, vimCompartment, wrapCompartment, previewCompartment, themeCompartment, onDocChange, registerState]);
 
   // Clean up view on unmount
   useEffect(() => {
