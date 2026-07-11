@@ -48,3 +48,5 @@ Thumbs.db
 *.sln
 *.swp
 *.swo
+
+docs/
