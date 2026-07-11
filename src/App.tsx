@@ -192,9 +192,8 @@ function App() {
         const paneState = paneStatesRef.current.get(activePaneId);
         if (paneState?.isDirty && view) {
           const content = view.state.doc.toString();
-          const currentActiveFilePath = `${workspacePath}/${activeLeaf.activeFile}`;
           try {
-            await invoke("write_markdown_file", { path: currentActiveFilePath, content });
+            await invoke("write_markdown_file", { path: activeLeaf.activeFile, content });
           } catch (err) {
             console.error("Failed to auto-save file on workspace change", err);
           }
@@ -271,7 +270,7 @@ function App() {
   }, [loadWorkspace]);
 
   // Open a file
-  const openFile = async (fileName: string, wsPath?: string) => {
+  const openFile = async (fileName: string) => {
     if (!activePaneId) return;
     const leaf = findLeafNode(layout, activePaneId);
     if (!leaf) return;
@@ -306,9 +305,8 @@ function App() {
     const paneState = paneStatesRef.current.get(activePaneId);
     if (leaf.activeFile && paneState?.isDirty && view) {
       const content = view.state.doc.toString();
-      const currentActiveFilePath = `${workspacePath}/${leaf.activeFile}`;
       try {
-        await invoke("write_markdown_file", { path: currentActiveFilePath, content });
+        await invoke("write_markdown_file", { path: leaf.activeFile, content });
       } catch (err) {
         console.error("Failed to auto-save file on switch", err);
       }
@@ -319,10 +317,8 @@ function App() {
       pendingHeadersRef.current.set(activePaneId, header);
     }
 
-    const currentWS = wsPath || workspacePath;
-    const filePath = `${currentWS}/${relativePath}`;
     try {
-      const content = await invoke<string>("read_markdown_file", { path: filePath });
+      const content = await invoke<string>("read_markdown_file", { path: relativePath });
       
       paneStatesRef.current.set(activePaneId, { isDirty: false, wordCount: computeWordCount(content) });
       setIsDirty(false);
@@ -363,7 +359,7 @@ function App() {
     if (leaf.activeFile === fileName && paneState?.isDirty && view) {
       const content = view.state.doc.toString();
       try {
-        await invoke("write_markdown_file", { path: `${workspacePath}/${fileName}`, content });
+        await invoke("write_markdown_file", { path: fileName, content });
       } catch (err) {
         console.error("Failed to auto-save file on close", err);
       }
@@ -445,7 +441,7 @@ function App() {
           const content = view.state.doc.toString();
           try {
             await invoke("write_markdown_file", {
-              path: `${workspacePathRef.current}/${tab}`,
+              path: tab,
               content,
             });
           } catch (err) {
@@ -586,10 +582,9 @@ function App() {
     const activeView = editorViewsRef.current.get(activePaneId);
     if (!activeView) return;
 
-    const filePath = `${workspacePath}/${leaf.activeFile}`;
     try {
       const currentContent = activeView.state.doc.toString();
-      await invoke("write_markdown_file", { path: filePath, content: currentContent });
+      await invoke("write_markdown_file", { path: leaf.activeFile, content: currentContent });
       
       paneStatesRef.current.set(activePaneId, { isDirty: false, wordCount: computeWordCount(currentContent) });
       setIsDirty(false);
@@ -668,7 +663,7 @@ function App() {
     if (activeView && activePaneState?.isDirty && activeLeafNode?.activeFile) {
       const content = activeView.state.doc.toString();
       invoke("write_markdown_file", {
-        path: `${workspacePath}/${activeLeafNode.activeFile}`,
+        path: activeLeafNode.activeFile,
         content
       }).catch(err => console.error("Auto-save before split failed", err));
       paneStatesRef.current.set(activePaneId, { isDirty: false, wordCount: activePaneState.wordCount });
@@ -688,7 +683,7 @@ function App() {
     if (leaf && leaf.activeFile && paneState?.isDirty && view) {
       const content = view.state.doc.toString();
       try {
-        await invoke("write_markdown_file", { path: `${workspacePath}/${leaf.activeFile}`, content });
+        await invoke("write_markdown_file", { path: leaf.activeFile, content });
       } catch (err) {
         console.error("Failed to auto-save file on pane close", err);
       }
@@ -856,9 +851,8 @@ function App() {
     // 3. Trigger debounced save
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(async () => {
-      const filePath = `${workspacePath}/${fileName}`;
       try {
-        await invoke("write_markdown_file", { path: filePath, content });
+        await invoke("write_markdown_file", { path: fileName, content });
 
         // Auto-save completed: Mark all panes displaying this file as clean
         const latestLayout = layoutRef.current;

@@ -74,31 +74,79 @@ fn build_tree(dir: &Path, base: &Path) -> Result<Vec<FileNode>, String> {
     Ok(nodes)
 }
 
-#[tauri::command]
-fn display() -> String {
-    let file_path = "../test.md";
-    println!("In file {file_path}");
+fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<PathBuf, String> {
+    let user_path = Path::new(user_path);
+    if user_path.is_absolute() {
+        return Err("Absolute paths are not allowed".to_string());
+    }
 
-    let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
+    for component in user_path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                return Err("Path traversal detected: '..' is not allowed".to_string());
+            }
+            _ => {}
+        }
+    }
 
-    println!("With text:\n{contents}");
-
-    let parser = pulldown_cmark::Parser::new(&contents);
-
-    let mut html_output = String::new();
-    pulldown_cmark::html::push_html(&mut html_output, parser);
-
-    html_output
+    let joined = workspace.join(user_path);
+    
+    // Find the closest existing ancestor
+    let mut ancestor = joined.as_path();
+    let mut remaining = Vec::new();
+    while !ancestor.exists() {
+        if let Some(parent) = ancestor.parent() {
+            if let Some(file_name) = ancestor.file_name() {
+                remaining.push(file_name);
+            }
+            ancestor = parent;
+        } else {
+            break;
+        }
+    }
+    
+    // Canonicalize the ancestor (which exists)
+    let canonical_ancestor = std::fs::canonicalize(ancestor)
+        .map_err(|e| format!("Failed to canonicalize ancestor path: {}", e))?;
+    
+    // Canonicalize the workspace path to compare
+    let canonical_workspace = std::fs::canonicalize(workspace)
+        .map_err(|e| format!("Failed to canonicalize workspace path: {}", e))?;
+        
+    // Check if the canonicalized ancestor starts with the canonicalized workspace
+    if !canonical_ancestor.starts_with(&canonical_workspace) {
+        return Err("Path traversal detected: path is outside the workspace".to_string());
+    }
+    
+    // Reconstruct the full canonical path by joining the remaining components onto the canonical ancestor
+    let mut final_path = canonical_ancestor;
+    for part in remaining.into_iter().rev() {
+        // Double check that each part is a normal component (no ".." or similar)
+        let part_path = Path::new(part);
+        for component in part_path.components() {
+            match component {
+                std::path::Component::Normal(_) => {}
+                _ => return Err("Invalid path component in new file/directory path".to_string()),
+            }
+        }
+        final_path.push(part);
+    }
+    
+    Ok(final_path)
 }
 
 #[tauri::command]
-fn read_markdown_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|e| e.to_string())
+fn read_markdown_file(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<String, String> {
+    let workspace = state.path.lock().unwrap();
+    let resolved = resolve_safe_path(&workspace, &path)?;
+    fs::read_to_string(&resolved).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn write_markdown_file(path: String, content: String) -> Result<(), String> {
-    fs::write(&path, content).map_err(|e| e.to_string())
+fn write_markdown_file(path: String, content: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+    let workspace = state.path.lock().unwrap();
+    let resolved = resolve_safe_path(&workspace, &path)?;
+    fs::write(&resolved, content).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -138,7 +186,7 @@ fn create_markdown_file(
         format!("{}.md", name)
     };
     let workspace = state.path.lock().unwrap();
-    let path = workspace.join(&name_clean);
+    let path = resolve_safe_path(&workspace, &name_clean)?;
     if path.exists() {
         return Err("File already exists".to_string());
     }
@@ -160,7 +208,7 @@ fn get_file_tree(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<FileNode
 #[tauri::command]
 fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
     let workspace = state.path.lock().unwrap();
-    let full_path = workspace.join(&path);
+    let full_path = resolve_safe_path(&workspace, &path)?;
     if full_path.exists() {
         return Err("Directory or file already exists".to_string());
     }
@@ -182,11 +230,15 @@ async fn select_directory() -> Option<String> {
 fn set_workspace_path(
     path: String,
     state: tauri::State<'_, WorkspaceState>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<FileNode>, String> {
     let new_path = std::fs::canonicalize(PathBuf::from(&path)).map_err(|e| e.to_string())?;
     if !new_path.is_dir() {
         return Err("Path is not a directory".to_string());
     }
+
+    // Allow in asset protocol scope
+    let _ = app.asset_protocol_scope().allow_directory(&new_path, true);
 
     let mut path_lock = state.path.lock().unwrap();
     let old_path = path_lock.clone();
@@ -290,9 +342,25 @@ fn start_model_download(
     let workspace = state.path.lock().unwrap().clone();
     let download_state = state.download_state.clone();
 
+    // Check and set in_flight atomically
+    {
+        let mut ds = download_state.lock().unwrap();
+        if *ds.in_flight.get(&model_id).unwrap_or(&false) {
+            return Err("Download already in progress".to_string());
+        }
+        ds.in_flight.insert(model_id.clone(), true);
+    }
+
     // Spawn download in background thread
     std::thread::spawn(move || {
         let result = llm::download::download_model(&workspace, &model_id, &app, &download_state);
+        
+        // Reset in_flight state
+        {
+            let mut ds = download_state.lock().unwrap();
+            ds.in_flight.insert(model_id.clone(), false);
+        }
+
         if let Err(e) = result {
             let _ = app.emit(
                 "model-download-progress",
@@ -392,6 +460,9 @@ pub fn run() {
                 .watch(&default_path, RecursiveMode::Recursive)
                 .map_err(|e| e.to_string())?;
 
+            // Allow default_path in asset protocol scope
+            let _ = app.asset_protocol_scope().allow_directory(&default_path, true);
+
             // Create download state for LLM model downloads
             let download_state = llm::download::new_download_state();
 
@@ -403,7 +474,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            display,
             read_markdown_file,
             write_markdown_file,
             get_workspace_path,
@@ -429,4 +499,40 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_safe_path() {
+        let temp_dir = std::env::temp_dir();
+        let unique_dir = temp_dir.join(format!("sol_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&unique_dir).unwrap();
+        let workspace = std::fs::canonicalize(&unique_dir).unwrap();
+
+        // 1. Valid file directly in workspace
+        let res = resolve_safe_path(&workspace, "test.md");
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), workspace.join("test.md"));
+
+        // 2. Valid file in subdirectory
+        let res = resolve_safe_path(&workspace, "sub/dir/test.md");
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), workspace.join("sub/dir/test.md"));
+
+        // 3. Absolute path should be rejected
+        let res = resolve_safe_path(&workspace, "/etc/passwd");
+        assert!(res.is_err());
+
+        // 4. Directory traversal attempting to escape workspace
+        let res = resolve_safe_path(&workspace, "../escape.md");
+        assert!(res.is_err());
+
+        let res = resolve_safe_path(&workspace, "subdir/../../escape.md");
+        assert!(res.is_err());
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
 }

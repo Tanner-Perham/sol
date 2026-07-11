@@ -5,6 +5,13 @@ pub mod registry;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelFile {
+    pub name: String,
+    pub size: u64,
+    pub sha256: Option<String>,
+}
+
 /// Information about an available model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -13,7 +20,7 @@ pub struct ModelInfo {
     pub description: String,
     pub size_bytes: u64,
     pub repo_id: String,
-    pub files: Vec<String>,
+    pub files: Vec<ModelFile>,
 }
 
 /// Status of a model
@@ -82,12 +89,19 @@ pub fn is_model_downloaded(workspace: &PathBuf, model_id: &str) -> bool {
         return false;
     }
 
-    // Check if all required files exist
+    // Check if all required files exist and match sizes
     let info = registry::get_model_info(model_id);
     if let Some(info) = info {
         for file in &info.files {
-            let file_name = file.split('/').last().unwrap_or(file);
-            if !model_dir.join(file_name).exists() {
+            let file_path = model_dir.join(&file.name);
+            if !file_path.exists() {
+                return false;
+            }
+            if let Ok(metadata) = std::fs::metadata(&file_path) {
+                if metadata.len() != file.size {
+                    return false;
+                }
+            } else {
                 return false;
             }
         }

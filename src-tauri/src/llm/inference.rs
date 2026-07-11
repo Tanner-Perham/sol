@@ -124,11 +124,18 @@ pub fn generate_topic_name(
         .iter()
         .take(3) // Use first 3 notes
         .map(|s| {
-            // Take first 200 chars of each
-            if s.len() > 200 {
-                format!("{}...", &s[..200])
+            // Prevent prompt injection by replacing ChatML tags
+            let sanitized = s
+                .replace("<|im_start|>", "[im_start]")
+                .replace("<|im_end|>", "[im_end]")
+                .replace("<|endoftext|>", "[endoftext]");
+
+            // Take first 200 chars of each safely (using chars() instead of byte-slicing)
+            if sanitized.chars().count() > 200 {
+                let truncated: String = sanitized.chars().take(200).collect();
+                format!("{}...", truncated)
             } else {
-                s.clone()
+                sanitized
             }
         })
         .collect::<Vec<_>>()

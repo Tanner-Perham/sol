@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
+use sha2::{Sha256, Digest};
 
 use super::{models_dir, registry};
 
@@ -26,12 +27,30 @@ pub struct DownloadState {
     pub cancelled: HashMap<String, bool>,
     /// Map of model_id -> whether download is paused
     pub paused: HashMap<String, bool>,
+    /// Map of model_id -> whether download is in flight
+    pub in_flight: HashMap<String, bool>,
 }
 
 pub type SharedDownloadState = Arc<Mutex<DownloadState>>;
 
 pub fn new_download_state() -> SharedDownloadState {
     Arc::new(Mutex::new(DownloadState::default()))
+}
+
+/// Compute SHA-256 hash of a file
+pub fn compute_sha256(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 65536]; // 64KB chunks
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    let result = hasher.finalize();
+    Ok(format!("{:x}", result))
 }
 
 /// Build HuggingFace download URL for a file
@@ -83,7 +102,7 @@ pub fn download_model(
                     "model-download-progress",
                     DownloadProgress {
                         model_id: model_id.to_string(),
-                        file_name: file.clone(),
+                        file_name: file.name.clone(),
                         file_index: idx,
                         total_files,
                         bytes_downloaded: 0,
@@ -117,36 +136,63 @@ pub fn download_model(
             }
         }
 
-        let file_name = file.split('/').last().unwrap_or(file);
-        let url = hf_download_url(&info.repo_id, file);
+        let file_name = &file.name;
+        let url = hf_download_url(&info.repo_id, file_name);
         let dest_path = model_dir.join(file_name);
+        let part_path = model_dir.join(format!("{}.part", file_name));
+
+        // Skip downloading if it already exists and is fully valid
+        let mut file_ok = false;
+        if dest_path.exists() {
+            if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                if metadata.len() == file.size {
+                    file_ok = true;
+                    if let Some(ref expected_sha) = file.sha256 {
+                        if let Ok(computed_sha) = compute_sha256(&dest_path) {
+                            if computed_sha != *expected_sha {
+                                file_ok = false;
+                            }
+                        } else {
+                            file_ok = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        if file_ok {
+            println!("[LLM] File {} already exists and is valid, skipping", file_name);
+            continue;
+        }
 
         println!(
             "[LLM] Downloading file {}/{}: {}",
             idx + 1,
             total_files,
-            file
+            file_name
         );
         println!("[LLM] URL: {}", url);
 
         // Start the download
         let response = client.get(&url).send().map_err(|e| {
             println!("[LLM] ERROR starting download: {}", e);
-            format!("Failed to start download for {}: {}", file, e)
+            let _ = std::fs::remove_file(&part_path);
+            format!("Failed to start download for {}: {}", file_name, e)
         })?;
 
         if !response.status().is_success() {
             let status = response.status();
             println!("[LLM] ERROR: HTTP {}", status);
-            return Err(format!("HTTP error {} downloading {}", status, file));
+            let _ = std::fs::remove_file(&part_path);
+            return Err(format!("HTTP error {} downloading {}", status, file_name));
         }
 
         let total_size = response.content_length().unwrap_or(0);
         println!("[LLM] File size: {} bytes", total_size);
 
-        // Create output file
-        let mut output_file = std::fs::File::create(&dest_path)
-            .map_err(|e| format!("Failed to create file {}: {}", file_name, e))?;
+        // Create output .part file
+        let mut output_file = std::fs::File::create(&part_path)
+            .map_err(|e| format!("Failed to create file {}.part: {}", file_name, e))?;
 
         // Download with progress
         let mut downloaded: u64 = 0;
@@ -162,7 +208,7 @@ pub fn download_model(
                 let state = download_state.lock().unwrap();
                 if *state.cancelled.get(model_id).unwrap_or(&false) {
                     drop(output_file);
-                    let _ = std::fs::remove_file(&dest_path);
+                    let _ = std::fs::remove_file(&part_path);
                     return Err("Download cancelled".to_string());
                 }
             }
@@ -179,18 +225,24 @@ pub fn download_model(
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
 
-            use std::io::Read;
-            let bytes_read = reader
-                .read(&mut buffer)
-                .map_err(|e| format!("Failed to read data: {}", e))?;
+            let bytes_read = match reader.read(&mut buffer) {
+                Ok(n) => n,
+                Err(e) => {
+                    drop(output_file);
+                    let _ = std::fs::remove_file(&part_path);
+                    return Err(format!("Failed to read data: {}", e));
+                }
+            };
 
             if bytes_read == 0 {
                 break; // EOF
             }
 
-            output_file
-                .write_all(&buffer[..bytes_read])
-                .map_err(|e| format!("Failed to write data: {}", e))?;
+            if let Err(e) = output_file.write_all(&buffer[..bytes_read]) {
+                drop(output_file);
+                let _ = std::fs::remove_file(&part_path);
+                return Err(format!("Failed to write data: {}", e));
+            }
 
             downloaded += bytes_read as u64;
 
@@ -215,7 +267,45 @@ pub fn download_model(
 
         output_file
             .flush()
-            .map_err(|e| format!("Failed to flush file: {}", e))?;
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&part_path);
+                format!("Failed to flush file: {}", e)
+            })?;
+        drop(output_file);
+
+        // Verify size
+        let metadata = std::fs::metadata(&part_path)
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&part_path);
+                format!("Failed to read metadata of downloaded file: {}", e)
+            })?;
+        if metadata.len() != file.size {
+            let _ = std::fs::remove_file(&part_path);
+            return Err(format!("Downloaded file size mismatch for {}: expected {}, got {}", file_name, file.size, metadata.len()));
+        }
+
+        // Verify SHA-256 if expected
+        if let Some(ref expected_sha) = file.sha256 {
+            println!("[LLM] Verifying SHA-256 for {}...", file_name);
+            let computed_sha = compute_sha256(&part_path)
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&part_path);
+                    format!("Failed to compute SHA-256 for {}: {}", file_name, e)
+                })?;
+            if computed_sha != *expected_sha {
+                let _ = std::fs::remove_file(&part_path);
+                return Err(format!("SHA-256 checksum mismatch for {}: expected {}, got {}", file_name, expected_sha, computed_sha));
+            }
+            println!("[LLM] SHA-256 verification successful!");
+        }
+
+        // Rename .part to final file
+        std::fs::rename(&part_path, &dest_path)
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&part_path);
+                format!("Failed to rename part file to final destination: {}", e)
+            })?;
+
         println!("[LLM] File {} complete ({} bytes)", file_name, downloaded);
     }
 
