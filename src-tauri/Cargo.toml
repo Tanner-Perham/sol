@@ -26,7 +26,14 @@ pulldown-cmark = "0.13.4"
 notify = "6.1.1"
 rfd = "0.14"
 
+# LLM inference with Candle
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+tokenizers = "0.21"
 
+# HTTP client for model downloads with progress
+reqwest = { version = "0.12", features = ["blocking", "stream"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

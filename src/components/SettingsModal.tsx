@@ -1,12 +1,15 @@
 import React from "react";
 import { AppSettings, Keybindings } from "../types";
 import { DEFAULT_KEYBINDINGS } from "../constants";
+import { ModelSettings } from "./ModelSettings";
+
+export type SettingsTabType = "general" | "appearance" | "hotkeys" | "models";
 
 export interface SettingsModalProps {
   showSettingsModal: boolean;
   setShowSettingsModal: (show: boolean) => void;
-  activeSettingsTab: "general" | "appearance" | "hotkeys";
-  setActiveSettingsTab: (tab: "general" | "appearance" | "hotkeys") => void;
+  activeSettingsTab: SettingsTabType;
+  setActiveSettingsTab: (tab: SettingsTabType) => void;
   settings: AppSettings;
   updateSettings: (newSettings: Partial<AppSettings>) => Promise<void>;
   recordingHotkey: keyof Keybindings | null;
@@ -103,6 +106,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <line x1="7" y1="16" x2="17" y2="16" />
               </svg>
               Hotkeys
+            </button>
+            <button
+              className={`settings-tab-btn ${activeSettingsTab === "models" ? "active" : ""}`}
+              onClick={() => setActiveSettingsTab("models")}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                <path d="M2 17l10 5 10-5" />
+                <path d="M2 12l10 5 10-5" />
+              </svg>
+              AI Models
             </button>
           </div>
 
@@ -411,6 +425,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 </div>
               </div>
+            )}
+
+            {activeSettingsTab === "models" && (
+              <ModelSettings />
             )}
           </div>
         </div>
