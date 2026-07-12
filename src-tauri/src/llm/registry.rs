@@ -173,7 +173,7 @@ pub fn get_available_models() -> Vec<ModelInfo> {
         ModelInfo {
             id: "qwen2.5-0.5b-q4".to_string(),
             name: "Qwen2.5 0.5B Q4 (Instruct, Quantized)".to_string(),
-            description: "Official 4-bit quantized model, 2-4x faster than F32".to_string(),
+            description: "Instruct-tuned 4-bit quantized model, 2-4x faster than F32. Better suited to topic naming than completion.".to_string(),
             size_bytes: 499_000_000,
             repo_id: "Qwen/Qwen2.5-0.5B-Instruct-GGUF".to_string(),
             files: vec![
@@ -200,6 +200,39 @@ pub fn get_available_models() -> Vec<ModelInfo> {
                     size: 242,
                     sha256: None,
                     repo_id: Some("Qwen/Qwen2.5-0.5B-Instruct".to_string()),
+                },
+            ],
+        },
+        ModelInfo {
+            id: "qwen2.5-0.5b-base-q4".to_string(),
+            name: "Qwen2.5 0.5B Base Q4 (Quantized)".to_string(),
+            description: "Base 4-bit quantized model, ultra-fast for completions".to_string(),
+            size_bytes: 399_000_000,
+            repo_id: "QuantFactory/Qwen2.5-0.5B-GGUF".to_string(),
+            files: vec![
+                ModelFile {
+                    name: "Qwen2.5-0.5B.Q4_K_M.gguf".to_string(),
+                    size: 397807488,
+                    sha256: None,
+                    repo_id: None,
+                },
+                ModelFile {
+                    name: "config.json".to_string(),
+                    size: 681,
+                    sha256: None,
+                    repo_id: Some("Qwen/Qwen2.5-0.5B".to_string()),
+                },
+                ModelFile {
+                    name: "tokenizer.json".to_string(),
+                    size: 7031645,
+                    sha256: None,
+                    repo_id: Some("Qwen/Qwen2.5-0.5B".to_string()),
+                },
+                ModelFile {
+                    name: "generation_config.json".to_string(),
+                    size: 138,
+                    sha256: None,
+                    repo_id: Some("Qwen/Qwen2.5-0.5B".to_string()),
                 },
             ],
         },

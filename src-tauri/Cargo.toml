@@ -44,3 +44,15 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Compile dependencies (candle, gemm, tokenizers, ...) with full optimizations
+# even in dev builds — unoptimized candle inference is 20-100x slower.
+# Our own crate stays at opt-level 0 for fast incremental compiles.
+[profile.dev.package."*"]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev]
+opt-level = 1
+

@@ -320,11 +320,19 @@ export const ghostTextTriggerPlugin = (
               max_tokens: 100,
               temperature: 0.1,
               top_p: 0.95,
-              stop: ["\n", "<|im_start|>", "<|im_end|>", "<|endoftext|>"],
+              stop: ["\n"],
               seed: Math.floor(Math.random() * 100000)
             },
             channel
           });
+
+          // Reset status to idle if completed but no suggestion text was generated
+          if (this.lastRequestId === requestId) {
+            const currentGhost = this.view.state.field(ghostTextStateField);
+            if (!currentGhost.text) {
+              this.view.dispatch({ effects: setCompletionStatus.of("idle") });
+            }
+          }
         } catch (err) {
           // Only log and update if this request wasn't already superceded
           if (this.lastRequestId === requestId) {

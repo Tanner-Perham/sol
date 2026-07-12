@@ -12,24 +12,28 @@ use tokenizers::Tokenizer;
 
 use super::models_dir;
 
-fn read_eos_token_id(model_dir: &Path, default_id: u32) -> u32 {
+fn read_eos_token_ids(model_dir: &Path, default_ids: &[u32]) -> Vec<u32> {
     let gen_config_path = model_dir.join("generation_config.json");
     if gen_config_path.exists() {
         if let Ok(gen_config_data) = std::fs::read_to_string(&gen_config_path) {
             if let Ok(gen_val) = serde_json::from_str::<serde_json::Value>(&gen_config_data) {
                 if let Some(eos_id) = gen_val.get("eos_token_id") {
                     if let Some(id_u64) = eos_id.as_u64() {
-                        return id_u64 as u32;
+                        return vec![id_u64 as u32];
                     } else if let Some(id_arr) = eos_id.as_array() {
-                        if let Some(first_id) = id_arr.first().and_then(|v| v.as_u64()) {
-                            return first_id as u32;
+                        let ids: Vec<u32> = id_arr
+                            .iter()
+                            .filter_map(|v| v.as_u64().map(|id| id as u32))
+                            .collect();
+                        if !ids.is_empty() {
+                            return ids;
                         }
                     }
                 }
             }
         }
     }
-    default_id
+    default_ids.to_vec()
 }
 
 pub enum Model {
@@ -47,7 +51,7 @@ pub struct LoadedModel {
     model: Model,
     tokenizer: Tokenizer,
     device: Device,
-    eos_token_id: u32,
+    eos_token_ids: Vec<u32>,
 }
 
 /// Extract the last-position logits as a 1-D (vocab,) tensor, handling both
@@ -113,7 +117,7 @@ impl LoadedModel {
 
         let use_quantized = gguf_path.is_some();
 
-        let (model, eos_token_id) = if use_quantized {
+        let (model, eos_token_ids) = if use_quantized {
             // Load quantized GGUF model
             let gguf_file_path = gguf_path.ok_or_else(|| "GGUF file not found".to_string())?;
             eprintln!("[LLM] Loading quantized GGUF model from {:?}", gguf_file_path);
@@ -139,15 +143,15 @@ impl LoadedModel {
                     eprintln!("[LLM] Loading as quantized Llama model");
                     let model = QuantizedLlama::from_gguf(gguf_content, &mut file, &device)
                         .map_err(|e| format!("Failed to load quantized Llama: {}", e))?;
-                    let eos_id = read_eos_token_id(&model_dir, 2);
-                    (Model::QuantizedLlama(model), eos_id)
+                    let eos_ids = read_eos_token_ids(&model_dir, &[2]);
+                    (Model::QuantizedLlama(model), eos_ids)
                 }
                 "qwen2" => {
                     eprintln!("[LLM] Loading as quantized Qwen2 model");
                     let model = QuantizedQwen2::from_gguf(gguf_content, &mut file, &device)
                         .map_err(|e| format!("Failed to load quantized Qwen2: {}", e))?;
-                    let eos_id = read_eos_token_id(&model_dir, 151643);
-                    (Model::QuantizedQwen2(model), eos_id)
+                    let eos_ids = read_eos_token_ids(&model_dir, &[151643]);
+                    (Model::QuantizedQwen2(model), eos_ids)
                 }
                 other => {
                     return Err(format!("Unsupported GGUF architecture: {}. Supported: llama, qwen2", other));
@@ -168,16 +172,16 @@ impl LoadedModel {
                     let config = llama_config.into_config(false);
                     let model = LlamaModel::load(vb, &config)
                         .map_err(|e| format!("Failed to create Llama model: {}", e))?;
-                    let eos_id = read_eos_token_id(&model_dir, 2);
-                    (Model::Llama { model, config }, eos_id)
+                    let eos_ids = read_eos_token_ids(&model_dir, &[2]);
+                    (Model::Llama { model, config }, eos_ids)
                 }
                 _ => {
                     let config: Qwen2Config = serde_json::from_str(&config_data)
                         .map_err(|e| format!("Failed to parse Qwen2 config: {}", e))?;
                     let model = Qwen2Model::new(&config, vb)
                         .map_err(|e| format!("Failed to create Qwen2 model: {}", e))?;
-                    let eos_id = read_eos_token_id(&model_dir, 151643);
-                    (Model::Qwen2(model), eos_id)
+                    let eos_ids = read_eos_token_ids(&model_dir, &[151643]);
+                    (Model::Qwen2(model), eos_ids)
                 }
             }
         };
@@ -186,7 +190,7 @@ impl LoadedModel {
             model,
             tokenizer,
             device,
-            eos_token_id,
+            eos_token_ids,
         })
     }
 
@@ -261,7 +265,7 @@ impl LoadedModel {
                 .sample(&logits)
                 .map_err(|e| format!("Sampling failed: {}", e))?;
 
-            if next_token == self.eos_token_id {
+            if self.eos_token_ids.contains(&next_token) {
                 break;
             }
 
@@ -323,6 +327,10 @@ impl LoadedModel {
 
         let mut decoded_text = String::new();
 
+        let mut prefill_time = None;
+        let start_time = std::time::Instant::now();
+        let mut tokens_decoded = 0;
+
         // Generate tokens one by one
         for step in 0..max_tokens {
             if cancel_token.load(std::sync::atomic::Ordering::SeqCst) {
@@ -368,17 +376,31 @@ impl LoadedModel {
                 .sample(&logits)
                 .map_err(|e| format!("Sampling failed: {}", e))?;
 
-            if next_token == self.eos_token_id {
+            if step == 0 {
+                prefill_time = Some(start_time.elapsed());
+                eprintln!(
+                    "[LLM] prefill: {} tokens in {:?}",
+                    input_ids.len(),
+                    prefill_time.unwrap()
+                );
+            }
+
+            if self.eos_token_ids.contains(&next_token) {
                 break;
             }
 
             tokens.push(next_token);
+            tokens_decoded += 1;
 
             // Decode current sequence
-            let current_text = self
+            let current_raw = self
                 .tokenizer
                 .decode(&tokens[input_ids.len()..], true)
                 .map_err(|e| format!("Decoding failed: {}", e))?;
+
+            // Drop leading whitespace/newlines: models frequently open with '\n',
+            // which must not trigger the '\n' stop sequence or be emitted as ghost text.
+            let current_text = current_raw.trim_start();
 
             // Check stop sequences
             let mut earliest_stop = None;
@@ -405,9 +427,25 @@ impl LoadedModel {
                 if current_text.len() > decoded_text.len() {
                     let new_part = &current_text[decoded_text.len()..];
                     on_token(new_part)?;
-                    decoded_text = current_text;
+                    decoded_text = current_text.to_string();
                 }
             }
+        }
+
+        let total_duration = start_time.elapsed();
+        if let Some(prefill) = prefill_time {
+            let decode_duration = total_duration.saturating_sub(prefill);
+            let tok_s = if decode_duration.as_secs_f64() > 0.0 {
+                tokens_decoded as f64 / decode_duration.as_secs_f64()
+            } else {
+                0.0
+            };
+            eprintln!(
+                "[LLM] decode: {} tokens in {:?} ({:.1} tok/s)",
+                tokens_decoded,
+                decode_duration,
+                tok_s
+            );
         }
 
         Ok(())
@@ -518,5 +556,35 @@ mod tests {
         let dev = Device::Cpu;
         let t = Tensor::arange(0f32, 4., &dev).unwrap();
         assert!(last_token_logits(&t).is_err());
+    }
+
+    #[test]
+    fn test_read_eos_token_ids() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "sol_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let gen_config_path = temp_dir.join("generation_config.json");
+
+        // Test array
+        std::fs::write(&gen_config_path, r#"{"eos_token_id": [151645, 151643]}"#).unwrap();
+        let ids = read_eos_token_ids(&temp_dir, &[2]);
+        assert_eq!(ids, vec![151645, 151643]);
+
+        // Test scalar
+        std::fs::write(&gen_config_path, r#"{"eos_token_id": 2}"#).unwrap();
+        let ids = read_eos_token_ids(&temp_dir, &[151643]);
+        assert_eq!(ids, vec![2]);
+
+        // Test missing / fallback
+        std::fs::remove_file(&gen_config_path).unwrap();
+        let ids = read_eos_token_ids(&temp_dir, &[100, 200]);
+        assert_eq!(ids, vec![100, 200]);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
