@@ -821,6 +821,13 @@ async fn generate_completion(
 
         let config = LlmConfig::load(&workspace);
         
+        match config.completion_backend {
+            llm::providers::CompletionBackend::Builtin => {}
+            llm::providers::CompletionBackend::LlamaCpp => {
+                return Err("llama.cpp completion backend not yet implemented".to_string());
+            }
+        }
+
         let model_id = config.completion_model_id
             .or(config.active_model_id)
             .ok_or_else(|| "No model selected for completion".to_string())?;
@@ -1027,6 +1034,16 @@ async fn generate_rework(
 
         let config = LlmConfig::load(&workspace);
         
+        match config.rework_backend {
+            llm::providers::ReworkBackend::Builtin => {}
+            llm::providers::ReworkBackend::Ollama => {
+                return Err("Ollama rework backend not yet implemented".to_string());
+            }
+            llm::providers::ReworkBackend::LlamaCpp => {
+                return Err("llama.cpp rework backend not yet implemented".to_string());
+            }
+        }
+
         let model_id = config.rework_model_id
             .or(config.active_model_id)
             .ok_or_else(|| "No model selected for rework".to_string())?;
@@ -1099,6 +1116,59 @@ fn is_note_allowed(
     let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
     let resolved = resolve_safe_path(workspace, &path)?;
     Ok(is_ai_allowed(&state, workspace, &resolved))
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct ProviderConfig {
+    pub completion_backend: llm::providers::CompletionBackend,
+    pub rework_backend: llm::providers::ReworkBackend,
+    pub ollama_url: String,
+    pub ollama_rework_model: Option<String>,
+    pub llamacpp_url: String,
+    pub allow_remote_endpoints: bool,
+}
+
+#[tauri::command]
+fn get_provider_config(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<ProviderConfig, String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let config = LlmConfig::load(workspace);
+    Ok(ProviderConfig {
+        completion_backend: config.completion_backend,
+        rework_backend: config.rework_backend,
+        ollama_url: config.ollama_url,
+        ollama_rework_model: config.ollama_rework_model,
+        llamacpp_url: config.llamacpp_url,
+        allow_remote_endpoints: config.allow_remote_endpoints,
+    })
+}
+
+#[tauri::command]
+fn set_provider_config(
+    config: ProviderConfig,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+
+    // Validate URLs
+    llm::providers::validate_provider_url(&config.ollama_url, config.allow_remote_endpoints)
+        .map_err(|e| format!("Ollama URL error: {}", e))?;
+    llm::providers::validate_provider_url(&config.llamacpp_url, config.allow_remote_endpoints)
+        .map_err(|e| format!("llama.cpp URL error: {}", e))?;
+
+    let mut llm_config = LlmConfig::load(workspace);
+    llm_config.completion_backend = config.completion_backend;
+    llm_config.rework_backend = config.rework_backend;
+    llm_config.ollama_url = config.ollama_url;
+    llm_config.ollama_rework_model = config.ollama_rework_model;
+    llm_config.llamacpp_url = config.llamacpp_url;
+    llm_config.allow_remote_endpoints = config.allow_remote_endpoints;
+
+    llm_config.save(workspace)?;
+    Ok(())
 }
 
 /// Create/open the AI policy file
@@ -1222,7 +1292,9 @@ pub fn run() {
             cancel_rework,
             generate_rework,
             is_note_allowed,
-            open_policy_file
+            open_policy_file,
+            get_provider_config,
+            set_provider_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1428,5 +1500,27 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn test_provider_config_validation() {
+        use llm::providers::validate_provider_url;
+        
+        // Loopback URLs when remote is not allowed
+        assert!(validate_provider_url("http://localhost:11434", false).is_ok());
+        assert!(validate_provider_url("http://127.0.0.1:8080", false).is_ok());
+        assert!(validate_provider_url("http://[::1]:8080", false).is_ok());
+        
+        // Non-loopback URLs when remote is not allowed
+        assert!(validate_provider_url("http://192.168.1.50:11434", false).is_err());
+        assert!(validate_provider_url("http://example.com/api", false).is_err());
+        
+        // Remote URLs allowed
+        assert!(validate_provider_url("http://192.168.1.50:11434", true).is_ok());
+        assert!(validate_provider_url("https://example.com/api", true).is_ok());
+        
+        // Invalid schemes
+        assert!(validate_provider_url("ftp://localhost:21", true).is_err());
+        assert!(validate_provider_url("invalid-url", true).is_err());
     }
 }

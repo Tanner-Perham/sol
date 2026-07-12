@@ -10,6 +10,7 @@ use candle_transformers::models::quantized_llama::ModelWeights as QuantizedLlama
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 use std::collections::{HashMap, HashSet};
+use super::stream::{StreamPostProcessor, ProcessResult};
 
 use super::models_dir;
 
@@ -104,51 +105,6 @@ fn last_token_logits(logits: &Tensor) -> Result<Tensor, String> {
     }
 }
 
-/// Check if the period character at `idx` in `text` is the end of a sentence
-/// (excluding abbreviations, acronyms, or multiple consecutive periods/ellipses).
-fn is_sentence_end_period(text: &str, idx: usize) -> bool {
-    let bytes = text.as_bytes();
-    // 1. Check for ellipsis / multiple dots
-    if idx > 0 && bytes[idx - 1] == b'.' {
-        return false;
-    }
-    if idx + 1 < bytes.len() && bytes[idx + 1] == b'.' {
-        return false;
-    }
-
-    // 2. Extract the word immediately preceding the period
-    let mut start = idx;
-    while start > 0 {
-        let prev_char = text[..start].chars().next_back().unwrap();
-        if prev_char.is_alphanumeric() || prev_char == '\'' || prev_char == '-' {
-            start -= prev_char.len_utf8();
-        } else {
-            break;
-        }
-    }
-    let word = &text[start..idx];
-    if word.is_empty() {
-        return true;
-    }
-
-    // 3. Check for single-letter initials (middle initials, acronyms like U.S.)
-    if word.chars().count() == 1 && word.chars().next().unwrap().is_alphabetic() {
-        return false;
-    }
-
-    // 4. Check against common abbreviations
-    let lower_word = word.to_lowercase();
-    let common_abbrevs = [
-        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "vs", "ie", "eg", "etc", 
-        "al", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
-        "st", "rd", "th", "ave", "blvd", "co", "corp", "inc", "ltd", "approx", "ca"
-    ];
-    if common_abbrevs.contains(&lower_word.as_str()) {
-        return false;
-    }
-
-    true
-}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GenerationStats {
@@ -450,7 +406,7 @@ impl LoadedModel {
         // Position offset
         let mut pos_offset = 0;
 
-        let mut decoded_text = String::new();
+        let mut post_processor = StreamPostProcessor::new(stop_sequences.to_vec());
 
         let mut prefill_time = None;
         let start_time = std::time::Instant::now();
@@ -543,51 +499,17 @@ impl LoadedModel {
                 .decode(&tokens[input_ids.len()..], true)
                 .map_err(|e| format!("Decoding failed: {}", e))?;
 
-            // Drop leading whitespace/newlines: models frequently open with '\n',
-            // which must not trigger the '\n' stop sequence or be emitted as ghost text.
-            let current_text = current_raw.trim_start();
-
-            // Check stop sequences
-            let mut earliest_stop = None;
-            for stop_seq in stop_sequences {
-                let mut start_search = 0;
-                while let Some(relative_idx) = current_text[start_search..].find(stop_seq) {
-                    let idx = start_search + relative_idx;
-                    
-                    if stop_seq == "." && !is_sentence_end_period(current_text, idx) {
-                        start_search = idx + stop_seq.len();
-                        continue;
-                    }
-
-                    match earliest_stop {
-                        None => earliest_stop = Some((idx, stop_seq.len(), stop_seq.clone())),
-                        Some((earliest_idx, _, _)) if idx < earliest_idx => {
-                            earliest_stop = Some((idx, stop_seq.len(), stop_seq.clone()));
-                        }
-                        _ => {}
+            match post_processor.push_all(&current_raw) {
+                ProcessResult::Emit(token) => {
+                    on_token(&token)?;
+                }
+                ProcessResult::Stop(token) => {
+                    if !token.is_empty() {
+                        on_token(&token)?;
                     }
                     break;
                 }
-            }
-
-            if let Some((idx, len, stop_seq)) = earliest_stop {
-                let include_len = if stop_seq == "." {
-                    len
-                } else {
-                    0
-                };
-                let final_text = &current_text[..idx + include_len];
-                if final_text.len() > decoded_text.len() {
-                    let new_part = &final_text[decoded_text.len()..];
-                    on_token(new_part)?;
-                }
-                break;
-            } else {
-                if current_text.len() > decoded_text.len() {
-                    let new_part = &current_text[decoded_text.len()..];
-                    on_token(new_part)?;
-                    decoded_text = current_text.to_string();
-                }
+                ProcessResult::Continue => {}
             }
         }
 
@@ -756,28 +678,6 @@ mod tests {
         assert_eq!(ids, vec![100, 200]);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_is_sentence_end_period() {
-        // End of sentence
-        assert!(is_sentence_end_period("Hello world.", 11));
-        assert!(is_sentence_end_period("This is a sentence. And another.", 18));
-        assert!(is_sentence_end_period("This is a sentence. And another.", 31));
-
-        // Ellipsis / multiple dots
-        assert!(!is_sentence_end_period("Wait...", 4));
-        assert!(!is_sentence_end_period("Wait...", 5));
-        assert!(!is_sentence_end_period("Wait...", 6));
-
-        // Acronyms / initials
-        assert!(!is_sentence_end_period("U.S.A.", 1));
-        assert!(!is_sentence_end_period("U.S.A.", 3));
-        assert!(!is_sentence_end_period("U.S.A.", 5));
-        // Acronyms / initials
-        assert!(!is_sentence_end_period("Mr. Smith", 2));
-        assert!(!is_sentence_end_period("i.e. something", 3));
-        assert!(!is_sentence_end_period("etc. and so on", 3));
     }
 
     #[test]

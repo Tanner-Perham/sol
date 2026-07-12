@@ -2,8 +2,11 @@ pub mod download;
 pub mod inference;
 pub mod registry;
 pub mod context;
+pub mod stream;
+pub mod providers;
 
 use serde::{Deserialize, Serialize};
+use providers::{CompletionBackend, ReworkBackend};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,8 +57,16 @@ pub struct ModelWithStatus {
     pub is_rework_active: bool,
 }
 
+fn default_ollama_url() -> String {
+    "http://localhost:11434".to_string()
+}
+
+fn default_llamacpp_url() -> String {
+    "http://localhost:8080".to_string()
+}
+
 /// LLM configuration stored in settings
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     #[serde(default)]
     pub active_model_id: Option<String>,
@@ -65,6 +76,39 @@ pub struct LlmConfig {
     pub rework_model_id: Option<String>,
     #[serde(default)]
     pub downloaded_models: Vec<String>,
+
+    #[serde(default)]
+    pub completion_backend: CompletionBackend,
+    #[serde(default)]
+    pub rework_backend: ReworkBackend,
+
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
+    #[serde(default)]
+    pub ollama_rework_model: Option<String>,
+
+    #[serde(default = "default_llamacpp_url")]
+    pub llamacpp_url: String,
+
+    #[serde(default)]
+    pub allow_remote_endpoints: bool,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            active_model_id: None,
+            completion_model_id: None,
+            rework_model_id: None,
+            downloaded_models: Vec::new(),
+            completion_backend: CompletionBackend::default(),
+            rework_backend: ReworkBackend::default(),
+            ollama_url: default_ollama_url(),
+            ollama_rework_model: None,
+            llamacpp_url: default_llamacpp_url(),
+            allow_remote_endpoints: false,
+        }
+    }
 }
 
 impl LlmConfig {
