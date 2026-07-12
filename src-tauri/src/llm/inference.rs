@@ -1,8 +1,11 @@
 use candle_core::{DType, Device, Tensor};
+use candle_core::quantized::gguf_file;
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::qwen2::{Config as Qwen2Config, ModelForCausalLM as Qwen2Model};
 use candle_transformers::models::llama::{Llama as LlamaModel, LlamaConfig, Config as LlamaConfigRaw, Cache as LlamaCache};
+use candle_transformers::models::quantized_qwen2::ModelWeights as QuantizedQwen2;
+use candle_transformers::models::quantized_llama::ModelWeights as QuantizedLlama;
 
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
@@ -35,6 +38,8 @@ pub enum Model {
         model: LlamaModel,
         config: LlamaConfigRaw,
     },
+    QuantizedQwen2(QuantizedQwen2),
+    QuantizedLlama(QuantizedLlama),
 }
 
 /// Loaded model ready for inference
@@ -73,30 +78,89 @@ impl LoadedModel {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
 
-        // Load model weights
-        let weights_path = model_dir.join("model.safetensors");
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)
-                .map_err(|e| format!("Failed to load weights: {}", e))?
-        };
+        // Check if any GGUF file exists (prioritize quantized models)
+        let gguf_path = std::fs::read_dir(&model_dir)
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .find(|entry| {
+                        entry.path().extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+                            .unwrap_or(false)
+                    })
+                    .map(|entry| entry.path())
+            });
 
-        let (model, eos_token_id) = match model_type {
-            "llama" => {
-                let llama_config: LlamaConfig = serde_json::from_str(&config_data)
-                    .map_err(|e| format!("Failed to parse Llama config: {}", e))?;
-                let config = llama_config.into_config(false);
-                let model = LlamaModel::load(vb, &config)
-                    .map_err(|e| format!("Failed to create Llama model: {}", e))?;
-                let eos_id = read_eos_token_id(&model_dir, 2); // Llama uses 2 as default EOS
-                (Model::Llama { model, config }, eos_id)
+        let use_quantized = gguf_path.is_some();
+
+        let (model, eos_token_id) = if use_quantized {
+            // Load quantized GGUF model
+            let gguf_file_path = gguf_path.ok_or_else(|| "GGUF file not found".to_string())?;
+            eprintln!("[LLM] Loading quantized GGUF model from {:?}", gguf_file_path);
+
+            let mut file = std::fs::File::open(&gguf_file_path)
+                .map_err(|e| format!("Failed to open GGUF file: {}", e))?;
+            let gguf_content = gguf_file::Content::read(&mut file)
+                .map_err(|e| format!("Failed to read GGUF content: {}", e))?;
+
+            // Read architecture from GGUF metadata
+            let arch: String = match gguf_content.metadata.get("general.architecture") {
+                Some(v) => v.to_string().map(|s| s.to_string()).unwrap_or_else(|_| model_type.to_string()),
+                None => {
+                    eprintln!("[LLM] No general.architecture in GGUF, falling back to config model_type: {}", model_type);
+                    model_type.to_string()
+                }
+            };
+
+            eprintln!("[LLM] GGUF architecture: {}", arch);
+
+            match arch.as_str() {
+                "llama" => {
+                    eprintln!("[LLM] Loading as quantized Llama model");
+                    let model = QuantizedLlama::from_gguf(gguf_content, &mut file, &device)
+                        .map_err(|e| format!("Failed to load quantized Llama: {}", e))?;
+                    let eos_id = read_eos_token_id(&model_dir, 2);
+                    (Model::QuantizedLlama(model), eos_id)
+                }
+                "qwen2" => {
+                    eprintln!("[LLM] Loading as quantized Qwen2 model");
+                    let model = QuantizedQwen2::from_gguf(gguf_content, &mut file, &device)
+                        .map_err(|e| format!("Failed to load quantized Qwen2: {}", e))?;
+                    let eos_id = read_eos_token_id(&model_dir, 151643);
+                    (Model::QuantizedQwen2(model), eos_id)
+                }
+                other => {
+                    return Err(format!("Unsupported GGUF architecture: {}. Supported: llama, qwen2", other));
+                }
             }
-            _ => {
-                let config: Qwen2Config = serde_json::from_str(&config_data)
-                    .map_err(|e| format!("Failed to parse Qwen2 config: {}", e))?;
-                let model = Qwen2Model::new(&config, vb)
-                    .map_err(|e| format!("Failed to create Qwen2 model: {}", e))?;
-                let eos_id = read_eos_token_id(&model_dir, 151643); // Qwen2 uses 151643 as default EOS
-                (Model::Qwen2(model), eos_id)
+        } else {
+            // Load F32 safetensors model
+            let weights_path = model_dir.join("model.safetensors");
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)
+                    .map_err(|e| format!("Failed to load weights: {}", e))?
+            };
+
+            match model_type {
+                "llama" => {
+                    let llama_config: LlamaConfig = serde_json::from_str(&config_data)
+                        .map_err(|e| format!("Failed to parse Llama config: {}", e))?;
+                    let config = llama_config.into_config(false);
+                    let model = LlamaModel::load(vb, &config)
+                        .map_err(|e| format!("Failed to create Llama model: {}", e))?;
+                    let eos_id = read_eos_token_id(&model_dir, 2);
+                    (Model::Llama { model, config }, eos_id)
+                }
+                _ => {
+                    let config: Qwen2Config = serde_json::from_str(&config_data)
+                        .map_err(|e| format!("Failed to parse Qwen2 config: {}", e))?;
+                    let model = Qwen2Model::new(&config, vb)
+                        .map_err(|e| format!("Failed to create Qwen2 model: {}", e))?;
+                    let eos_id = read_eos_token_id(&model_dir, 151643);
+                    (Model::Qwen2(model), eos_id)
+                }
             }
         };
 
@@ -160,6 +224,14 @@ impl LoadedModel {
                     let cache = llama_cache.as_mut().ok_or("Llama cache missing")?;
                     model.forward(&input, pos_offset, cache)
                         .map_err(|e| format!("Llama forward pass failed: {}", e))?
+                }
+                Model::QuantizedQwen2(model) => {
+                    model.forward(&input, pos_offset)
+                        .map_err(|e| format!("Quantized Qwen2 forward pass failed: {}", e))?
+                }
+                Model::QuantizedLlama(model) => {
+                    model.forward(&input, pos_offset)
+                        .map_err(|e| format!("Quantized Llama forward pass failed: {}", e))?
                 }
             };
 
@@ -265,6 +337,14 @@ impl LoadedModel {
                     let cache = llama_cache.as_mut().ok_or("Llama cache missing")?;
                     model.forward(&input, pos_offset, cache)
                         .map_err(|e| format!("Llama forward pass failed: {}", e))?
+                }
+                Model::QuantizedQwen2(model) => {
+                    model.forward(&input, pos_offset)
+                        .map_err(|e| format!("Quantized Qwen2 forward pass failed: {}", e))?
+                }
+                Model::QuantizedLlama(model) => {
+                    model.forward(&input, pos_offset)
+                        .map_err(|e| format!("Quantized Llama forward pass failed: {}", e))?
                 }
             };
 

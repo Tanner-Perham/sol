@@ -173,7 +173,8 @@ fn download_model_inner(
         }
 
         let file_name = &file.name;
-        let url = hf_download_url(&info.repo_id, file_name);
+        let effective_repo_id = file.repo_id.as_ref().unwrap_or(&info.repo_id);
+        let url = hf_download_url(effective_repo_id, file_name);
         let dest_path = model_dir.join(file_name);
         let part_path = model_dir.join(format!("{}.part", file_name));
 

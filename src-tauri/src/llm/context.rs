@@ -109,7 +109,7 @@ pub fn assemble_context(
     let mut linked_count = 0;
     
     for target in targets {
-        if linked_count >= 3 {
+        if linked_count >= 1 {
             break;
         }
         if let Some(resolved_path) = resolve_link_target(workspace, note_path, &target) {
@@ -122,9 +122,9 @@ pub fn assemble_context(
                 if let Ok(content) = std::fs::read_to_string(&resolved_path) {
                     let body = strip_frontmatter(&content).trim();
                     let sanitized = sanitize_prompt_text(body);
-                    
-                    // Take up to 400 characters (char count)
-                    let excerpt: String = sanitized.chars().take(400).collect();
+
+                    // Take up to 150 characters (char count)
+                    let excerpt: String = sanitized.chars().take(150).collect();
                     
                     let title = resolved_path.file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
@@ -137,11 +137,11 @@ pub fn assemble_context(
         }
     }
     
-    // 4. Truncate current note's prefix to last 2800 characters
+    // 4. Truncate current note's prefix to last 800 characters
     let sanitized_prefix = sanitize_prompt_text(prefix);
     let char_count = sanitized_prefix.chars().count();
-    let truncated_prefix: String = if char_count > 2800 {
-        sanitized_prefix.chars().skip(char_count - 2800).collect()
+    let truncated_prefix: String = if char_count > 800 {
+        sanitized_prefix.chars().skip(char_count - 800).collect()
     } else {
         sanitized_prefix
     };

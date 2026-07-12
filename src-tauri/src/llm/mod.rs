@@ -11,6 +11,9 @@ pub struct ModelFile {
     pub name: String,
     pub size: u64,
     pub sha256: Option<String>,
+    /// Optional override repo_id for this specific file (for hybrid downloads)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
 }
 
 /// Information about an available model
