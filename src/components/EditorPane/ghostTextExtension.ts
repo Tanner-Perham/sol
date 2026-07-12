@@ -10,6 +10,8 @@ export interface GhostTextState {
   prefixAnchor: number | null;
   text: string | null;
   status: "idle" | "loading" | "active";
+  attempt: number;
+  rejected: string[];
 }
 
 // Effects and Annotations for state changes
@@ -17,6 +19,9 @@ export const setSuggestion = StateEffect.define<{ text: string; requestId: strin
 export const clearSuggestion = StateEffect.define<void>();
 export const setCompletionStatus = StateEffect.define<"idle" | "loading" | "active">();
 export const acceptCompletionAnnotation = Annotation.define<boolean>();
+export const rejectSuggestion = StateEffect.define<{ text: string }>();
+export const incrementAttempt = StateEffect.define<void>();
+export const retryCompletionEffect = StateEffect.define<void>();
 
 // Widget for rendering the ghost text suggestion inline
 class GhostTextWidget extends WidgetType {
@@ -49,13 +54,21 @@ class GhostTextWidget extends WidgetType {
 // State field that manages the suggestion data and registers decorations
 export const ghostTextStateField = StateField.define<GhostTextState>({
   create() {
-    return { requestId: null, prefixAnchor: null, text: null, status: "idle" };
+    return { requestId: null, prefixAnchor: null, text: null, status: "idle", attempt: 0, rejected: [] };
   },
 
   update(value, tr) {
+    let isRetry = false;
+    for (const effect of tr.effects) {
+      if (effect.is(retryCompletionEffect)) {
+        isRetry = true;
+      }
+    }
+
     for (const effect of tr.effects) {
       if (effect.is(setSuggestion)) {
         return {
+          ...value,
           requestId: effect.value.requestId,
           prefixAnchor: effect.value.anchor,
           text: effect.value.text,
@@ -63,18 +76,35 @@ export const ghostTextStateField = StateField.define<GhostTextState>({
         };
       }
       if (effect.is(clearSuggestion)) {
-        return { requestId: null, prefixAnchor: null, text: null, status: "idle" };
+        return { ...value, requestId: null, prefixAnchor: null, text: null, status: "idle" };
+      }
+      if (effect.is(rejectSuggestion)) {
+        return {
+          ...value,
+          requestId: null,
+          prefixAnchor: null,
+          text: null,
+          status: "idle",
+          rejected: [...value.rejected, effect.value.text],
+          attempt: value.attempt + 1
+        };
+      }
+      if (effect.is(incrementAttempt)) {
+        return {
+          ...value,
+          attempt: value.attempt + 1
+        };
       }
       if (effect.is(setCompletionStatus)) {
         return { ...value, status: effect.value };
       }
     }
 
-    // Clear suggestions on edits or movements, unless it is an accept action
+    // Clear suggestions on edits or movements, unless it is an accept or retry action
     if (tr.docChanged || tr.selection) {
       const isAccept = tr.annotation(acceptCompletionAnnotation);
-      if (!isAccept && value.text !== null) {
-        return { requestId: null, prefixAnchor: null, text: null, status: "idle" };
+      if (!isAccept && !isRetry) {
+        return { requestId: null, prefixAnchor: null, text: null, status: "idle", attempt: 0, rejected: [] };
       }
     }
 
@@ -162,6 +192,28 @@ export const acceptWordCommand = (view: EditorView): boolean => {
   return true;
 };
 
+export const retryCommand = (view: EditorView): boolean => {
+  const state = view.state.field(ghostTextStateField);
+  const hasGhost = state.text !== null;
+  const hasRejections = state.rejected.length > 0;
+  
+  if (!hasGhost && !hasRejections) {
+    return false;
+  }
+
+  const effects: StateEffect<any>[] = [retryCompletionEffect.of()];
+  if (state.text) {
+    effects.push(rejectSuggestion.of({ text: state.text }));
+  } else {
+    effects.push(incrementAttempt.of());
+  }
+
+  view.dispatch({
+    effects
+  });
+  return true;
+};
+
 // Highest precedence keymap bindings
 export const ghostTextKeymap = Prec.highest(
   keymap.of([
@@ -172,9 +224,26 @@ export const ghostTextKeymap = Prec.highest(
     {
       key: "Ctrl-ArrowRight",
       run: acceptWordCommand
+    },
+    {
+      key: "Alt-r",
+      run: retryCommand
     }
   ])
 );
+
+function normalizeText(str: string): string {
+  return str.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isDuplicateSuggestion(suggestion: string, buffer: string): boolean {
+  const normSuggestion = normalizeText(suggestion);
+  if (normSuggestion.length <= 20) {
+    return false;
+  }
+  const normBuffer = normalizeText(buffer);
+  return normBuffer.includes(normSuggestion);
+}
 
 // ViewPlugin managing the debounce logic and Tauri generation requests
 export const ghostTextTriggerPlugin = (
@@ -190,6 +259,21 @@ export const ghostTextTriggerPlugin = (
       constructor(readonly view: EditorView) {}
 
       update(update: ViewUpdate) {
+        let shouldRetry = false;
+        for (const tr of update.transactions) {
+          for (const effect of tr.effects) {
+            if (effect.is(retryCompletionEffect)) {
+              shouldRetry = true;
+            }
+          }
+        }
+
+        if (shouldRetry) {
+          this.cancelActiveRequest();
+          this.triggerCompletion(true); // true = immediate
+          return;
+        }
+
         if (update.docChanged) {
           const isAccept = update.transactions.some((tr) => tr.annotation(acceptCompletionAnnotation));
           if (!isAccept) {
@@ -248,7 +332,21 @@ export const ghostTextTriggerPlugin = (
         }
       }
 
-      async triggerCompletion() {
+      async triggerCompletion(immediate = false) {
+        // Suppress triggers if features are disabled
+        if (!settingsRef.current.completionEnabled || !activeFile) {
+          return;
+        }
+
+        if (!immediate) {
+          const cm = getCM(this.view);
+          const isInsertMode = cm?.state?.vim?.insertMode === true;
+          if (cm && !isInsertMode) {
+            // Vim is active but not in insert mode
+            return;
+          }
+        }
+
         // First check privacy allowed status
         try {
           const allowed = await invoke<boolean>("is_note_allowed", { path: activeFile });
@@ -314,6 +412,12 @@ export const ghostTextTriggerPlugin = (
           
           if (this.lastRequestId !== requestId) return;
 
+          const ghostState = this.view.state.field(ghostTextStateField);
+          const tempLadder = [0.35, 0.6, 0.85];
+          const temperature = tempLadder[Math.min(ghostState.attempt, 2)];
+          const seed = Math.floor(Math.random() * 100000);
+          const rejected = ghostState.rejected;
+
           // Start generation
           await invoke("generate_completion", {
             requestId,
@@ -322,18 +426,27 @@ export const ghostTextTriggerPlugin = (
               text,
               cursor_offset: pos,
               max_tokens: 100,
-              temperature: 0.1,
+              temperature,
               top_p: 0.95,
               stop: ["\n", "."],
-              seed: Math.floor(Math.random() * 100000)
+              seed,
+              rejected
             },
             channel
           });
 
-          // Reset status to idle if completed but no suggestion text was generated
+          // Reset status to idle or reject duplicate suggestions
           if (this.lastRequestId === requestId) {
             const currentGhost = this.view.state.field(ghostTextStateField);
-            if (!currentGhost.text) {
+            if (currentGhost.text) {
+              if (isDuplicateSuggestion(currentGhost.text, text)) {
+                this.view.dispatch({
+                  effects: rejectSuggestion.of({ text: currentGhost.text })
+                });
+              } else {
+                this.view.dispatch({ effects: setCompletionStatus.of("idle") });
+              }
+            } else {
               this.view.dispatch({ effects: setCompletionStatus.of("idle") });
             }
           }

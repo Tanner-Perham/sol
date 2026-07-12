@@ -87,6 +87,23 @@ pub fn sanitize_prompt_text(text: &str) -> String {
         .replace("<|endoftext|>", "[endoftext]")
 }
 
+fn normalize_for_dedup(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut last_was_whitespace = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            if !last_was_whitespace {
+                normalized.push(' ');
+                last_was_whitespace = true;
+            }
+        } else if c.is_alphanumeric() {
+            normalized.push(c.to_ascii_lowercase());
+            last_was_whitespace = false;
+        }
+    }
+    normalized.trim().to_string()
+}
+
 pub fn assemble_context(
     workspace: &Path,
     note_path: &Path,
@@ -94,12 +111,21 @@ pub fn assemble_context(
     cursor_offset: usize,
     state: &crate::WorkspaceState,
 ) -> String {
-    // 1. Get prefix up to cursor_offset
+    // 1. Get prefix up to cursor_offset and truncate to last 800 characters
     let prefix = if cursor_offset <= buffer_text.len() {
         &buffer_text[..cursor_offset]
     } else {
         buffer_text
     };
+    let sanitized_prefix = sanitize_prompt_text(prefix);
+    let char_count = sanitized_prefix.chars().count();
+    let truncated_prefix: String = if char_count > 800 {
+        sanitized_prefix.chars().skip(char_count - 800).collect()
+    } else {
+        sanitized_prefix
+    };
+
+    let normalized_prefix = normalize_for_dedup(&truncated_prefix);
 
     // 2. Extract outbound links from the full buffer_text
     let targets = extract_wikilinks(buffer_text);
@@ -126,6 +152,12 @@ pub fn assemble_context(
                     // Take up to 150 characters (char count)
                     let excerpt: String = sanitized.chars().take(150).collect();
                     
+                    let normalized_excerpt = normalize_for_dedup(&excerpt);
+                    if !normalized_excerpt.is_empty() && normalized_prefix.contains(&normalized_excerpt) {
+                        // Excerpt substantially appears in prefix, skip it
+                        continue;
+                    }
+
                     let title = resolved_path.file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| target.clone());
@@ -137,16 +169,7 @@ pub fn assemble_context(
         }
     }
     
-    // 4. Truncate current note's prefix to last 800 characters
-    let sanitized_prefix = sanitize_prompt_text(prefix);
-    let char_count = sanitized_prefix.chars().count();
-    let truncated_prefix: String = if char_count > 800 {
-        sanitized_prefix.chars().skip(char_count - 800).collect()
-    } else {
-        sanitized_prefix
-    };
-
-    // 5. Combine everything
+    // 4. Combine everything
     let mut final_prompt = String::new();
     for excerpt in linked_excerpts {
         final_prompt.push_str(&excerpt);
@@ -221,6 +244,55 @@ mod tests {
         assert!(prompt.contains("<!-- Reference: Note A -->"));
 
         // Cleanup
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn test_normalize_for_dedup() {
+        assert_eq!(normalize_for_dedup("Hello, world!"), "hello world");
+        assert_eq!(normalize_for_dedup("Café   🚀  test"), "café test");
+        assert_eq!(normalize_for_dedup("\nNew\t  Line\r"), "new line");
+    }
+
+    #[test]
+    fn test_context_excerpt_deduplication() {
+        let temp_dir = std::env::temp_dir();
+        let unique_dir = temp_dir.join(format!("sol_dedup_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&unique_dir).unwrap();
+        let workspace = std::fs::canonicalize(&unique_dir).unwrap();
+
+        // Create linked note A (its content will appear in the prefix)
+        let note_a = workspace.join("Note A.md");
+        std::fs::write(&note_a, "---\nai: true\n---\nHello this is Note A content").unwrap();
+
+        // Create linked note B (its content won't appear in the prefix)
+        let note_b = workspace.join("Note B.md");
+        std::fs::write(&note_b, "---\nai: true\n---\nContent of Note B is completely unique").unwrap();
+
+        let current_note = workspace.join("Current.md");
+        let current_body = "We already have hello this is Note A content here in the prefix. And we link to [[Note A]] and [[Note B]]. cursor here";
+        std::fs::write(&current_note, current_body).unwrap();
+
+        let state = crate::WorkspaceState {
+            path: std::sync::Mutex::new(Some(workspace.clone())),
+            watcher: std::sync::Mutex::new(None),
+            download_state: crate::llm::download::new_download_state(),
+            loaded_model: std::sync::Mutex::new(None),
+            active_completion_cancel: std::sync::Mutex::new(None),
+            policy_engine: std::sync::Mutex::new(None),
+        };
+
+        let cursor_offset = current_body.find("cursor here").unwrap();
+        let prompt = assemble_context(&workspace, &current_note, current_body, cursor_offset, &state);
+
+        // Note A should be skipped because its content is already in the prefix
+        assert!(!prompt.contains("<!-- Reference: Note A -->"));
+        assert!(!prompt.contains("Hello this is Note A content\n\n")); // Only one copy of Note A content should exist (in the prefix)
+        
+        // Note B should be included because it is not in the prefix
+        assert!(prompt.contains("<!-- Reference: Note B -->"));
+        assert!(prompt.contains("Content of Note B is completely unique"));
+
         let _ = std::fs::remove_dir_all(&workspace);
     }
 }

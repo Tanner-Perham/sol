@@ -9,8 +9,40 @@ use candle_transformers::models::quantized_llama::ModelWeights as QuantizedLlama
 
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
+use std::collections::{HashMap, HashSet};
 
 use super::models_dir;
+
+/// Map of 3-token key -> set of banned 4th tokens, built from a token sequence.
+fn build_ngram_index(tokens: &[u32], index: &mut HashMap<[u32; 3], HashSet<u32>>) {
+    for w in tokens.windows(4) {
+        index.entry([w[0], w[1], w[2]]).or_default().insert(w[3]);
+    }
+}
+
+/// Set logits of banned continuations to -inf. Mirrors the vec-roundtrip
+/// pattern of candle_transformers::utils::apply_repeat_penalty.
+fn ban_ngram_continuations(
+    logits: &Tensor,
+    last_three: Option<[u32; 3]>,
+    index: &HashMap<[u32; 3], HashSet<u32>>,
+) -> Result<Tensor, String> {
+    if let Some(key) = last_three {
+        if let Some(banned_tokens) = index.get(&key) {
+            if !banned_tokens.is_empty() {
+                let mut logits_vec = logits.to_vec1::<f32>().map_err(|e| e.to_string())?;
+                for &tok in banned_tokens {
+                    if (tok as usize) < logits_vec.len() {
+                        logits_vec[tok as usize] = f32::NEG_INFINITY;
+                    }
+                }
+                return Tensor::from_vec(logits_vec, logits.shape(), logits.device())
+                    .map_err(|e| format!("Tensor creation in ban_ngram_continuations failed: {}", e));
+            }
+        }
+    }
+    Ok(logits.clone())
+}
 
 fn read_eos_token_ids(model_dir: &Path, default_ids: &[u32]) -> Vec<u32> {
     let gen_config_path = model_dir.join("generation_config.json");
@@ -251,6 +283,9 @@ impl LoadedModel {
         let input_ids = encoding.get_ids();
         let mut tokens: Vec<u32> = input_ids.to_vec();
 
+        let mut ngram_index = HashMap::new();
+        build_ngram_index(&tokens, &mut ngram_index);
+
         let mut logits_processor = LogitsProcessor::new(42, Some(0.7), Some(0.9));
 
         if let Model::Qwen2(model) = &mut self.model {
@@ -307,6 +342,23 @@ impl LoadedModel {
 
             let logits = last_token_logits(&logits)?;
 
+            // Repeat penalty (A2)
+            let penalty_tokens = &tokens[tokens.len().saturating_sub(64)..];
+            let logits = candle_transformers::utils::apply_repeat_penalty(&logits, 1.15, penalty_tokens)
+                .map_err(|e| format!("Repeat penalty failed: {}", e))?;
+
+            // N-gram blocking (A1)
+            let logits = if tokens.len() >= 3 {
+                let tail = [
+                    tokens[tokens.len() - 3],
+                    tokens[tokens.len() - 2],
+                    tokens[tokens.len() - 1],
+                ];
+                ban_ngram_continuations(&logits, Some(tail), &ngram_index)?
+            } else {
+                logits
+            };
+
             let next_token = logits_processor
                 .sample(&logits)
                 .map_err(|e| format!("Sampling failed: {}", e))?;
@@ -316,6 +368,9 @@ impl LoadedModel {
             }
 
             tokens.push(next_token);
+            if tokens.len() >= 4 {
+                build_ngram_index(&tokens[tokens.len() - 4..], &mut ngram_index);
+            }
         }
 
         // Decode output (skip input tokens)
@@ -337,6 +392,7 @@ impl LoadedModel {
         top_p: Option<f64>,
         seed: u64,
         stop_sequences: &[String],
+        rejected: &[String],
         cancel_token: &std::sync::atomic::AtomicBool,
         mut on_token: F,
     ) -> Result<(), String>
@@ -351,6 +407,21 @@ impl LoadedModel {
 
         let input_ids = encoding.get_ids();
         let mut tokens: Vec<u32> = input_ids.to_vec();
+
+        let mut ngram_index = HashMap::new();
+        build_ngram_index(&tokens, &mut ngram_index);
+
+        // Prepend prompt tail to each rejected string and index its 4-grams
+        for rej in rejected {
+            if let Ok(encoding) = self.tokenizer.encode(rej.as_str(), true) {
+                let rej_ids = encoding.get_ids();
+                let prompt_tail = &tokens[tokens.len().saturating_sub(3)..];
+                let mut combined = Vec::with_capacity(prompt_tail.len() + rej_ids.len());
+                combined.extend_from_slice(prompt_tail);
+                combined.extend_from_slice(rej_ids);
+                build_ngram_index(&combined, &mut ngram_index);
+            }
+        }
 
         let mut logits_processor = LogitsProcessor::new(seed, temperature, top_p);
 
@@ -418,6 +489,23 @@ impl LoadedModel {
 
             let logits = last_token_logits(&logits)?;
 
+            // Repeat penalty (A2)
+            let penalty_tokens = &tokens[tokens.len().saturating_sub(64)..];
+            let logits = candle_transformers::utils::apply_repeat_penalty(&logits, 1.15, penalty_tokens)
+                .map_err(|e| format!("Repeat penalty failed: {}", e))?;
+
+            // N-gram blocking (A1)
+            let logits = if tokens.len() >= 3 {
+                let tail = [
+                    tokens[tokens.len() - 3],
+                    tokens[tokens.len() - 2],
+                    tokens[tokens.len() - 1],
+                ];
+                ban_ngram_continuations(&logits, Some(tail), &ngram_index)?
+            } else {
+                logits
+            };
+
             let next_token = logits_processor
                 .sample(&logits)
                 .map_err(|e| format!("Sampling failed: {}", e))?;
@@ -436,6 +524,9 @@ impl LoadedModel {
             }
 
             tokens.push(next_token);
+            if tokens.len() >= 4 {
+                build_ngram_index(&tokens[tokens.len() - 4..], &mut ngram_index);
+            }
             tokens_decoded += 1;
 
             // Decode current sequence
@@ -664,8 +755,38 @@ mod tests {
         assert!(!is_sentence_end_period("U.S.A.", 1));
         assert!(!is_sentence_end_period("U.S.A.", 3));
         assert!(!is_sentence_end_period("U.S.A.", 5));
+        // Acronyms / initials
         assert!(!is_sentence_end_period("Mr. Smith", 2));
         assert!(!is_sentence_end_period("i.e. something", 3));
         assert!(!is_sentence_end_period("etc. and so on", 3));
+    }
+
+    #[test]
+    fn test_ngram_blocking() {
+        let dev = Device::Cpu;
+        let mut index = HashMap::new();
+        // Index a sample prompt: "the cat sat on the mat"
+        // Let's mock token ids:
+        // the: 1, cat: 2, sat: 3, on: 4, mat: 5
+        let tokens = vec![1, 2, 3, 4, 1, 5];
+        build_ngram_index(&tokens, &mut index);
+
+        // Assert 4-grams indexed:
+        // [1, 2, 3] -> 4 (the cat sat -> on)
+        // [2, 3, 4] -> 1 (cat sat on -> the)
+        // [3, 4, 1] -> 5 (sat on the -> mat)
+        assert!(index.get(&[1, 2, 3]).unwrap().contains(&4));
+        assert!(index.get(&[2, 3, 4]).unwrap().contains(&1));
+        assert!(index.get(&[3, 4, 1]).unwrap().contains(&5));
+
+        // Test logits banning
+        // Vocabulary size 6: 0..5
+        let logits = Tensor::new(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &dev).unwrap();
+        
+        // Context: last 3 are [1, 2, 3] -> should ban 4
+        let banned = ban_ngram_continuations(&logits, Some([1, 2, 3]), &index).unwrap();
+        let banned_vec = banned.to_vec1::<f32>().unwrap();
+        assert_eq!(banned_vec[4], f32::NEG_INFINITY);
+        assert_eq!(banned_vec[3], 4.0); // other indices unaffected
     }
 }

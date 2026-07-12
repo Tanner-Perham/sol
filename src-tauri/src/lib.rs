@@ -740,6 +740,8 @@ struct CompletionParams {
     top_p: Option<f64>,
     stop: Vec<String>,
     seed: u64,
+    #[serde(default)]
+    rejected: Vec<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -816,8 +818,9 @@ async fn generate_completion(
             params.top_p,
             params.seed,
             &params.stop,
+            &params.rejected,
             &cancel_token,
-            move |token| {
+            move |token: &str| {
                 let chunk = CompletionChunk {
                     request_id: request_id_clone.clone(),
                     token: token.to_string(),
