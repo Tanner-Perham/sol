@@ -321,7 +321,7 @@ export const ghostTextTriggerPlugin = (
               max_tokens: 100,
               temperature: 0.1,
               top_p: 0.95,
-              stop: ["\n"],
+              stop: ["\n", "."],
               seed: Math.floor(Math.random() * 100000)
             },
             channel
