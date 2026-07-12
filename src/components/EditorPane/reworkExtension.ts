@@ -3,6 +3,7 @@ import { Decoration, EditorView, ViewUpdate, keymap, showTooltip } from "@codemi
 import { getCM, Vim } from "@replit/codemirror-vim";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { acceptCompletionAnnotation } from "./ghostTextExtension";
+import { AppSettings } from "../../types";
 
 export interface ReworkSession {
   range: { from: number; to: number };
@@ -19,6 +20,11 @@ export const updateReworkResult = StateEffect.define<{ result: string; status: R
 export const closeRework = StateEffect.define<void>();
 
 export const activeFileField = StateField.define<string | null>({
+  create: () => null,
+  update: (value) => value
+});
+
+export const settingsField = StateField.define<{ current: AppSettings } | null>({
   create: () => null,
   update: (value) => value
 });
@@ -95,8 +101,10 @@ class ReworkTooltip {
   acceptBtn!: HTMLButtonElement;
   retryBtn!: HTMLButtonElement;
   cancelBtn!: HTMLButtonElement;
+  settingsRef: { current: AppSettings } | null = null;
 
   constructor(readonly view: EditorView) {
+    this.settingsRef = view.state.field(settingsField, false) || null;
     const session = view.state.field(reworkStateField);
     if (!session) {
       this.dom = document.createElement("div");
@@ -278,6 +286,9 @@ class ReworkTooltip {
       }
     };
 
+    const maxTokensCap = this.settingsRef?.current?.reworkMaxTokensCap ?? 512;
+    const reworkTemperature = this.settingsRef?.current?.reworkTemperature ?? 0.3;
+
     try {
       await invoke("cancel_rework");
       await invoke("generate_rework", {
@@ -286,8 +297,10 @@ class ReworkTooltip {
           path: session.path,
           selection,
           instruction,
-          max_tokens: Math.min(selection.length * 2 + 64, 512),
-          seed: Math.floor(Math.random() * 100000)
+          max_tokens: Math.min(selection.length * 2 + 64, maxTokensCap),
+          seed: Math.floor(Math.random() * 100000),
+          temperature: reworkTemperature,
+          top_p: 0.9
         },
         channel
       });
@@ -388,9 +401,10 @@ export const reworkKeymap = Prec.highest(
   ])
 );
 
-export function reworkExtension() {
+export function reworkExtension(settingsRef?: { current: AppSettings }) {
   return [
     activeFileField,
+    settingsField.init(() => settingsRef || null),
     reworkStateField,
     reworkKeymap
   ];

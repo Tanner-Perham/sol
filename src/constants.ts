@@ -18,5 +18,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
   livePreview: true,
   completionEnabled: true,
   showHidden: false,
-  keybindings: DEFAULT_KEYBINDINGS
+  keybindings: DEFAULT_KEYBINDINGS,
+  completionDebounceMs: 400,
+  completionMaxTokens: 100,
+  completionTemperature: 0.35,
+  completionTopP: 0.95,
+  contextPrefixChars: 800,
+  contextMaxLinkedNotes: 1,
+  contextExcerptChars: 150,
+  aiDebugEnabled: false,
+  reworkTemperature: 0.3,
+  reworkMaxTokensCap: 512
 };

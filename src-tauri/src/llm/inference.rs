@@ -150,6 +150,14 @@ fn is_sentence_end_period(text: &str, idx: usize) -> bool {
     true
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GenerationStats {
+    pub prefill_ms: u64,
+    pub prefill_tokens: usize,
+    pub decode_tokens: usize,
+    pub tok_per_s: f64,
+}
+
 impl LoadedModel {
     /// Load a model from disk
     pub fn load(workspace: &PathBuf, model_id: &str) -> Result<Self, String> {
@@ -395,7 +403,7 @@ impl LoadedModel {
         rejected: &[String],
         cancel_token: &std::sync::atomic::AtomicBool,
         mut on_token: F,
-    ) -> Result<(), String>
+    ) -> Result<GenerationStats, String>
     where
         F: FnMut(&str) -> Result<(), String>,
     {
@@ -584,9 +592,15 @@ impl LoadedModel {
         }
 
         let total_duration = start_time.elapsed();
+        let mut prefill_ms = 0;
+        let prefill_tokens = input_ids.len();
+        let decode_tokens = tokens_decoded;
+        let mut tok_per_s = 0.0;
+
         if let Some(prefill) = prefill_time {
+            prefill_ms = prefill.as_millis() as u64;
             let decode_duration = total_duration.saturating_sub(prefill);
-            let tok_s = if decode_duration.as_secs_f64() > 0.0 {
+            tok_per_s = if decode_duration.as_secs_f64() > 0.0 {
                 tokens_decoded as f64 / decode_duration.as_secs_f64()
             } else {
                 0.0
@@ -595,11 +609,16 @@ impl LoadedModel {
                 "[LLM] decode: {} tokens in {:?} ({:.1} tok/s)",
                 tokens_decoded,
                 decode_duration,
-                tok_s
+                tok_per_s
             );
         }
 
-        Ok(())
+        Ok(GenerationStats {
+            prefill_ms,
+            prefill_tokens,
+            decode_tokens,
+            tok_per_s,
+        })
     }
 }
 

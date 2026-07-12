@@ -31,6 +31,7 @@ export interface EditorPaneProps {
   registerState: (paneId: string, isDirty: boolean, wordCount: number) => void;
   onDocChange: (paneId: string, content: string, changes?: any) => void;
   onVimModeChange: (mode: string) => void;
+  onAiDebugInfo?: (info: any) => void;
 }
 
 interface SavedEditorState {
@@ -70,7 +71,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   registerView,
   registerState,
   onDocChange,
-  onVimModeChange
+  onVimModeChange,
+  onAiDebugInfo
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -235,8 +237,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         },
       }, { dark: !["sepia", "light"].includes(theme) })),
       customSelectionHighlightPlugin,
-      ghostTextExtension(settingsRef, activeFile),
-      reworkExtension(),
+      ghostTextExtension(settingsRef, activeFile, onAiDebugInfo),
+      reworkExtension(settingsRef),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const isReload = update.transactions.some(tr => tr.annotation(Transaction.userEvent) === "reload");
@@ -250,7 +252,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         }
       })
     ];
-  }, [paneId, workspacePath, vimMode, lineWrapping, livePreview, theme, settingsRef, activeFile, vimCompartment, wrapCompartment, previewCompartment, themeCompartment, onDocChange, registerState]);
+  }, [paneId, workspacePath, vimMode, lineWrapping, livePreview, theme, settingsRef, activeFile, vimCompartment, wrapCompartment, previewCompartment, themeCompartment, onDocChange, registerState, onAiDebugInfo]);
 
   // Clean up view on unmount
   useEffect(() => {

@@ -42,6 +42,16 @@ export interface AppSettings {
   completionEnabled?: boolean;
   showHidden: boolean;
   keybindings?: Keybindings;
+  completionDebounceMs?: number;
+  completionMaxTokens?: number;
+  completionTemperature?: number;
+  completionTopP?: number;
+  contextPrefixChars?: number;
+  contextMaxLinkedNotes?: number;
+  contextExcerptChars?: number;
+  aiDebugEnabled?: boolean;
+  reworkTemperature?: number;
+  reworkMaxTokensCap?: number;
 }
 
 export interface ModelFile {

@@ -104,26 +104,112 @@ fn normalize_for_dedup(text: &str) -> String {
     normalized.trim().to_string()
 }
 
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+pub struct ContextOptions {
+    pub prefix_chars: usize,
+    pub max_linked_notes: usize,
+    pub excerpt_chars: usize,
+}
+
+impl Default for ContextOptions {
+    fn default() -> Self {
+        Self {
+            prefix_chars: 800,
+            max_linked_notes: 1,
+            excerpt_chars: 150,
+        }
+    }
+}
+
+pub struct LinkedExcerptMeta {
+    pub title: String,
+    pub path: String,
+    pub chars_used: usize,
+}
+
+pub struct AssembledContext {
+    pub prompt: String,
+    pub prefix_range_utf16: (usize, usize),
+    pub linked: Vec<LinkedExcerptMeta>,
+    pub prompt_token_estimate: usize,
+}
+
+struct LinkedExcerpt {
+    title: String,
+    path: String,
+    excerpt_str: String,
+    chars_used: usize,
+}
+
+/// Convert a UTF-16 code-unit offset (CodeMirror position) to a byte offset.
+pub fn utf16_to_byte_offset(text: &str, utf16_offset: usize) -> usize {
+    let mut u16_count = 0;
+    for (byte_idx, ch) in text.char_indices() {
+        if u16_count >= utf16_offset {
+            return byte_idx;
+        }
+        u16_count += ch.len_utf16();
+    }
+    text.len()
+}
+
+/// Convert a byte offset to a UTF-16 code-unit offset.
+pub fn byte_to_utf16_offset(text: &str, byte_offset: usize) -> usize {
+    let mut u16_count = 0;
+    for (byte_idx, ch) in text.char_indices() {
+        if byte_idx >= byte_offset {
+            return u16_count;
+        }
+        u16_count += ch.len_utf16();
+    }
+    u16_count
+}
+
+/// Convert a character index to a UTF-16 code-unit offset.
+pub fn char_index_to_utf16_offset(text: &str, char_index: usize) -> usize {
+    let mut u16_count = 0;
+    for (i, ch) in text.chars().enumerate() {
+        if i >= char_index {
+            break;
+        }
+        u16_count += ch.len_utf16();
+    }
+    u16_count
+}
+
 pub fn assemble_context(
     workspace: &Path,
     note_path: &Path,
     buffer_text: &str,
     cursor_offset: usize,
     state: &crate::WorkspaceState,
-) -> String {
-    // 1. Get prefix up to cursor_offset and truncate to last 800 characters
-    let prefix = if cursor_offset <= buffer_text.len() {
-        &buffer_text[..cursor_offset]
+    options: &ContextOptions,
+) -> AssembledContext {
+    // Convert cursor_offset (UTF-16) to byte index
+    let byte_offset = utf16_to_byte_offset(buffer_text, cursor_offset);
+
+    // 1. Get prefix up to byte_offset and truncate to last prefix_chars characters
+    let prefix = if byte_offset <= buffer_text.len() {
+        &buffer_text[..byte_offset]
     } else {
         buffer_text
     };
     let sanitized_prefix = sanitize_prompt_text(prefix);
     let char_count = sanitized_prefix.chars().count();
-    let truncated_prefix: String = if char_count > 800 {
-        sanitized_prefix.chars().skip(char_count - 800).collect()
+    let truncated_prefix: String = if char_count > options.prefix_chars {
+        sanitized_prefix.chars().skip(char_count - options.prefix_chars).collect()
     } else {
         sanitized_prefix
     };
+
+    let prefix_chars_count = prefix.chars().count();
+    let prefix_from_char = if prefix_chars_count > options.prefix_chars {
+        prefix_chars_count - options.prefix_chars
+    } else {
+        0
+    };
+    let prefix_from_utf16 = char_index_to_utf16_offset(prefix, prefix_from_char);
+    let prefix_to_utf16 = byte_to_utf16_offset(buffer_text, byte_offset);
 
     let normalized_prefix = normalize_for_dedup(&truncated_prefix);
 
@@ -135,7 +221,7 @@ pub fn assemble_context(
     let mut linked_count = 0;
     
     for target in targets {
-        if linked_count >= 1 {
+        if linked_count >= options.max_linked_notes {
             break;
         }
         if let Some(resolved_path) = resolve_link_target(workspace, note_path, &target) {
@@ -149,8 +235,8 @@ pub fn assemble_context(
                     let body = strip_frontmatter(&content).trim();
                     let sanitized = sanitize_prompt_text(body);
 
-                    // Take up to 150 characters (char count)
-                    let excerpt: String = sanitized.chars().take(150).collect();
+                    // Take up to excerpt_chars characters
+                    let excerpt: String = sanitized.chars().take(options.excerpt_chars).collect();
                     
                     let normalized_excerpt = normalize_for_dedup(&excerpt);
                     if !normalized_excerpt.is_empty() && normalized_prefix.contains(&normalized_excerpt) {
@@ -161,8 +247,20 @@ pub fn assemble_context(
                     let title = resolved_path.file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| target.clone());
+
+                    let rel_path = resolved_path.strip_prefix(workspace)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| resolved_path.to_string_lossy().to_string());
                     
-                    linked_excerpts.push(format!("<!-- Reference: {} -->\n{}\n", title, excerpt));
+                    let excerpt_str = format!("<!-- Reference: {} -->\n{}\n", title, excerpt);
+                    let chars_used = excerpt.chars().count();
+                    
+                    linked_excerpts.push(LinkedExcerpt {
+                        title,
+                        path: rel_path,
+                        excerpt_str,
+                        chars_used,
+                    });
                     linked_count += 1;
                 }
             }
@@ -171,12 +269,24 @@ pub fn assemble_context(
     
     // 4. Combine everything
     let mut final_prompt = String::new();
-    for excerpt in linked_excerpts {
-        final_prompt.push_str(&excerpt);
+    for excerpt in &linked_excerpts {
+        final_prompt.push_str(&excerpt.excerpt_str);
         final_prompt.push('\n');
     }
     final_prompt.push_str(&truncated_prefix);
-    final_prompt
+
+    let prompt_token_estimate = final_prompt.chars().count() / 4;
+
+    AssembledContext {
+        prompt: final_prompt,
+        prefix_range_utf16: (prefix_from_utf16, prefix_to_utf16),
+        linked: linked_excerpts.into_iter().map(|le| LinkedExcerptMeta {
+            title: le.title,
+            path: le.path,
+            chars_used: le.chars_used,
+        }).collect(),
+        prompt_token_estimate,
+    }
 }
 
 #[cfg(test)]
@@ -203,6 +313,39 @@ mod tests {
 
         let doc4 = "---\r\nlayout: post\r\n---\r\nHello Windows";
         assert_eq!(strip_frontmatter(doc4).trim(), "Hello Windows");
+    }
+
+    #[test]
+    fn test_utf16_boundary_conversions() {
+        let text = "a😊c";
+        // bytes:
+        // 'a': [97] at idx 0 (len 1, len_utf16 1)
+        // '😊': [240, 159, 152, 138] at idx 1 (len 4, len_utf16 2)
+        // 'c': [99] at idx 5 (len 1, len_utf16 1)
+        // total len = 6 bytes, 4 utf16 code units, 3 chars
+
+        // utf16 -> byte offset
+        assert_eq!(utf16_to_byte_offset(text, 0), 0);
+        assert_eq!(utf16_to_byte_offset(text, 1), 1);
+        assert_eq!(utf16_to_byte_offset(text, 2), 5); // lands mid-emoji, returns start of next char ('c')
+        assert_eq!(utf16_to_byte_offset(text, 3), 5);
+        assert_eq!(utf16_to_byte_offset(text, 4), 6);
+        assert_eq!(utf16_to_byte_offset(text, 10), 6);
+
+        // byte -> utf16 offset
+        assert_eq!(byte_to_utf16_offset(text, 0), 0);
+        assert_eq!(byte_to_utf16_offset(text, 1), 1);
+        assert_eq!(byte_to_utf16_offset(text, 2), 3); // mid-emoji, returns start of 'c' (offset 3)
+        assert_eq!(byte_to_utf16_offset(text, 5), 3);
+        assert_eq!(byte_to_utf16_offset(text, 6), 4);
+        assert_eq!(byte_to_utf16_offset(text, 20), 4);
+
+        // char index -> utf16 offset
+        assert_eq!(char_index_to_utf16_offset(text, 0), 0);
+        assert_eq!(char_index_to_utf16_offset(text, 1), 1);
+        assert_eq!(char_index_to_utf16_offset(text, 2), 3);
+        assert_eq!(char_index_to_utf16_offset(text, 3), 4);
+        assert_eq!(char_index_to_utf16_offset(text, 10), 4);
     }
 
     #[test]
@@ -236,13 +379,18 @@ mod tests {
         };
 
         let cursor_offset = current_body.find("Here is the cursor").unwrap();
-        let prompt = assemble_context(&workspace, &current_note, current_body, cursor_offset, &state);
+        let assembled = assemble_context(&workspace, &current_note, current_body, cursor_offset, &state, &ContextOptions::default());
 
         // Assert prompt contains Note A's content and does NOT contain Note B's content (due to ai: false)
-        assert!(prompt.contains("Content of note A"));
-        assert!(!prompt.contains("Content of note B"));
-        assert!(prompt.contains("This is a note linking to"));
-        assert!(prompt.contains("<!-- Reference: Note A -->"));
+        assert!(assembled.prompt.contains("Content of note A"));
+        assert!(!assembled.prompt.contains("Content of note B"));
+        assert!(assembled.prompt.contains("This is a note linking to"));
+        assert!(assembled.prompt.contains("<!-- Reference: Note A -->"));
+        
+        // Assert telemetry fields are filled
+        assert_eq!(assembled.prefix_range_utf16.1, cursor_offset);
+        assert_eq!(assembled.linked.len(), 1);
+        assert_eq!(assembled.linked[0].title, "Note A");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&workspace);
@@ -285,15 +433,15 @@ mod tests {
         };
 
         let cursor_offset = current_body.find("cursor here").unwrap();
-        let prompt = assemble_context(&workspace, &current_note, current_body, cursor_offset, &state);
+        let assembled = assemble_context(&workspace, &current_note, current_body, cursor_offset, &state, &ContextOptions::default());
 
         // Note A should be skipped because its content is already in the prefix
-        assert!(!prompt.contains("<!-- Reference: Note A -->"));
-        assert!(!prompt.contains("Hello this is Note A content\n\n")); // Only one copy of Note A content should exist (in the prefix)
+        assert!(!assembled.prompt.contains("<!-- Reference: Note A -->"));
+        assert!(!assembled.prompt.contains("Hello this is Note A content\n\n")); // Only one copy of Note A content should exist (in the prefix)
         
         // Note B should be included because it is not in the prefix
-        assert!(prompt.contains("<!-- Reference: Note B -->"));
-        assert!(prompt.contains("Content of Note B is completely unique"));
+        assert!(assembled.prompt.contains("<!-- Reference: Note B -->"));
+        assert!(assembled.prompt.contains("Content of Note B is completely unique"));
 
         let _ = std::fs::remove_dir_all(&workspace);
     }

@@ -748,6 +748,38 @@ struct CompletionParams {
     seed: u64,
     #[serde(default)]
     rejected: Vec<String>,
+    #[serde(default)]
+    context: llm::context::ContextOptions,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct LinkedMetaDto {
+    title: String,
+    path: String,
+    chars_used: usize,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum CompletionMessage {
+    Context {
+        request_id: String,
+        prefix_from: usize,
+        prefix_to: usize,
+        linked: Vec<LinkedMetaDto>,
+        prompt_tokens_est: usize,
+    },
+    Token {
+        request_id: String,
+        token: String,
+    },
+    Stats {
+        request_id: String,
+        prefill_ms: u64,
+        prefill_tokens: usize,
+        decode_tokens: usize,
+        tok_per_s: f64,
+    },
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -761,7 +793,7 @@ struct CompletionChunk {
 async fn generate_completion(
     request_id: String,
     params: CompletionParams,
-    channel: tauri::ipc::Channel<CompletionChunk>,
+    channel: tauri::ipc::Channel<CompletionMessage>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = app.state::<WorkspaceState>();
@@ -778,7 +810,7 @@ async fn generate_completion(
     };
 
     // 2. Resolve workspace and completion model ID, checking privacy rules first
-    let (workspace, model_id, prompt) = {
+    let (workspace, model_id, assembled_context) = {
         let path_lock = lock!(state.path);
         let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
         
@@ -793,9 +825,25 @@ async fn generate_completion(
             .or(config.active_model_id)
             .ok_or_else(|| "No model selected for completion".to_string())?;
 
-        let prompt = llm::context::assemble_context(&workspace, &resolved, &params.text, params.cursor_offset, &state);
-        (workspace, model_id, prompt)
+        let assembled = llm::context::assemble_context(&workspace, &resolved, &params.text, params.cursor_offset, &state, &params.context);
+        (workspace, model_id, assembled)
     };
+
+    // Send Context message immediately
+    let context_msg = CompletionMessage::Context {
+        request_id: request_id.clone(),
+        prefix_from: assembled_context.prefix_range_utf16.0,
+        prefix_to: assembled_context.prefix_range_utf16.1,
+        linked: assembled_context.linked.iter().map(|meta| LinkedMetaDto {
+            title: meta.title.clone(),
+            path: meta.path.clone(),
+            chars_used: meta.chars_used,
+        }).collect(),
+        prompt_tokens_est: assembled_context.prompt_token_estimate,
+    };
+    let _ = channel.send(context_msg);
+
+    let prompt = assembled_context.prompt;
 
     // 3. Spawn blocking generation task off the main IPC thread
     tauri::async_runtime::spawn_blocking(move || {
@@ -815,9 +863,11 @@ async fn generate_completion(
         };
 
         let request_id_clone = request_id.clone();
+        let request_id_final = request_id.clone();
         let channel_clone = channel.clone();
+        let channel_final = channel.clone();
 
-        model.generate_stream(
+        match model.generate_stream(
             &prompt,
             params.max_tokens,
             params.temperature,
@@ -827,13 +877,26 @@ async fn generate_completion(
             &params.rejected,
             &cancel_token,
             move |token: &str| {
-                let chunk = CompletionChunk {
+                let msg = CompletionMessage::Token {
                     request_id: request_id_clone.clone(),
                     token: token.to_string(),
                 };
-                channel_clone.send(chunk).map_err(|e| e.to_string())
+                channel_clone.send(msg).map_err(|e| e.to_string())
             }
-        )
+        ) {
+            Ok(stats) => {
+                let stats_msg = CompletionMessage::Stats {
+                    request_id: request_id_final,
+                    prefill_ms: stats.prefill_ms,
+                    prefill_tokens: stats.prefill_tokens,
+                    decode_tokens: stats.decode_tokens,
+                    tok_per_s: stats.tok_per_s,
+                };
+                let _ = channel_final.send(stats_msg);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     })
     .await
     .map_err(|e| format!("Spawn blocking failed: {}", e))?
@@ -920,6 +983,8 @@ struct ReworkParams {
     instruction: String,
     max_tokens: Option<usize>,
     seed: Option<u64>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
 }
 
 /// Generate rework streaming tokens via the provided channel
@@ -998,12 +1063,14 @@ async fn generate_rework(
         let channel_clone = channel.clone();
         let max_tokens = params.max_tokens.unwrap_or(256);
         let seed = params.seed.unwrap_or(42);
+        let temperature = params.temperature.unwrap_or(0.3);
+        let top_p = params.top_p.unwrap_or(0.9);
 
-        model.generate_stream(
+        let _stats = model.generate_stream(
             &prompt,
             max_tokens,
-            Some(0.3),
-            Some(0.9),
+            Some(temperature),
+            Some(top_p),
             seed,
             &[],
             &[],
@@ -1015,7 +1082,8 @@ async fn generate_rework(
                 };
                 channel_clone.send(chunk).map_err(|e| e.to_string())
             }
-        )
+        )?;
+        Ok(())
     })
     .await
     .map_err(|e| format!("Spawn blocking failed: {}", e))?

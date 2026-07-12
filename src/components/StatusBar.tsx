@@ -11,6 +11,14 @@ export interface StatusBarProps {
   updateSettings: (newSettings: Partial<AppSettings>) => Promise<void>;
   aiStatus: "allowed" | "excluded" | "loading";
   completionEnabled: boolean;
+  aiDebugEnabled?: boolean;
+  aiDebugInfo?: {
+    charCount: number;
+    linkedCount: number;
+    tokensEst: number;
+    prefillMs?: number;
+    tokPerS?: number;
+  } | null;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
@@ -22,7 +30,9 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   wordCount,
   updateSettings,
   aiStatus,
-  completionEnabled
+  completionEnabled,
+  aiDebugEnabled,
+  aiDebugInfo
 }) => {
   return (
     <footer className="app-status-bar">
@@ -46,6 +56,25 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             <span style={{ color: "#f9e2af", fontWeight: 600 }} title="AI context excluded for this note by policy">
               AI: Excluded
             </span>
+          )}
+        </div>
+      )}
+      {activeFile && aiDebugEnabled && aiDebugInfo && (
+        <div className="status-section status-ai-debug" style={{ color: "var(--accent)", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+          <span>
+            ctx: {aiDebugInfo.charCount}ch +{aiDebugInfo.linkedCount} linked (~{aiDebugInfo.tokensEst} tok)
+          </span>
+          {aiDebugInfo.prefillMs !== undefined && (
+            <>
+              <span style={{ opacity: 0.5 }}>·</span>
+              <span>prefill {aiDebugInfo.prefillMs}ms</span>
+            </>
+          )}
+          {aiDebugInfo.tokPerS !== undefined && (
+            <>
+              <span style={{ opacity: 0.5 }}>·</span>
+              <span>{aiDebugInfo.tokPerS.toFixed(1)} tok/s</span>
+            </>
           )}
         </div>
       )}

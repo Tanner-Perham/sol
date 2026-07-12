@@ -13,6 +13,7 @@ export interface GhostTextState {
   status: "idle" | "loading" | "active";
   attempt: number;
   rejected: string[];
+  contextHighlight: { from: number; to: number } | null;
 }
 
 // Effects and Annotations for state changes
@@ -23,6 +24,7 @@ export const acceptCompletionAnnotation = Annotation.define<boolean>();
 export const rejectSuggestion = StateEffect.define<{ text: string }>();
 export const incrementAttempt = StateEffect.define<void>();
 export const retryCompletionEffect = StateEffect.define<void>();
+export const setContextHighlight = StateEffect.define<{ from: number; to: number } | null>();
 
 // Widget for rendering the ghost text suggestion inline
 class GhostTextWidget extends WidgetType {
@@ -55,7 +57,7 @@ class GhostTextWidget extends WidgetType {
 // State field that manages the suggestion data and registers decorations
 export const ghostTextStateField = StateField.define<GhostTextState>({
   create() {
-    return { requestId: null, prefixAnchor: null, text: null, status: "idle", attempt: 0, rejected: [] };
+    return { requestId: null, prefixAnchor: null, text: null, status: "idle", attempt: 0, rejected: [], contextHighlight: null };
   },
 
   update(value, tr) {
@@ -77,7 +79,7 @@ export const ghostTextStateField = StateField.define<GhostTextState>({
         };
       }
       if (effect.is(clearSuggestion)) {
-        return { ...value, requestId: null, prefixAnchor: null, text: null, status: "idle" };
+        return { ...value, requestId: null, prefixAnchor: null, text: null, status: "idle", contextHighlight: null };
       }
       if (effect.is(rejectSuggestion)) {
         return {
@@ -87,7 +89,8 @@ export const ghostTextStateField = StateField.define<GhostTextState>({
           text: null,
           status: "idle",
           rejected: [...value.rejected, effect.value.text],
-          attempt: value.attempt + 1
+          attempt: value.attempt + 1,
+          contextHighlight: null
         };
       }
       if (effect.is(incrementAttempt)) {
@@ -99,13 +102,19 @@ export const ghostTextStateField = StateField.define<GhostTextState>({
       if (effect.is(setCompletionStatus)) {
         return { ...value, status: effect.value };
       }
+      if (effect.is(setContextHighlight)) {
+        return {
+          ...value,
+          contextHighlight: effect.value
+        };
+      }
     }
 
     // Clear suggestions on edits or movements, unless it is an accept or retry action
     if (tr.docChanged || tr.selection) {
       const isAccept = tr.annotation(acceptCompletionAnnotation);
       if (!isAccept && !isRetry) {
-        return { requestId: null, prefixAnchor: null, text: null, status: "idle", attempt: 0, rejected: [] };
+        return { requestId: null, prefixAnchor: null, text: null, status: "idle", attempt: 0, rejected: [], contextHighlight: null };
       }
     }
 
@@ -113,20 +122,37 @@ export const ghostTextStateField = StateField.define<GhostTextState>({
   },
 
   provide: (f) => [
-    EditorView.decorations.from(f, (ghostState) => {
+    EditorView.decorations.compute([f], (state) => {
+      const ghostState = state.field(f);
+      const builder = new RangeSetBuilder<Decoration>();
+
+      // 1. Context highlight
+      if (ghostState.contextHighlight) {
+        const from = Math.min(ghostState.contextHighlight.from, state.doc.length);
+        const to = Math.min(ghostState.contextHighlight.to, state.doc.length);
+        if (from < to) {
+          builder.add(
+            from,
+            to,
+            Decoration.mark({ class: "cm-ai-context" })
+          );
+        }
+      }
+
+      // 2. Ghost text widget
       if (ghostState.text && ghostState.prefixAnchor !== null) {
-        const builder = new RangeSetBuilder<Decoration>();
+        const anchor = Math.min(ghostState.prefixAnchor, state.doc.length);
         builder.add(
-          ghostState.prefixAnchor,
-          ghostState.prefixAnchor,
+          anchor,
+          anchor,
           Decoration.widget({
             widget: new GhostTextWidget(ghostState.text),
-            side: 1 // renders inline, after the cursor position
+            side: 1
           })
         );
-        return builder.finish();
       }
-      return Decoration.none;
+
+      return builder.finish();
     })
   ]
 });
@@ -249,7 +275,8 @@ function isDuplicateSuggestion(suggestion: string, buffer: string): boolean {
 // ViewPlugin managing the debounce logic and Tauri generation requests
 export const ghostTextTriggerPlugin = (
   settingsRef: { current: AppSettings },
-  activeFile: string | null
+  activeFile: string | null,
+  onAiDebugInfo?: (info: any) => void
 ) =>
   ViewPlugin.fromClass(
     class {
@@ -287,6 +314,11 @@ export const ghostTextTriggerPlugin = (
             this.cancelActiveRequest();
           }
         }
+
+        const ghostState = update.state.field(ghostTextStateField);
+        if (!ghostState.text && !ghostState.requestId && onAiDebugInfo) {
+          onAiDebugInfo(null);
+        }
       }
 
       destroy() {
@@ -294,7 +326,11 @@ export const ghostTextTriggerPlugin = (
           clearTimeout(this.debounceTimer);
         }
         if (this.lastRequestId) {
+          this.lastRequestId = null;
           invoke("cancel_completion").catch(() => {});
+        }
+        if (onAiDebugInfo) {
+          onAiDebugInfo(null);
         }
       }
 
@@ -315,9 +351,10 @@ export const ghostTextTriggerPlugin = (
           return;
         }
 
+        const debounceMs = settingsRef.current.completionDebounceMs ?? 400;
         this.debounceTimer = setTimeout(() => {
           this.triggerCompletion();
-        }, 400);
+        }, debounceMs);
       }
 
       cancelActiveRequest() {
@@ -330,6 +367,9 @@ export const ghostTextTriggerPlugin = (
         const currentField = this.view.state.field(ghostTextStateField, false);
         if (currentField && currentField.text !== null) {
           this.view.dispatch({ effects: clearSuggestion.of() });
+        }
+        if (onAiDebugInfo) {
+          onAiDebugInfo(null);
         }
       }
 
@@ -394,22 +434,51 @@ export const ghostTextTriggerPlugin = (
 
         // Set status to loading
         this.view.dispatch({ effects: setCompletionStatus.of("loading") });
+        if (onAiDebugInfo) {
+          onAiDebugInfo(null);
+        }
 
         const channel = new Channel<any>();
         channel.onmessage = (message) => {
           // Verify that this is the active request and completions are still enabled
           if (this.lastRequestId === requestId && settingsRef.current.completionEnabled) {
-            const currentGhost = this.view.state.field(ghostTextStateField);
-            const appendedText = (currentGhost.text || "") + message.token;
-            
-            const currentAnchor = currentGhost.prefixAnchor !== null ? currentGhost.prefixAnchor : pos;
-            this.view.dispatch({
-              effects: setSuggestion.of({
-                text: appendedText,
-                requestId,
-                anchor: currentAnchor
-              })
-            });
+            if (message.type === "token") {
+              const currentGhost = this.view.state.field(ghostTextStateField);
+              const appendedText = (currentGhost.text || "") + message.token;
+              
+              const currentAnchor = currentGhost.prefixAnchor !== null ? currentGhost.prefixAnchor : pos;
+              this.view.dispatch({
+                effects: setSuggestion.of({
+                  text: appendedText,
+                  requestId,
+                  anchor: currentAnchor
+                })
+              });
+            } else if (message.type === "context") {
+              if (settingsRef.current.aiDebugEnabled) {
+                this.view.dispatch({
+                  effects: setContextHighlight.of({ from: message.prefix_from, to: message.prefix_to })
+                });
+              }
+              if (onAiDebugInfo) {
+                onAiDebugInfo({
+                  charCount: message.prefix_to - message.prefix_from,
+                  linkedCount: message.linked.length,
+                  tokensEst: message.prompt_tokens_est
+                });
+              }
+            } else if (message.type === "stats") {
+              if (onAiDebugInfo) {
+                onAiDebugInfo((prev: any) => {
+                  if (!prev) return null;
+                  return {
+                    ...prev,
+                    prefillMs: message.prefill_ms,
+                    tokPerS: message.tok_per_s
+                  };
+                });
+              }
+            }
           }
         };
 
@@ -420,10 +489,20 @@ export const ghostTextTriggerPlugin = (
           if (this.lastRequestId !== requestId) return;
 
           const ghostState = this.view.state.field(ghostTextStateField);
-          const tempLadder = [0.35, 0.6, 0.85];
+          const baseTemp = settingsRef.current.completionTemperature ?? 0.35;
+          const tempLadder = [baseTemp, baseTemp + 0.25, baseTemp + 0.5];
           const temperature = tempLadder[Math.min(ghostState.attempt, 2)];
           const seed = Math.floor(Math.random() * 100000);
           const rejected = ghostState.rejected;
+
+          const maxTokens = settingsRef.current.completionMaxTokens ?? 100;
+          const topP = settingsRef.current.completionTopP ?? 0.95;
+          
+          const contextOpts = {
+            prefix_chars: settingsRef.current.contextPrefixChars ?? 800,
+            max_linked_notes: settingsRef.current.contextMaxLinkedNotes ?? 1,
+            excerpt_chars: settingsRef.current.contextExcerptChars ?? 150
+          };
 
           // Start generation
           await invoke("generate_completion", {
@@ -432,12 +511,13 @@ export const ghostTextTriggerPlugin = (
               path: activeFile,
               text,
               cursor_offset: pos,
-              max_tokens: 100,
+              max_tokens: maxTokens,
               temperature,
-              top_p: 0.95,
+              top_p: topP,
               stop: ["\n", "."],
               seed,
-              rejected
+              rejected,
+              context: contextOpts
             },
             channel
           });
@@ -471,11 +551,12 @@ export const ghostTextTriggerPlugin = (
 // Combined export for easy inclusion in EditorPane
 export function ghostTextExtension(
   settingsRef: { current: AppSettings },
-  activeFile: string | null
+  activeFile: string | null,
+  onAiDebugInfo?: (info: any) => void
 ) {
   return [
     ghostTextStateField,
     ghostTextKeymap,
-    ghostTextTriggerPlugin(settingsRef, activeFile)
+    ghostTextTriggerPlugin(settingsRef, activeFile, onAiDebugInfo)
   ];
 }

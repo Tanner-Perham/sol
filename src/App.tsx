@@ -26,6 +26,7 @@ function App() {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [aiDebugInfo, setAiDebugInfo] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabType>("general");
   const [recordingHotkey, setRecordingHotkey] = useState<keyof Keybindings | null>(null);
@@ -1586,6 +1587,7 @@ function App() {
           registerState={registerState}
           onDocChange={onDocChange}
           onVimModeChange={onVimModeChange}
+          onAiDebugInfo={setAiDebugInfo}
         />
       );
     }
@@ -1783,6 +1785,8 @@ function App() {
         updateSettings={updateSettings}
         aiStatus={aiStatus}
         completionEnabled={settings.completionEnabled !== false}
+        aiDebugEnabled={settings.aiDebugEnabled}
+        aiDebugInfo={aiDebugInfo}
       />
 
       <SettingsModal
