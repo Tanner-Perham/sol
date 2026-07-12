@@ -10,6 +10,8 @@ export interface ModelSettingsProps {
 export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) => {
   const [models, setModels] = useState<ModelWithStatus[]>([]);
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const [completionModelId, setCompletionModelId] = useState<string | null>(null);
+  const [reworkModelId, setReworkModelId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, DownloadProgress>>({});
   const [error, setError] = useState<string | null>(null);
   const [downloadingModels, setDownloadingModels] = useState<Set<string>>(new Set());
@@ -23,6 +25,12 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
       const active = await invoke<string | null>("get_active_model");
       console.log("Active model:", active);
       setActiveModelId(active);
+      const completion = await invoke<string | null>("get_completion_model");
+      console.log("Completion model:", completion);
+      setCompletionModelId(completion);
+      const rework = await invoke<string | null>("get_rework_model");
+      console.log("Rework model:", rework);
+      setReworkModelId(rework);
     } catch (err) {
       console.error("Error loading models:", err);
       setError(err instanceof Error ? err.message : String(err));
@@ -137,6 +145,26 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
     }
   };
 
+  const handleSetCompletion = async (modelId: string) => {
+    try {
+      await invoke("set_completion_model", { modelId });
+      setCompletionModelId(modelId);
+      loadModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleSetRework = async (modelId: string) => {
+    try {
+      await invoke("set_rework_model", { modelId });
+      setReworkModelId(modelId);
+      loadModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const formatSize = (bytes: number) => {
     if (bytes >= 1_000_000_000) {
       return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
@@ -214,24 +242,25 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
           console.log("Rendering model:", model.id, "status:", status, "raw model:", model);
           const progress = downloadProgress[model.id];
           const isActive = activeModelId === model.id;
+          const isCompletion = completionModelId === model.id;
+          const isRework = reworkModelId === model.id;
+          const hasAnyRole = isActive || isCompletion || isRework;
 
           return (
             <div
               key={model.id}
-              className={`model-card ${isActive ? "active" : ""} ${(status === "downloaded" || status === "active") ? "clickable" : ""}`}
-              onClick={() => {
-                if ((status === "downloaded" || status === "active") && !isActive) {
-                  handleSetActive(model.id);
-                }
-              }}
-              style={{ cursor: (status === "downloaded" || status === "active") && !isActive ? "pointer" : "default" }}
+              className={`model-card ${hasAnyRole ? "active" : ""}`}
             >
               <div className="model-header">
                 <div className="model-info">
                   <span className="model-name">{model.name}</span>
                   <span className="model-size">{formatSize(model.size_bytes)}</span>
                 </div>
-                {isActive && <span className="active-badge">Active</span>}
+                <div style={{ display: "flex", gap: "6px" }}>
+                  {isActive && <span className="active-badge">General</span>}
+                  {isCompletion && <span className="active-badge" style={{ background: "var(--accent-glow)", color: "var(--accent)" }}>Completion</span>}
+                  {isRework && <span className="active-badge" style={{ background: "var(--accent-glow)", color: "var(--accent)" }}>Rework</span>}
+                </div>
               </div>
 
               <p className="model-description">{model.description}</p>
@@ -291,19 +320,48 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
                   </>
                 )}
 
-                {(status === "downloaded" || status === "active") && (
-                  <>
-                    {!isActive && (
-                      <button type="button" onClick={() => handleSetActive(model.id)} className="btn-activate">
-                        Use This Model
-                      </button>
-                    )}
-                    <button type="button" onClick={() => handleDelete(model.id)} className="btn-delete">
-                      Delete
-                    </button>
-                  </>
+                {(status === "downloaded" || status === "active" || hasAnyRole) && (
+                  <button type="button" onClick={() => handleDelete(model.id)} className="btn-delete">
+                    Delete
+                  </button>
                 )}
               </div>
+
+              {(status === "downloaded" || status === "active" || hasAnyRole) && (
+                <div className="model-roles" style={{ display: "flex", gap: "16px", marginTop: "12px", borderTop: "1px solid var(--border)", paddingTop: "12px" }} onClick={(e) => e.stopPropagation()}>
+                  <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)", marginRight: "auto" }}>Assign Roles:</span>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", cursor: "pointer", color: isActive ? "var(--accent)" : "var(--text-muted)" }}>
+                    <input
+                      type="radio"
+                      name={`general-model-${model.id}`}
+                      checked={isActive}
+                      onChange={() => handleSetActive(model.id)}
+                      style={{ accentColor: "var(--accent)" }}
+                    />
+                    General
+                  </label>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", cursor: "pointer", color: isCompletion ? "var(--accent)" : "var(--text-muted)" }}>
+                    <input
+                      type="radio"
+                      name={`completion-model-${model.id}`}
+                      checked={isCompletion}
+                      onChange={() => handleSetCompletion(model.id)}
+                      style={{ accentColor: "var(--accent)" }}
+                    />
+                    Completion
+                  </label>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", cursor: "pointer", color: isRework ? "var(--accent)" : "var(--text-muted)" }}>
+                    <input
+                      type="radio"
+                      name={`rework-model-${model.id}`}
+                      checked={isRework}
+                      onChange={() => handleSetRework(model.id)}
+                      style={{ accentColor: "var(--accent)" }}
+                    />
+                    Rework
+                  </label>
+                </div>
+              )}
             </div>
           );
         })}

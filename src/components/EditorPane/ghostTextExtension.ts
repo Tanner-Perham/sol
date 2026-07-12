@@ -4,6 +4,7 @@ import { getCM } from "@replit/codemirror-vim";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { syntaxTree } from "@codemirror/language";
 import { AppSettings } from "../../types";
+import { reworkStateField } from "./reworkExtension";
 
 export interface GhostTextState {
   requestId: string | null;
@@ -333,6 +334,12 @@ export const ghostTextTriggerPlugin = (
       }
 
       async triggerCompletion(immediate = false) {
+        // Suppress completions if rework session is active
+        const reworkSession = this.view.state.field(reworkStateField, false);
+        if (reworkSession) {
+          return;
+        }
+
         // Suppress triggers if features are disabled
         if (!settingsRef.current.completionEnabled || !activeFile) {
           return;

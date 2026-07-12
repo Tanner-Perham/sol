@@ -69,6 +69,8 @@ export type ModelStatusType =
 
 export interface ModelWithStatus extends ModelInfo {
   status: ModelStatusType["status"];
+  is_completion_active: boolean;
+  is_rework_active: boolean;
 }
 
 export interface DownloadProgress {

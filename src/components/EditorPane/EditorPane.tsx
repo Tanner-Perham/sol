@@ -10,6 +10,7 @@ import { prosePreviewPlugin } from "../../prosePreviewPlugin";
 import { PaneId, AppSettings, FileNode } from "../../types";
 import { customSelectionHighlightPlugin } from "./editorPlugins";
 import { ghostTextExtension } from "./ghostTextExtension";
+import { reworkExtension, activeFileField } from "./reworkExtension";
 import { findHeaderLine, computeWordCount, wikiCompletionSource } from "../../utils/editorUtils";
 
 export interface EditorPaneProps {
@@ -235,6 +236,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       }, { dark: !["sepia", "light"].includes(theme) })),
       customSelectionHighlightPlugin,
       ghostTextExtension(settingsRef, activeFile),
+      reworkExtension(),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const isReload = update.transactions.some(tr => tr.annotation(Transaction.userEvent) === "reload");
@@ -284,7 +286,10 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       state = EditorState.create({
         doc: loadedContent,
         selection,
-        extensions: buildExtensions()
+        extensions: [
+          ...buildExtensions(),
+          activeFileField.init(() => activeFile)
+        ]
       });
       fileEditorStates.set(cacheKey, state);
     }

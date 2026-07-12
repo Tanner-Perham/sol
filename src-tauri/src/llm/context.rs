@@ -231,6 +231,7 @@ mod tests {
             download_state: crate::llm::download::new_download_state(),
             loaded_model: std::sync::Mutex::new(None),
             active_completion_cancel: std::sync::Mutex::new(None),
+            active_rework_cancel: std::sync::Mutex::new(None),
             policy_engine: std::sync::Mutex::new(None),
         };
 
@@ -279,6 +280,7 @@ mod tests {
             download_state: crate::llm::download::new_download_state(),
             loaded_model: std::sync::Mutex::new(None),
             active_completion_cancel: std::sync::Mutex::new(None),
+            active_rework_cancel: std::sync::Mutex::new(None),
             policy_engine: std::sync::Mutex::new(None),
         };
 

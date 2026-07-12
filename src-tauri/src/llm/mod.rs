@@ -51,6 +51,7 @@ pub struct ModelWithStatus {
     #[serde(flatten)]
     pub status: ModelStatus,
     pub is_completion_active: bool,
+    pub is_rework_active: bool,
 }
 
 /// LLM configuration stored in settings
@@ -60,6 +61,8 @@ pub struct LlmConfig {
     pub active_model_id: Option<String>,
     #[serde(default)]
     pub completion_model_id: Option<String>,
+    #[serde(default)]
+    pub rework_model_id: Option<String>,
     #[serde(default)]
     pub downloaded_models: Vec<String>,
 }

@@ -23,6 +23,7 @@ struct WorkspaceState {
     download_state: llm::download::SharedDownloadState,
     loaded_model: Mutex<Option<(String, llm::inference::LoadedModel)>>,
     active_completion_cancel: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    active_rework_cancel: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     policy_engine: Mutex<Option<policy::PolicyEngine>>,
 }
 
@@ -540,6 +541,7 @@ fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
             let is_downloaded = llm::is_model_downloaded(&workspace, &info.id);
             let is_active = config.active_model_id.as_ref() == Some(&info.id);
             let is_completion_active = config.completion_model_id.as_ref() == Some(&info.id);
+            let is_rework_active = config.rework_model_id.as_ref() == Some(&info.id);
 
             let status = if is_active && is_downloaded {
                 ModelStatus::Active
@@ -549,7 +551,7 @@ fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
                 ModelStatus::NotDownloaded
             };
 
-            ModelWithStatus { info, status, is_completion_active }
+            ModelWithStatus { info, status, is_completion_active, is_rework_active }
         })
         .collect()
 }
@@ -678,6 +680,10 @@ fn delete_model(model_id: String, state: tauri::State<'_, WorkspaceState>) -> Re
     }
     if config.completion_model_id.as_ref() == Some(&model_id) {
         config.completion_model_id = None;
+        modified = true;
+    }
+    if config.rework_model_id.as_ref() == Some(&model_id) {
+        config.rework_model_id = None;
         modified = true;
     }
     if modified {
@@ -870,6 +876,151 @@ fn set_completion_model(
     config.save(workspace)
 }
 
+/// Get the active rework model ID
+#[tauri::command]
+fn get_rework_model(state: tauri::State<'_, WorkspaceState>) -> Option<String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref()?;
+    let config = LlmConfig::load(workspace);
+    config.rework_model_id
+}
+
+/// Set the active rework model ID
+#[tauri::command]
+fn set_rework_model(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+
+    if !llm::is_model_downloaded(workspace, &model_id) {
+        return Err("Model not downloaded".to_string());
+    }
+
+    let mut config = LlmConfig::load(workspace);
+    config.rework_model_id = Some(model_id);
+    config.save(workspace)
+}
+
+/// Explicitly cancel the current rework generation
+#[tauri::command]
+fn cancel_rework(state: tauri::State<'_, WorkspaceState>) {
+    let mut active_cancel = lock!(state.active_rework_cancel);
+    if let Some(ref old_token) = *active_cancel {
+        old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    *active_cancel = None;
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct ReworkParams {
+    path: String,
+    selection: String,
+    instruction: String,
+    max_tokens: Option<usize>,
+    seed: Option<u64>,
+}
+
+/// Generate rework streaming tokens via the provided channel
+#[tauri::command]
+async fn generate_rework(
+    request_id: String,
+    params: ReworkParams,
+    channel: tauri::ipc::Channel<CompletionChunk>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let state = app.state::<WorkspaceState>();
+
+    // 1. Cancel active completion and any existing rework
+    {
+        let mut active_comp = lock!(state.active_completion_cancel);
+        if let Some(ref old_token) = *active_comp {
+            old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        *active_comp = None;
+    }
+    let cancel_token = {
+        let mut active_cancel = lock!(state.active_rework_cancel);
+        if let Some(ref old_token) = *active_cancel {
+            old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *active_cancel = Some(token.clone());
+        token
+    };
+
+    // 2. Resolve workspace and model, checking privacy
+    let (workspace, model_id, prompt) = {
+        let path_lock = lock!(state.path);
+        let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
+        
+        let resolved = resolve_safe_path(&workspace, &params.path)?;
+        if !is_ai_allowed(&state, &workspace, &resolved) {
+            return Err("AI context is disabled for this file by privacy policy".to_string());
+        }
+
+        let config = LlmConfig::load(&workspace);
+        
+        let model_id = config.rework_model_id
+            .or(config.active_model_id)
+            .ok_or_else(|| "No model selected for rework".to_string())?;
+
+        let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
+        let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
+
+        let prompt = format!(
+            "<|im_start|>system\nYou rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations.<|im_end|>\n<|im_start|>user\nInstruction: {}\n\nText:\n{}<|im_end|>\n<|im_start|>assistant\n",
+            sanitized_instruction,
+            sanitized_selection
+        );
+        (workspace, model_id, prompt)
+    };
+
+    // 3. Spawn blocking generation task
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<WorkspaceState>();
+        let mut loaded_model_lock = lock!(state.loaded_model);
+        
+        let model = match &mut *loaded_model_lock {
+            Some((cached_id, model)) if cached_id == &model_id => model,
+            _ => {
+                let new_model = match llm::inference::LoadedModel::load(&workspace, &model_id) {
+                    Ok(m) => m,
+                    Err(e) => return Err(format!("Failed to load model: {}", e)),
+                };
+                *loaded_model_lock = Some((model_id.clone(), new_model));
+                &mut loaded_model_lock.as_mut().unwrap().1
+            }
+        };
+
+        let request_id_clone = request_id.clone();
+        let channel_clone = channel.clone();
+        let max_tokens = params.max_tokens.unwrap_or(256);
+        let seed = params.seed.unwrap_or(42);
+
+        model.generate_stream(
+            &prompt,
+            max_tokens,
+            Some(0.3),
+            Some(0.9),
+            seed,
+            &[],
+            &[],
+            &cancel_token,
+            move |token: &str| {
+                let chunk = CompletionChunk {
+                    request_id: request_id_clone.clone(),
+                    token: token.to_string(),
+                };
+                channel_clone.send(chunk).map_err(|e| e.to_string())
+            }
+        )
+    })
+    .await
+    .map_err(|e| format!("Spawn blocking failed: {}", e))?
+}
+
 /// Check if AI features are allowed for a note
 #[tauri::command]
 fn is_note_allowed(
@@ -968,6 +1119,7 @@ pub fn run() {
                 download_state,
                 loaded_model: Mutex::new(None),
                 active_completion_cancel: Mutex::new(None),
+                active_rework_cancel: Mutex::new(None),
                 policy_engine: Mutex::new(policy_engine),
             });
             Ok(())
@@ -997,6 +1149,10 @@ pub fn run() {
             cancel_completion,
             get_completion_model,
             set_completion_model,
+            get_rework_model,
+            set_rework_model,
+            cancel_rework,
+            generate_rework,
             is_note_allowed,
             open_policy_file
         ])
@@ -1196,6 +1352,7 @@ mod tests {
             download_state: llm::download::new_download_state(),
             loaded_model: Mutex::new(None),
             active_completion_cancel: Mutex::new(None),
+            active_rework_cancel: Mutex::new(None),
             policy_engine: Mutex::new(None),
         };
         assert!(is_ai_allowed(&state, &workspace, &allowed_note));
