@@ -33,7 +33,7 @@ class GhostTextWidget extends WidgetType {
     span.style.opacity = "0.55";
     span.style.userSelect = "none";
     span.style.pointerEvents = "none";
-    span.style.whiteSpace = "pre";
+    span.style.whiteSpace = "pre-wrap";
     return span;
   }
 
@@ -294,11 +294,12 @@ export const ghostTextTriggerPlugin = (
             const currentGhost = this.view.state.field(ghostTextStateField);
             const appendedText = (currentGhost.text || "") + message.token;
             
+            const currentAnchor = currentGhost.prefixAnchor !== null ? currentGhost.prefixAnchor : pos;
             this.view.dispatch({
               effects: setSuggestion.of({
                 text: appendedText,
                 requestId,
-                anchor: pos
+                anchor: currentAnchor
               })
             });
           }
