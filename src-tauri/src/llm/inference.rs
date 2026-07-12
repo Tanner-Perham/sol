@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_core::quantized::gguf_file;
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
@@ -48,6 +48,24 @@ pub struct LoadedModel {
     tokenizer: Tokenizer,
     device: Device,
     eos_token_id: u32,
+}
+
+/// Extract the last-position logits as a 1-D (vocab,) tensor, handling both
+/// candle output conventions: (batch, seq, vocab) [qwen2 ModelForCausalLM]
+/// and (batch, vocab) [llama, quantized_llama, quantized_qwen2].
+fn last_token_logits(logits: &Tensor) -> Result<Tensor, String> {
+    match logits.rank() {
+        3 => {
+            let seq_len = logits.dim(1).map_err(|e| e.to_string())?;
+            logits
+                .i((0, seq_len - 1, ..))
+                .map_err(|e| format!("Logits indexing failed: {}", e))
+        }
+        2 => logits
+            .i((0, ..))
+            .map_err(|e| format!("Logits indexing failed: {}", e)),
+        r => Err(format!("Unexpected logits rank {} (shape {:?})", r, logits.shape())),
+    }
 }
 
 impl LoadedModel {
@@ -237,13 +255,7 @@ impl LoadedModel {
 
             pos_offset += input_slice.len();
 
-            let logits = logits
-                .squeeze(0)
-                .map_err(|e| format!("Squeeze failed: {}", e))?;
-
-            let logits = logits
-                .get(logits.dim(0).map_err(|e| e.to_string())? - 1)
-                .map_err(|e| format!("Get last logits failed: {}", e))?;
+            let logits = last_token_logits(&logits)?;
 
             let next_token = logits_processor
                 .sample(&logits)
@@ -350,13 +362,7 @@ impl LoadedModel {
 
             pos_offset += input_slice.len();
 
-            let logits = logits
-                .squeeze(0)
-                .map_err(|e| format!("Squeeze failed: {}", e))?;
-
-            let logits = logits
-                .get(logits.dim(0).map_err(|e| e.to_string())? - 1)
-                .map_err(|e| format!("Get last logits failed: {}", e))?;
+            let logits = last_token_logits(&logits)?;
 
             let next_token = logits_processor
                 .sample(&logits)
@@ -480,5 +486,37 @@ What topic connects these notes? Reply with only 2-4 words, no explanation.
         Ok("Unnamed Topic".to_string())
     } else {
         Ok(topic_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_token_logits_rank3() {
+        let dev = Device::Cpu;
+        // (batch=1, seq=3, vocab=4); last position = [8,9,10,11]
+        let t = Tensor::arange(0f32, 12., &dev).unwrap().reshape((1, 3, 4)).unwrap();
+        let out = last_token_logits(&t).unwrap();
+        assert_eq!(out.dims(), &[4]);
+        assert_eq!(out.to_vec1::<f32>().unwrap(), vec![8., 9., 10., 11.]);
+    }
+
+    #[test]
+    fn last_token_logits_rank2() {
+        let dev = Device::Cpu;
+        // (batch=1, vocab=4)
+        let t = Tensor::arange(0f32, 4., &dev).unwrap().reshape((1, 4)).unwrap();
+        let out = last_token_logits(&t).unwrap();
+        assert_eq!(out.dims(), &[4]);
+        assert_eq!(out.to_vec1::<f32>().unwrap(), vec![0., 1., 2., 3.]);
+    }
+
+    #[test]
+    fn last_token_logits_rejects_rank1() {
+        let dev = Device::Cpu;
+        let t = Tensor::arange(0f32, 4., &dev).unwrap();
+        assert!(last_token_logits(&t).is_err());
     }
 }

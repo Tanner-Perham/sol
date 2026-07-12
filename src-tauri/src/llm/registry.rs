@@ -185,7 +185,7 @@ pub fn get_available_models() -> Vec<ModelInfo> {
                 },
                 ModelFile {
                     name: "config.json".to_string(),
-                    size: 681,
+                    size: 659,
                     sha256: None,
                     repo_id: Some("Qwen/Qwen2.5-0.5B-Instruct".to_string()),
                 },
