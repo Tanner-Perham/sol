@@ -80,9 +80,7 @@ export const reworkStateField = StateField.define<ReworkSession | null>({
         pos: session.range.to,
         above: true,
         arrow: true,
-        create(view) {
-          return new ReworkTooltip(view);
-        }
+        create: createReworkTooltip
       };
     })
   ]
@@ -354,6 +352,10 @@ class ReworkTooltip {
 
     this.view.focus();
   }
+}
+
+function createReworkTooltip(view: EditorView) {
+  return new ReworkTooltip(view);
 }
 
 export const openReworkCommand = (view: EditorView): boolean => {
