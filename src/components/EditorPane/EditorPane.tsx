@@ -82,6 +82,11 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
   const { vimMode, livePreview, lineWrapping, theme } = settings;
 
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
   const vimCompartment = useMemo(() => new Compartment(), []);
   const wrapCompartment = useMemo(() => new Compartment(), []);
   const previewCompartment = useMemo(() => new Compartment(), []);
@@ -229,7 +234,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         },
       }, { dark: !["sepia", "light"].includes(theme) })),
       customSelectionHighlightPlugin,
-      ghostTextExtension(settings, activeFile),
+      ghostTextExtension(settingsRef, activeFile),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const isReload = update.transactions.some(tr => tr.annotation(Transaction.userEvent) === "reload");
@@ -243,7 +248,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         }
       })
     ];
-  }, [paneId, workspacePath, vimMode, lineWrapping, livePreview, theme, settings, activeFile, vimCompartment, wrapCompartment, previewCompartment, themeCompartment, onDocChange, registerState]);
+  }, [paneId, workspacePath, vimMode, lineWrapping, livePreview, theme, settingsRef, activeFile, vimCompartment, wrapCompartment, previewCompartment, themeCompartment, onDocChange, registerState]);
 
   // Clean up view on unmount
   useEffect(() => {

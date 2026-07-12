@@ -178,7 +178,7 @@ export const ghostTextKeymap = Prec.highest(
 
 // ViewPlugin managing the debounce logic and Tauri generation requests
 export const ghostTextTriggerPlugin = (
-  settings: AppSettings,
+  settingsRef: { current: AppSettings },
   activeFile: string | null
 ) =>
   ViewPlugin.fromClass(
@@ -208,6 +208,9 @@ export const ghostTextTriggerPlugin = (
         if (this.debounceTimer) {
           clearTimeout(this.debounceTimer);
         }
+        if (this.lastRequestId) {
+          invoke("cancel_completion").catch(() => {});
+        }
       }
 
       scheduleTrigger() {
@@ -216,7 +219,7 @@ export const ghostTextTriggerPlugin = (
         }
 
         // Suppress triggers if features are disabled
-        if (!settings.completionEnabled || !activeFile) {
+        if (!settingsRef.current.completionEnabled || !activeFile) {
           return;
         }
 
@@ -289,8 +292,8 @@ export const ghostTextTriggerPlugin = (
 
         const channel = new Channel<any>();
         channel.onmessage = (message) => {
-          // Verify that this is the active request
-          if (this.lastRequestId === requestId) {
+          // Verify that this is the active request and completions are still enabled
+          if (this.lastRequestId === requestId && settingsRef.current.completionEnabled) {
             const currentGhost = this.view.state.field(ghostTextStateField);
             const appendedText = (currentGhost.text || "") + message.token;
             
@@ -347,12 +350,12 @@ export const ghostTextTriggerPlugin = (
 
 // Combined export for easy inclusion in EditorPane
 export function ghostTextExtension(
-  settings: AppSettings,
+  settingsRef: { current: AppSettings },
   activeFile: string | null
 ) {
   return [
     ghostTextStateField,
     ghostTextKeymap,
-    ghostTextTriggerPlugin(settings, activeFile)
+    ghostTextTriggerPlugin(settingsRef, activeFile)
   ];
 }

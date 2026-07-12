@@ -18,6 +18,7 @@ import { Sidebar, VisibleItem } from "./components/Sidebar";
 import { SettingsModal, SettingsTabType } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
 import { EditorPaneComponent, pruneEditorState } from "./components/EditorPane/EditorPane";
+import { clearSuggestion } from "./components/EditorPane/ghostTextExtension";
 
 function App() {
   const [workspacePath, setWorkspacePath] = useState("");
@@ -53,6 +54,17 @@ function App() {
   const [sidebarSelectedIndex, setSidebarSelectedIndex] = useState(0);
 
   const updateSettings = useCallback(async (newSettings: Partial<AppSettings>) => {
+    if (newSettings.completionEnabled === false) {
+      invoke("cancel_completion").catch(() => {});
+      // Clear suggestions immediately on all active editors
+      editorViewsRef.current.forEach((view) => {
+        try {
+          view.dispatch({ effects: clearSuggestion.of() });
+        } catch (e) {
+          // ignore if view is not initialized or state field is not present
+        }
+      });
+    }
     setSettings(prev => ({ ...prev, ...newSettings }));
   }, []);
 
