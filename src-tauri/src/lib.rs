@@ -1026,10 +1026,11 @@ async fn generate_rework(
     enum ReworkInput {
         BuiltinPrompt(String),
         OllamaInput { instruction: String, selection: String },
+        LlamaCppInput { instruction: String, selection: String },
     }
 
     // 2. Resolve workspace and model, checking privacy
-    let (workspace, _backend, allow_remote, ollama_url, ollama_model, model_id, prompt_or_input) = {
+    let (workspace, _backend, allow_remote, ollama_url, ollama_model, llamacpp_url, model_id, prompt_or_input) = {
         let path_lock = lock!(state.path);
         let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
         
@@ -1043,6 +1044,7 @@ async fn generate_rework(
         let allow_remote = config.allow_remote_endpoints;
         let ollama_url = config.ollama_url.clone();
         let ollama_model = config.ollama_rework_model.clone();
+        let llamacpp_url = config.llamacpp_url.clone();
 
         match backend {
             llm::providers::ReworkBackend::Builtin => {
@@ -1058,20 +1060,26 @@ async fn generate_rework(
                     sanitized_instruction,
                     sanitized_selection
                 );
-                (workspace, backend, allow_remote, ollama_url, ollama_model, Some(model_id), ReworkInput::BuiltinPrompt(prompt))
+                (workspace, backend, allow_remote, ollama_url, ollama_model, llamacpp_url, Some(model_id), ReworkInput::BuiltinPrompt(prompt))
             }
             llm::providers::ReworkBackend::Ollama => {
                 eprintln!("[generate_rework] Ollama backend selected. url='{}', model={:?}, allow_remote={}", ollama_url, ollama_model, allow_remote);
                 let model = ollama_model.clone().ok_or_else(|| "No Ollama model selected for rework. Please select one in Settings.".to_string())?;
                 let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
                 let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
-                (workspace, backend, allow_remote, ollama_url, Some(model), None::<String>, ReworkInput::OllamaInput {
+                (workspace, backend, allow_remote, ollama_url, Some(model), llamacpp_url, None::<String>, ReworkInput::OllamaInput {
                     instruction: sanitized_instruction,
                     selection: sanitized_selection,
                 })
             }
             llm::providers::ReworkBackend::LlamaCpp => {
-                return Err("llama.cpp rework backend not yet implemented".to_string());
+                eprintln!("[generate_rework] llama.cpp backend selected. url='{}', allow_remote={}", llamacpp_url, allow_remote);
+                let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
+                let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
+                (workspace, backend, allow_remote, ollama_url, None, llamacpp_url.clone(), None::<String>, ReworkInput::LlamaCppInput {
+                    instruction: sanitized_instruction,
+                    selection: sanitized_selection,
+                })
             }
         }
     };
@@ -1147,6 +1155,31 @@ async fn generate_rework(
                     }
                 )?;
                 eprintln!("[generate_rework] Spawning Ollama thread finished.");
+                Ok(())
+            }
+            ReworkInput::LlamaCppInput { instruction, selection } => {
+                eprintln!("[generate_rework] Spawning llama.cpp thread. url='{}'", llamacpp_url);
+                let llamacpp_max_tokens = std::cmp::max(max_tokens, 1024);
+                let _stats = llm::providers::llamacpp::stream_rework(
+                    &llamacpp_url,
+                    allow_remote,
+                    &instruction,
+                    &selection,
+                    temperature,
+                    top_p,
+                    seed,
+                    llamacpp_max_tokens,
+                    &cancel_token,
+                    move |token: &str| {
+                        eprintln!("[generate_rework] llama.cpp token received: {:?}", token);
+                        let chunk = CompletionChunk {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(chunk).map_err(|e| e.to_string())
+                    }
+                )?;
+                eprintln!("[generate_rework] Spawning llama.cpp thread finished.");
                 Ok(())
             }
         }
@@ -1239,6 +1272,18 @@ async fn list_ollama_models(
 ) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         llm::providers::ollama::list_models(&url, allow_remote)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn check_llamacpp(
+    url: String,
+    allow_remote: bool,
+) -> Result<llm::providers::llamacpp::LlamaCppStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        llm::providers::llamacpp::check_health(&url, allow_remote)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1369,7 +1414,8 @@ pub fn run() {
             get_provider_config,
             set_provider_config,
             check_ollama,
-            list_ollama_models
+            list_ollama_models,
+            check_llamacpp
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

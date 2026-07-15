@@ -30,6 +30,8 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<{ available: boolean; error: string | null } | null>(null);
   const [testingOllama, setTestingOllama] = useState(false);
+  const [llamacppStatus, setLlamaCppStatus] = useState<{ available: boolean; model: string | null; error: string | null } | null>(null);
+  const [testingLlamaCpp, setTestingLlamaCpp] = useState(false);
 
   const fetchOllamaModels = async (url: string, allowRemote: boolean) => {
     try {
@@ -53,6 +55,18 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
     }
   };
 
+  const checkLlamaCppStatus = async (url: string, allowRemote: boolean) => {
+    setTestingLlamaCpp(true);
+    try {
+      const status = await invoke<{ available: boolean; model: string | null; error: string | null }>("check_llamacpp", { url, allowRemote });
+      setLlamaCppStatus(status);
+    } catch (err) {
+      setLlamaCppStatus({ available: false, model: null, error: String(err) });
+    } finally {
+      setTestingLlamaCpp(false);
+    }
+  };
+
   const loadProviderConfig = async () => {
     try {
       const config = await invoke<ProviderConfig>("get_provider_config");
@@ -60,6 +74,8 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
       if (config.rework_backend === "Ollama") {
         fetchOllamaModels(config.ollama_url, config.allow_remote_endpoints);
         checkOllamaStatus(config.ollama_url, config.allow_remote_endpoints);
+      } else if (config.rework_backend === "LlamaCpp" || config.completion_backend === "LlamaCpp") {
+        checkLlamaCppStatus(config.llamacpp_url, config.allow_remote_endpoints);
       }
     } catch (err) {
       console.error("Error loading provider config:", err);
@@ -80,6 +96,13 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
       ) {
         fetchOllamaModels(nextConfig.ollama_url, nextConfig.allow_remote_endpoints);
         checkOllamaStatus(nextConfig.ollama_url, nextConfig.allow_remote_endpoints);
+      } else if (
+        updates.rework_backend === "LlamaCpp" ||
+        updates.completion_backend === "LlamaCpp" ||
+        ((nextConfig.rework_backend === "LlamaCpp" || nextConfig.completion_backend === "LlamaCpp") &&
+          (updates.llamacpp_url !== undefined || updates.allow_remote_endpoints !== undefined))
+      ) {
+        checkLlamaCppStatus(nextConfig.llamacpp_url, nextConfig.allow_remote_endpoints);
       }
     } catch (err) {
       console.error("Error saving provider config:", err);
@@ -504,11 +527,10 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
                 <button
                   type="button"
                   className={`segment-btn ${providerConfig.rework_backend === "LlamaCpp" ? "active" : ""}`}
-                  disabled
-                  title="llama.cpp rework coming in M2"
-                  style={{ padding: "4px 10px", fontSize: "12px", opacity: 0.5, cursor: "not-allowed" }}
+                  onClick={() => handleUpdateProviderConfig({ rework_backend: "LlamaCpp" })}
+                  style={{ padding: "4px 10px", fontSize: "12px", cursor: "pointer" }}
                 >
-                  llama.cpp (M2)
+                  llama.cpp
                 </button>
               </div>
             </div>
@@ -641,6 +663,112 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
                     ))}
                   </select>
                 </div>
+              </div>
+            )}
+
+            {/* llama.cpp Details Panel */}
+            {providerConfig.rework_backend === "LlamaCpp" && (
+              <div style={{
+                background: "var(--bg-light)",
+                borderRadius: "8px",
+                padding: "12px 16px",
+                border: "1px solid var(--border)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "12px",
+                marginTop: "4px"
+              }}>
+                <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                      llama.cpp API URL
+                    </label>
+                    <input
+                      type="text"
+                      className="settings-input"
+                      value={providerConfig.llamacpp_url}
+                      onChange={(e) => handleUpdateProviderConfig({ llamacpp_url: e.target.value })}
+                      style={{
+                        width: "100%",
+                        padding: "6px 10px",
+                        fontSize: "12px",
+                        borderRadius: "6px",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        color: "var(--text-normal)"
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                      Status
+                    </label>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", height: "30px" }}>
+                      {llamacppStatus ? (
+                        <>
+                          <span style={{
+                            width: "8px",
+                            height: "8px",
+                            borderRadius: "50%",
+                            background: llamacppStatus.available ? "#22c55e" : "#ef4444",
+                            display: "inline-block"
+                          }} />
+                          <span style={{ fontSize: "12px", color: llamacppStatus.available ? "#22c55e" : "#ef4444" }}>
+                            {llamacppStatus.available ? "Online" : "Offline"}
+                          </span>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Unknown</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ alignSelf: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        checkLlamaCppStatus(providerConfig.llamacpp_url, providerConfig.allow_remote_endpoints);
+                      }}
+                      disabled={testingLlamaCpp}
+                      style={{
+                        padding: "6px 12px",
+                        fontSize: "12px",
+                        borderRadius: "6px",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        color: "var(--text-normal)",
+                        cursor: "pointer"
+                      }}
+                    >
+                      {testingLlamaCpp ? "Testing..." : "Test & Refresh"}
+                    </button>
+                  </div>
+                </div>
+
+                {llamacppStatus && llamacppStatus.error && (
+                  <div style={{ fontSize: "11px", color: "#ef4444", background: "rgba(239, 68, 68, 0.08)", padding: "8px 12px", borderRadius: "6px" }}>
+                    {llamacppStatus.error}
+                  </div>
+                )}
+
+                {llamacppStatus && llamacppStatus.available && llamacppStatus.model && (
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                      Loaded Model (Read-Only)
+                    </label>
+                    <div style={{
+                      padding: "6px 10px",
+                      fontSize: "12px",
+                      borderRadius: "6px",
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-dark)",
+                      color: "var(--text-muted)"
+                    }}>
+                      {llamacppStatus.model}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

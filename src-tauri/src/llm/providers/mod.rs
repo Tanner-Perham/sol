@@ -1,4 +1,5 @@
 pub mod ollama;
+pub mod llamacpp;
 
 use serde::{Deserialize, Serialize};
 use reqwest::Url;
