@@ -1002,6 +1002,7 @@ async fn generate_rework(
     channel: tauri::ipc::Channel<CompletionChunk>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    eprintln!("[generate_rework] Entry: request_id={} path={} instruction={}", request_id, params.path, params.instruction);
     let state = app.state::<WorkspaceState>();
 
     // 1. Cancel active completion and any existing rework
@@ -1022,8 +1023,13 @@ async fn generate_rework(
         token
     };
 
+    enum ReworkInput {
+        BuiltinPrompt(String),
+        OllamaInput { instruction: String, selection: String },
+    }
+
     // 2. Resolve workspace and model, checking privacy
-    let (workspace, model_id, prompt) = {
+    let (workspace, _backend, allow_remote, ollama_url, ollama_model, model_id, prompt_or_input) = {
         let path_lock = lock!(state.path);
         let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
         
@@ -1033,74 +1039,117 @@ async fn generate_rework(
         }
 
         let config = LlmConfig::load(&workspace);
-        
-        match config.rework_backend {
-            llm::providers::ReworkBackend::Builtin => {}
+        let backend = config.rework_backend.clone();
+        let allow_remote = config.allow_remote_endpoints;
+        let ollama_url = config.ollama_url.clone();
+        let ollama_model = config.ollama_rework_model.clone();
+
+        match backend {
+            llm::providers::ReworkBackend::Builtin => {
+                let model_id = config.rework_model_id
+                    .or(config.active_model_id)
+                    .ok_or_else(|| "No model selected for rework".to_string())?;
+
+                let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
+                let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
+
+                let prompt = format!(
+                    "<|im_start|>system\nYou rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations.<|im_end|>\n<|im_start|>user\nInstruction: {}\n\nText:\n{}<|im_end|>\n<|im_start|>assistant\n",
+                    sanitized_instruction,
+                    sanitized_selection
+                );
+                (workspace, backend, allow_remote, ollama_url, ollama_model, Some(model_id), ReworkInput::BuiltinPrompt(prompt))
+            }
             llm::providers::ReworkBackend::Ollama => {
-                return Err("Ollama rework backend not yet implemented".to_string());
+                eprintln!("[generate_rework] Ollama backend selected. url='{}', model={:?}, allow_remote={}", ollama_url, ollama_model, allow_remote);
+                let model = ollama_model.clone().ok_or_else(|| "No Ollama model selected for rework. Please select one in Settings.".to_string())?;
+                let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
+                let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
+                (workspace, backend, allow_remote, ollama_url, Some(model), None::<String>, ReworkInput::OllamaInput {
+                    instruction: sanitized_instruction,
+                    selection: sanitized_selection,
+                })
             }
             llm::providers::ReworkBackend::LlamaCpp => {
                 return Err("llama.cpp rework backend not yet implemented".to_string());
             }
         }
-
-        let model_id = config.rework_model_id
-            .or(config.active_model_id)
-            .ok_or_else(|| "No model selected for rework".to_string())?;
-
-        let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
-        let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
-
-        let prompt = format!(
-            "<|im_start|>system\nYou rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations.<|im_end|>\n<|im_start|>user\nInstruction: {}\n\nText:\n{}<|im_end|>\n<|im_start|>assistant\n",
-            sanitized_instruction,
-            sanitized_selection
-        );
-        (workspace, model_id, prompt)
     };
 
     // 3. Spawn blocking generation task
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<WorkspaceState>();
-        let mut loaded_model_lock = lock!(state.loaded_model);
-        
-        let model = match &mut *loaded_model_lock {
-            Some((cached_id, model)) if cached_id == &model_id => model,
-            _ => {
-                let new_model = match llm::inference::LoadedModel::load(&workspace, &model_id) {
-                    Ok(m) => m,
-                    Err(e) => return Err(format!("Failed to load model: {}", e)),
-                };
-                *loaded_model_lock = Some((model_id.clone(), new_model));
-                &mut loaded_model_lock.as_mut().unwrap().1
-            }
-        };
-
-        let request_id_clone = request_id.clone();
-        let channel_clone = channel.clone();
         let max_tokens = params.max_tokens.unwrap_or(256);
         let seed = params.seed.unwrap_or(42);
         let temperature = params.temperature.unwrap_or(0.3);
         let top_p = params.top_p.unwrap_or(0.9);
+        let request_id_clone = request_id.clone();
+        let channel_clone = channel.clone();
 
-        let _stats = model.generate_stream(
-            &prompt,
-            max_tokens,
-            Some(temperature),
-            Some(top_p),
-            seed,
-            &[],
-            &[],
-            &cancel_token,
-            move |token: &str| {
-                let chunk = CompletionChunk {
-                    request_id: request_id_clone.clone(),
-                    token: token.to_string(),
+        match prompt_or_input {
+            ReworkInput::BuiltinPrompt(prompt) => {
+                let model_id = model_id.ok_or_else(|| "Model ID missing".to_string())?;
+                let state = app.state::<WorkspaceState>();
+                let mut loaded_model_lock = lock!(state.loaded_model);
+                
+                let model = match &mut *loaded_model_lock {
+                    Some((cached_id, model)) if cached_id == &model_id => model,
+                    _ => {
+                        let new_model = match llm::inference::LoadedModel::load(&workspace, &model_id) {
+                            Ok(m) => m,
+                            Err(e) => return Err(format!("Failed to load model: {}", e)),
+                        };
+                        *loaded_model_lock = Some((model_id.clone(), new_model));
+                        &mut loaded_model_lock.as_mut().unwrap().1
+                    }
                 };
-                channel_clone.send(chunk).map_err(|e| e.to_string())
+
+                let _stats = model.generate_stream(
+                    &prompt,
+                    max_tokens,
+                    Some(temperature),
+                    Some(top_p),
+                    seed,
+                    &[],
+                    &[],
+                    &cancel_token,
+                    move |token: &str| {
+                        let chunk = CompletionChunk {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(chunk).map_err(|e| e.to_string())
+                    }
+                )?;
+                Ok(())
             }
-        )?;
-        Ok(())
+            ReworkInput::OllamaInput { instruction, selection } => {
+                let model_name = ollama_model.ok_or_else(|| "Ollama model missing".to_string())?;
+                eprintln!("[generate_rework] Spawning Ollama thread. url='{}', model='{}'", ollama_url, model_name);
+                let ollama_max_tokens = std::cmp::max(max_tokens, 1024);
+                let _stats = llm::providers::ollama::stream_rework(
+                    &ollama_url,
+                    allow_remote,
+                    &model_name,
+                    &instruction,
+                    &selection,
+                    temperature,
+                    top_p,
+                    seed,
+                    ollama_max_tokens,
+                    &cancel_token,
+                    move |token: &str| {
+                        eprintln!("[generate_rework] Ollama token received: {:?}", token);
+                        let chunk = CompletionChunk {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(chunk).map_err(|e| e.to_string())
+                    }
+                )?;
+                eprintln!("[generate_rework] Spawning Ollama thread finished.");
+                Ok(())
+            }
+        }
     })
     .await
     .map_err(|e| format!("Spawn blocking failed: {}", e))?
@@ -1169,6 +1218,30 @@ fn set_provider_config(
 
     llm_config.save(workspace)?;
     Ok(())
+}
+
+#[tauri::command]
+async fn check_ollama(
+    url: String,
+    allow_remote: bool,
+) -> Result<llm::providers::ollama::OllamaStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        llm::providers::ollama::check_health(&url, allow_remote)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn list_ollama_models(
+    url: String,
+    allow_remote: bool,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        llm::providers::ollama::list_models(&url, allow_remote)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Create/open the AI policy file
@@ -1294,7 +1367,9 @@ pub fn run() {
             is_note_allowed,
             open_policy_file,
             get_provider_config,
-            set_provider_config
+            set_provider_config,
+            check_ollama,
+            list_ollama_models
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

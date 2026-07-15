@@ -1,3 +1,5 @@
+pub mod ollama;
+
 use serde::{Deserialize, Serialize};
 use reqwest::Url;
 
