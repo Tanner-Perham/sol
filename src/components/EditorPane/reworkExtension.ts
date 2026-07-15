@@ -1,5 +1,5 @@
 import { StateField, StateEffect, Prec } from "@codemirror/state";
-import { Decoration, EditorView, ViewUpdate, keymap, showTooltip } from "@codemirror/view";
+import { Decoration, EditorView, ViewUpdate, keymap, showTooltip, WidgetType } from "@codemirror/view";
 import { getCM, Vim } from "@replit/codemirror-vim";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { acceptCompletionAnnotation } from "./ghostTextExtension";
@@ -29,6 +29,31 @@ export const settingsField = StateField.define<{ current: AppSettings } | null>(
   update: (value) => value
 });
 
+class ReworkGhostBlockWidget extends WidgetType {
+  constructor(readonly text: string) {
+    super();
+  }
+
+  toDOM(): HTMLElement {
+    const div = document.createElement("div");
+    div.className = "cm-rework-ghost-block";
+    div.style.color = "var(--text-muted, #808080)";
+    div.style.opacity = "0.65";
+    div.style.borderLeft = "2px solid var(--accent, #a78bfa)";
+    div.style.paddingLeft = "8px";
+    div.style.marginLeft = "4px";
+    div.style.whiteSpace = "pre-wrap";
+    div.style.fontFamily = "var(--font-mono, monospace)";
+    div.style.fontSize = "12px";
+    div.style.userSelect = "none";
+    div.style.pointerEvents = "none";
+    div.style.marginTop = "4px";
+    div.style.marginBottom = "4px";
+    div.textContent = this.text;
+    return div;
+  }
+}
+
 export const reworkStateField = StateField.define<ReworkSession | null>({
   create() {
     return null;
@@ -52,7 +77,8 @@ export const reworkStateField = StateField.define<ReworkSession | null>({
           ...value,
           result: effect.value.result,
           status: effect.value.status,
-          requestId: effect.value.requestId !== undefined ? effect.value.requestId : value.requestId
+          requestId: effect.value.requestId !== undefined ? effect.value.requestId : value.requestId,
+          instruction: effect.value.instruction !== undefined ? effect.value.instruction : value.instruction
         };
       }
       if (effect.is(closeRework)) {
@@ -74,9 +100,19 @@ export const reworkStateField = StateField.define<ReworkSession | null>({
   provide: (f) => [
     EditorView.decorations.from(f, (session) => {
       if (session && session.range) {
-        return Decoration.set([
+        const deco = [
           Decoration.mark({ class: "cm-rework-source" }).range(session.range.from, session.range.to)
-        ]);
+        ];
+        if ((session.status === "streaming" || session.status === "done") && session.result) {
+          deco.push(
+            Decoration.widget({
+              widget: new ReworkGhostBlockWidget(session.result + (session.status === "streaming" ? "█" : "")),
+              block: true,
+              side: 1
+            }).range(session.range.to)
+          );
+        }
+        return Decoration.set(deco);
       }
       return Decoration.none;
     }),
@@ -98,9 +134,10 @@ class ReworkTooltip {
   preview!: HTMLPreElement;
   actions!: HTMLDivElement;
   submitBtn!: HTMLButtonElement;
-  acceptBtn!: HTMLButtonElement;
+  replaceBtn!: HTMLButtonElement;
+  insertBelowBtn!: HTMLButtonElement;
   retryBtn!: HTMLButtonElement;
-  cancelBtn!: HTMLButtonElement;
+  cancelBtn!: HTMLButtonElement; // Acts as Abandon / Cancel
   settingsRef: { current: AppSettings } | null = null;
 
   constructor(readonly view: EditorView) {
@@ -121,7 +158,7 @@ class ReworkTooltip {
     this.dom.style.display = "flex";
     this.dom.style.flexDirection = "column";
     this.dom.style.gap = "8px";
-    this.dom.style.width = "300px";
+    this.dom.style.width = "360px";
     this.dom.style.fontFamily = "var(--font-sans, system-ui, sans-serif)";
     this.dom.style.zIndex = "100";
 
@@ -161,44 +198,70 @@ class ReworkTooltip {
     this.actions.style.gap = "6px";
     this.dom.appendChild(this.actions);
 
-    this.cancelBtn = this.createButton("Cancel", "transparent", true);
+    this.cancelBtn = this.createButton("Abandon", "transparent", true);
     this.cancelBtn.addEventListener("click", () => {
       view.dispatch({ effects: closeRework.of() });
       view.focus();
     });
     this.actions.appendChild(this.cancelBtn);
 
+    this.retryBtn = this.createButton("Retry", "transparent", true);
+    this.retryBtn.addEventListener("click", () => this.submit());
+    this.actions.appendChild(this.retryBtn);
+
+    this.insertBelowBtn = this.createButton("Insert Below", "transparent", true);
+    this.insertBelowBtn.addEventListener("click", () => this.insertBelow());
+    this.actions.appendChild(this.insertBelowBtn);
+
     this.submitBtn = this.createButton("Rewrite", "var(--accent)");
     this.submitBtn.addEventListener("click", () => this.submit());
     this.actions.appendChild(this.submitBtn);
 
-    this.acceptBtn = this.createButton("Accept", "var(--accent)");
-    this.acceptBtn.style.display = "none";
-    this.acceptBtn.addEventListener("click", () => this.accept());
-    this.actions.appendChild(this.acceptBtn);
-
-    this.retryBtn = this.createButton("Retry", "transparent", true);
-    this.retryBtn.style.display = "none";
-    this.retryBtn.addEventListener("click", () => this.submit());
-    this.actions.appendChild(this.retryBtn);
+    this.replaceBtn = this.createButton("Replace", "var(--accent)");
+    this.replaceBtn.addEventListener("click", () => this.accept());
+    this.actions.appendChild(this.replaceBtn);
 
     this.dom.addEventListener("keydown", (e) => {
       e.stopPropagation();
+      const currentSession = view.state.field(reworkStateField);
       if (e.key === "Escape") {
         e.preventDefault();
         view.dispatch({ effects: closeRework.of() });
         view.focus();
       } else if (e.key === "Enter") {
         e.preventDefault();
-        const currentSession = view.state.field(reworkStateField);
-        if (currentSession && (currentSession.status === "input" || currentSession.status === "done" || currentSession.status === "error")) {
-          this.submit();
+        if (e.shiftKey) {
+          if (currentSession && currentSession.status === "done") {
+            this.insertBelow();
+          }
+        } else {
+          if (currentSession && (currentSession.status === "input" || currentSession.status === "done" || currentSession.status === "error")) {
+            this.submit();
+          }
         }
-      } else if (e.key === "y" && e.ctrlKey) {
+      } else if (e.key === "y" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        const currentSession = view.state.field(reworkStateField);
         if (currentSession && currentSession.status === "done") {
           this.accept();
+        }
+      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (currentSession && currentSession.status === "done") {
+          if (e.shiftKey) {
+            this.insertBelow();
+          } else {
+            this.accept();
+          }
+        }
+      } else if (e.key === "b" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (currentSession && currentSession.status === "done") {
+          this.insertBelow();
+        }
+      } else if (e.key === "r" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (currentSession && (currentSession.status === "done" || currentSession.status === "error")) {
+          this.submit();
         }
       }
     });
@@ -224,32 +287,46 @@ class ReworkTooltip {
     const session = update.state.field(reworkStateField);
     if (!session) return;
 
-    if (session.status === "streaming" || session.status === "done" || session.status === "error") {
-      this.preview.style.display = "block";
-      if (session.status === "streaming") {
-        this.preview.textContent = session.result + "█";
-        this.preview.style.color = "var(--text-primary)";
-        this.submitBtn.style.display = "none";
-        this.acceptBtn.style.display = "none";
-        this.retryBtn.style.display = "none";
-      } else if (session.status === "done") {
-        this.preview.textContent = session.result;
-        this.preview.style.color = "var(--text-primary)";
-        this.submitBtn.style.display = "none";
-        this.acceptBtn.style.display = "inline-block";
-        this.retryBtn.style.display = "inline-block";
-      } else {
-        this.preview.textContent = "Error: " + session.result;
-        this.preview.style.color = "var(--red, #f87171)";
-        this.submitBtn.style.display = "none";
-        this.acceptBtn.style.display = "none";
-        this.retryBtn.style.display = "inline-block";
-      }
-    } else {
+    this.input.disabled = session.status !== "input";
+
+    if (session.status === "input") {
       this.preview.style.display = "none";
+      this.cancelBtn.style.display = "inline-block";
+      this.cancelBtn.textContent = "Cancel";
       this.submitBtn.style.display = "inline-block";
-      this.acceptBtn.style.display = "none";
+      this.submitBtn.textContent = "Rewrite";
+      this.submitBtn.disabled = false;
+      this.replaceBtn.style.display = "none";
+      this.insertBelowBtn.style.display = "none";
       this.retryBtn.style.display = "none";
+    } else if (session.status === "streaming") {
+      this.preview.style.display = "none";
+      this.cancelBtn.style.display = "inline-block";
+      this.cancelBtn.textContent = "Cancel";
+      this.submitBtn.style.display = "inline-block";
+      this.submitBtn.textContent = "Streaming...";
+      this.submitBtn.disabled = true;
+      this.replaceBtn.style.display = "none";
+      this.insertBelowBtn.style.display = "none";
+      this.retryBtn.style.display = "none";
+    } else if (session.status === "done") {
+      this.preview.style.display = "none";
+      this.cancelBtn.style.display = "inline-block";
+      this.cancelBtn.textContent = "Abandon";
+      this.submitBtn.style.display = "none";
+      this.replaceBtn.style.display = "inline-block";
+      this.insertBelowBtn.style.display = "inline-block";
+      this.retryBtn.style.display = "inline-block";
+    } else if (session.status === "error") {
+      this.preview.style.display = "block";
+      this.preview.textContent = "Error: " + session.result;
+      this.preview.style.color = "var(--red, #f87171)";
+      this.cancelBtn.style.display = "inline-block";
+      this.cancelBtn.textContent = "Abandon";
+      this.submitBtn.style.display = "none";
+      this.replaceBtn.style.display = "none";
+      this.insertBelowBtn.style.display = "none";
+      this.retryBtn.style.display = "inline-block";
     }
   }
 
@@ -260,101 +337,14 @@ class ReworkTooltip {
     const instruction = this.input.value.trim();
     if (!instruction) return;
 
-    const selection = this.view.state.doc.sliceString(session.range.from, session.range.to);
-    const requestId = Math.random().toString(36).substring(7);
-
-    this.view.dispatch({
-      effects: updateReworkResult.of({
-        result: "",
-        status: "streaming",
-        requestId
-      })
-    });
-
-    const channel = new Channel<any>();
-    let accumulated = "";
-    channel.onmessage = (message) => {
-      const current = this.view.state.field(reworkStateField);
-      if (current && current.requestId === requestId && current.status === "streaming") {
-        accumulated += message.token;
-        this.view.dispatch({
-          effects: updateReworkResult.of({
-            result: accumulated,
-            status: "streaming"
-          })
-        });
-      }
-    };
-
-    const maxTokensCap = this.settingsRef?.current?.reworkMaxTokensCap ?? 512;
-    const reworkTemperature = this.settingsRef?.current?.reworkTemperature ?? 0.3;
-
-    try {
-      await invoke("cancel_rework");
-      await invoke("generate_rework", {
-        requestId,
-        params: {
-          path: session.path,
-          selection,
-          instruction,
-          max_tokens: Math.min(selection.length * 2 + 64, maxTokensCap),
-          seed: Math.floor(Math.random() * 100000),
-          temperature: reworkTemperature,
-          top_p: 0.9
-        },
-        channel
-      });
-
-      const finalSession = this.view.state.field(reworkStateField);
-      if (finalSession && finalSession.requestId === requestId) {
-        this.view.dispatch({
-          effects: updateReworkResult.of({
-            result: accumulated,
-            status: "done"
-          })
-        });
-      }
-    } catch (err) {
-      const finalSession = this.view.state.field(reworkStateField);
-      if (finalSession && finalSession.requestId === requestId) {
-        this.view.dispatch({
-          effects: updateReworkResult.of({
-            result: String(err),
-            status: "error"
-          })
-        });
-      }
-    }
+    await executeRework(this.view, session, instruction);
   }
 
   accept() {
     const session = this.view.state.field(reworkStateField);
     if (!session || !session.result) return;
 
-    let cleaned = session.result.trim();
-    
-    // Cleanup wrapping quotes
-    if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
-      cleaned = cleaned.slice(1, -1).trim();
-    } else if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
-      cleaned = cleaned.slice(1, -1).trim();
-    }
-    
-    // Cleanup markdown fences
-    if (cleaned.startsWith("```") && cleaned.endsWith("```")) {
-      const newlineIdx = cleaned.indexOf("\n");
-      if (newlineIdx !== -1) {
-        cleaned = cleaned.slice(newlineIdx + 1, -3).trim();
-      }
-    }
-
-    // Cleanup leading labels
-    const labels = ["rewritten text:", "rewritten:", "result:", "output:", "here is the rewritten text:"];
-    for (const label of labels) {
-      if (cleaned.toLowerCase().startsWith(label)) {
-        cleaned = cleaned.slice(label.length).trim();
-      }
-    }
+    const cleaned = cleanResult(session.result);
 
     this.view.dispatch({
       changes: { from: session.range.from, to: session.range.to, insert: cleaned },
@@ -365,10 +355,126 @@ class ReworkTooltip {
 
     this.view.focus();
   }
+
+  insertBelow() {
+    const session = this.view.state.field(reworkStateField);
+    if (!session || !session.result) return;
+
+    const cleaned = cleanResult(session.result);
+
+    const line = this.view.state.doc.lineAt(session.range.to);
+    const insertPos = line.to;
+    const insertText = "\n" + cleaned;
+
+    this.view.dispatch({
+      changes: { from: insertPos, to: insertPos, insert: insertText },
+      selection: { anchor: insertPos + insertText.length },
+      effects: closeRework.of(),
+      annotations: [acceptCompletionAnnotation.of(true)]
+    });
+
+    this.view.focus();
+  }
+}
+
+function cleanResult(text: string): string {
+  let cleaned = text.trim();
+  
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    cleaned = cleaned.slice(1, -1).trim();
+  } else if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  
+  if (cleaned.startsWith("```") && cleaned.endsWith("```")) {
+    const newlineIdx = cleaned.indexOf("\n");
+    if (newlineIdx !== -1) {
+      cleaned = cleaned.slice(newlineIdx + 1, -3).trim();
+    }
+  }
+
+  const labels = ["rewritten text:", "rewritten:", "result:", "output:", "here is the rewritten text:"];
+  for (const label of labels) {
+    if (cleaned.toLowerCase().startsWith(label)) {
+      cleaned = cleaned.slice(label.length).trim();
+    }
+  }
+
+  return cleaned;
 }
 
 function createReworkTooltip(view: EditorView) {
   return new ReworkTooltip(view);
+}
+
+export async function executeRework(view: EditorView, session: ReworkSession, instruction: string) {
+  const selection = view.state.doc.sliceString(session.range.from, session.range.to);
+  const requestId = Math.random().toString(36).substring(7);
+
+  view.dispatch({
+    effects: updateReworkResult.of({
+      result: "",
+      status: "streaming",
+      requestId,
+      instruction
+    })
+  });
+
+  const settingsRef = view.state.field(settingsField, false) || null;
+  const maxTokensCap = settingsRef?.current?.reworkMaxTokensCap ?? 512;
+  const reworkTemperature = settingsRef?.current?.reworkTemperature ?? 0.3;
+
+  const channel = new Channel<any>();
+  let accumulated = "";
+  channel.onmessage = (message) => {
+    const current = view.state.field(reworkStateField);
+    if (current && current.requestId === requestId && current.status === "streaming") {
+      accumulated += message.token;
+      view.dispatch({
+        effects: updateReworkResult.of({
+          result: accumulated,
+          status: "streaming"
+        })
+      });
+    }
+  };
+
+  try {
+    await invoke("cancel_rework");
+    await invoke("generate_rework", {
+      requestId,
+      params: {
+        path: session.path,
+        selection,
+        instruction,
+        max_tokens: Math.min(selection.length * 2 + 64, maxTokensCap),
+        seed: Math.floor(Math.random() * 100000),
+        temperature: reworkTemperature,
+        top_p: 0.9
+      },
+      channel
+    });
+
+    const finalSession = view.state.field(reworkStateField);
+    if (finalSession && finalSession.requestId === requestId) {
+      view.dispatch({
+        effects: updateReworkResult.of({
+          result: accumulated,
+          status: "done"
+        })
+      });
+    }
+  } catch (err) {
+    const finalSession = view.state.field(reworkStateField);
+    if (finalSession && finalSession.requestId === requestId) {
+      view.dispatch({
+        effects: updateReworkResult.of({
+          result: String(err),
+          status: "error"
+        })
+      });
+    }
+  }
 }
 
 export const openReworkCommand = (view: EditorView): boolean => {
@@ -392,11 +498,90 @@ export const openReworkCommand = (view: EditorView): boolean => {
   return true;
 };
 
+export const acceptReworkCommand = (view: EditorView): boolean => {
+  const session = view.state.field(reworkStateField);
+  if (!session || session.status !== "done") return false;
+
+  const cleaned = cleanResult(session.result);
+
+  view.dispatch({
+    changes: { from: session.range.from, to: session.range.to, insert: cleaned },
+    selection: { anchor: session.range.from + cleaned.length },
+    effects: closeRework.of(),
+    annotations: [acceptCompletionAnnotation.of(true)]
+  });
+
+  view.focus();
+  return true;
+};
+
+export const insertBelowReworkCommand = (view: EditorView): boolean => {
+  const session = view.state.field(reworkStateField);
+  if (!session || session.status !== "done") return false;
+
+  const cleaned = cleanResult(session.result);
+
+  const line = view.state.doc.lineAt(session.range.to);
+  const insertPos = line.to;
+  const insertText = "\n" + cleaned;
+
+  view.dispatch({
+    changes: { from: insertPos, to: insertPos, insert: insertText },
+    selection: { anchor: insertPos + insertText.length },
+    effects: closeRework.of(),
+    annotations: [acceptCompletionAnnotation.of(true)]
+  });
+
+  view.focus();
+  return true;
+};
+
+export const cancelReworkCommand = (view: EditorView): boolean => {
+  const session = view.state.field(reworkStateField);
+  if (!session) return false;
+
+  view.dispatch({ effects: closeRework.of() });
+  view.focus();
+  return true;
+};
+
+export const retryReworkCommand = (view: EditorView): boolean => {
+  const session = view.state.field(reworkStateField);
+  if (!session || !session.instruction || (session.status !== "done" && session.status !== "error")) return false;
+
+  executeRework(view, session, session.instruction);
+  return true;
+};
+
 export const reworkKeymap = Prec.highest(
   keymap.of([
     {
       key: "Alt-k",
       run: openReworkCommand
+    },
+    {
+      key: "Ctrl-y",
+      run: acceptReworkCommand
+    },
+    {
+      key: "Ctrl-Enter",
+      run: acceptReworkCommand
+    },
+    {
+      key: "Ctrl-b",
+      run: insertBelowReworkCommand
+    },
+    {
+      key: "Ctrl-Shift-Enter",
+      run: insertBelowReworkCommand
+    },
+    {
+      key: "Escape",
+      run: cancelReworkCommand
+    },
+    {
+      key: "Ctrl-r",
+      run: retryReworkCommand
     }
   ])
 );
