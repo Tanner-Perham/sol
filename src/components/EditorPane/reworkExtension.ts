@@ -419,6 +419,7 @@ export async function executeRework(view: EditorView, session: ReworkSession, in
       instruction
     })
   });
+  view.focus();
 
   const settingsRef = view.state.field(settingsField, false) || null;
   const maxTokensCap = settingsRef?.current?.reworkMaxTokensCap ?? 512;
@@ -463,6 +464,7 @@ export async function executeRework(view: EditorView, session: ReworkSession, in
           status: "done"
         })
       });
+      view.focus();
     }
   } catch (err) {
     const finalSession = view.state.field(reworkStateField);
@@ -473,6 +475,7 @@ export async function executeRework(view: EditorView, session: ReworkSession, in
           status: "error"
         })
       });
+      view.focus();
     }
   }
 }
@@ -591,6 +594,61 @@ export function reworkExtension(settingsRef?: { current: AppSettings }) {
     activeFileField,
     settingsField.init(() => settingsRef || null),
     reworkStateField,
-    reworkKeymap
+    reworkKeymap,
+    EditorView.domEventHandlers({
+      keydown(event, view) {
+        const session = view.state.field(reworkStateField);
+        if (!session) return false;
+
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          cancelReworkCommand(view);
+          return true;
+        }
+
+        if (session.status === "done") {
+          const isCtrlOrMeta = event.ctrlKey || event.metaKey;
+          if (event.key === "y" && isCtrlOrMeta) {
+            event.preventDefault();
+            event.stopPropagation();
+            acceptReworkCommand(view);
+            return true;
+          }
+          if (event.key === "Enter" && isCtrlOrMeta) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.shiftKey) {
+              insertBelowReworkCommand(view);
+            } else {
+              acceptReworkCommand(view);
+            }
+            return true;
+          }
+          if (event.key === "b" && isCtrlOrMeta) {
+            event.preventDefault();
+            event.stopPropagation();
+            insertBelowReworkCommand(view);
+            return true;
+          }
+          if (event.key === "r" && isCtrlOrMeta) {
+            event.preventDefault();
+            event.stopPropagation();
+            retryReworkCommand(view);
+            return true;
+          }
+        } else if (session.status === "error") {
+          const isCtrlOrMeta = event.ctrlKey || event.metaKey;
+          if (event.key === "r" && isCtrlOrMeta) {
+            event.preventDefault();
+            event.stopPropagation();
+            retryReworkCommand(view);
+            return true;
+          }
+        }
+
+        return false;
+      }
+    })
   ];
 }
