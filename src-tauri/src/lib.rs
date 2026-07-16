@@ -329,12 +329,23 @@ fn get_workspace_path(state: tauri::State<'_, WorkspaceState>) -> String {
         .unwrap_or_default()
 }
 
+fn has_extension(filename: &str) -> bool {
+    let path = Path::new(filename);
+    if let Some(file_name) = path.file_name() {
+        let name_str = file_name.to_string_lossy();
+        if let Some(dot_idx) = name_str.rfind('.') {
+            return dot_idx > 0 && dot_idx < name_str.len() - 1;
+        }
+    }
+    false
+}
+
 #[tauri::command]
 fn create_markdown_file(
     name: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<String, String> {
-    let name_clean = if name.ends_with(".md") {
+    let name_clean = if has_extension(&name) {
         name
     } else {
         format!("{}.md", name)

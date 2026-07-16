@@ -1236,8 +1236,53 @@ body,
   font-weight: 600;
   line-height: 1.5;
   color: var(--text-primary);
-  padding-top: 0.2em;
   padding-bottom: 0.05em;
+}
+
+/* Frontmatter Card Style */
+.cm-prose-frontmatter {
+  font-family: var(--editor-font-family, var(--font-mono)) !important;
+  color: var(--text-muted) !important;
+  font-size: 0.9em !important;
+  background-color: rgba(255, 255, 255, 0.02) !important;
+  padding-left: 20px !important;
+  padding-right: 20px !important;
+}
+
+.cm-prose-frontmatter.first {
+  padding-top: 16px !important;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  border-top: 1px solid var(--border) !important;
+  border-left: 1px solid var(--border) !important;
+  border-right: 1px solid var(--border) !important;
+}
+
+.cm-prose-frontmatter:not(.first):not(.last) {
+  border-left: 1px solid var(--border) !important;
+  border-right: 1px solid var(--border) !important;
+}
+
+.cm-prose-frontmatter.last {
+  padding-bottom: 16px !important;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+  border-bottom: 1px solid var(--border) !important;
+  border-left: 1px solid var(--border) !important;
+  border-right: 1px solid var(--border) !important;
+}
+
+.cm-prose-frontmatter-delimiter-widget {
+  height: 1px;
+  background-color: var(--border);
+  opacity: 0.3;
+  width: 100%;
+  margin: 4px 0;
+}
+
+/* Fix Cursor Height on Wrapped Lines */
+.cm-cursor {
+  max-height: 1.25em !important;
 }
 
 /* Settings Modal Styles */

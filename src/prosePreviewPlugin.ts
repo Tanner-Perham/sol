@@ -69,6 +69,17 @@ class BulletWidget extends WidgetType {
   }
 }
 
+class FrontmatterDelimiterWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "cm-prose-frontmatter-delimiter-widget";
+    return el;
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 class ImageWidget extends WidgetType {
   constructor(readonly url: string, readonly alt: string) {
     super();
@@ -263,7 +274,48 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
     }
   }
 
+  // Scan for YAML frontmatter at the very beginning of the document
+  const firstLine = state.doc.line(1);
+  let frontmatterEndLine = -1;
+  if (firstLine.text.trim() === "---") {
+    for (let l = 2; l <= state.doc.lines; l++) {
+      if (state.doc.line(l).text.trim() === "---") {
+        frontmatterEndLine = l;
+        break;
+      }
+    }
+  }
+
   const collected: DecSpec[] = [];
+
+  if (frontmatterEndLine > 1) {
+    for (let l = 1; l <= frontmatterEndLine; l++) {
+      const line = state.doc.line(l);
+      const isLineRaw = cursorLines.has(l);
+
+      collected.push({
+        from: line.from,
+        to: line.from,
+        dec: lineClass(
+          l === 1
+            ? "cm-prose-frontmatter first"
+            : l === frontmatterEndLine
+            ? "cm-prose-frontmatter last"
+            : "cm-prose-frontmatter"
+        ),
+        category: 1
+      });
+
+      if (!isLineRaw && (l === 1 || l === frontmatterEndLine)) {
+        collected.push({
+          from: line.from,
+          to: line.to,
+          dec: Decoration.replace({ widget: new FrontmatterDelimiterWidget() }),
+          category: 2
+        });
+      }
+    }
+  }
 
   // Iterate over visible ranges for maximum performance
   for (const { from: rangeFrom, to: rangeTo } of view.visibleRanges) {
@@ -278,6 +330,11 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
 
         // Skip document root node
         if (name === "Document") return;
+
+        // Skip anything inside frontmatter
+        if (frontmatterEndLine > 1 && from < state.doc.line(frontmatterEndLine).to) {
+          return;
+        }
 
         // Check if node intersects cursor/raw lines
         const nodeStartLine = state.doc.lineAt(from).number;
@@ -377,7 +434,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (!isOrdered && !isRaw) {
             let firstChild = node.firstChild;
             while (firstChild) {
-              if (firstChild.name === "ListMarker") {
+              if (firstChild.name === "ListMark") {
                 collected.push({
                   from: firstChild.from,
                   to: firstChild.to,

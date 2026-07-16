@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { EditorState, Compartment, Transaction } from "@codemirror/state";
+import { EditorState, Compartment, Transaction, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, historyKeymap, history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { autocompletion } from "@codemirror/autocomplete";
 import { vim, Vim, getCM } from "@replit/codemirror-vim";
+import { Strikethrough } from "@lezer/markdown";
 import { prosePreviewPlugin } from "../../prosePreviewPlugin";
 import { PaneId, AppSettings, FileNode } from "../../types";
 import { customSelectionHighlightPlugin } from "./editorPlugins";
@@ -158,6 +159,10 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     return [
       history(),
       EditorView.inputHandler.of((view, from, to, text) => {
+        const cm = getCM(view);
+        if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {
+          return true; // block input if vim mode is active and not in insert mode
+        }
         if (text === "[") {
           if (from > 0 && view.state.doc.sliceString(from - 1, from) === "[") {
             view.dispatch({
@@ -207,8 +212,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ...defaultKeymap,
         ...historyKeymap
       ]),
-      markdown(),
-      vimCompartment.of(vimMode ? [vim()] : []),
+      markdown({ extensions: [Strikethrough] }),
+      vimCompartment.of(vimMode ? [Prec.highest(vim())] : []),
       wrapCompartment.of(lineWrapping ? [EditorView.lineWrapping] : []),
       previewCompartment.of(livePreview ? [prosePreviewPlugin(workspacePath, markdownFilesSet)] : []),
       themeCompartment.of(EditorView.theme({
@@ -511,7 +516,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     if (view) {
       view.dispatch({
         effects: [
-          vimCompartment.reconfigure(vimMode ? [vim()] : []),
+          vimCompartment.reconfigure(vimMode ? [Prec.highest(vim())] : []),
           wrapCompartment.reconfigure(lineWrapping ? [EditorView.lineWrapping] : []),
           previewCompartment.reconfigure(livePreview ? [prosePreviewPlugin(workspacePath, markdownFilesSet)] : []),
           themeCompartment.reconfigure(EditorView.theme({

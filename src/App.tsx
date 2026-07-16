@@ -1521,11 +1521,18 @@ function App() {
       return;
     }
 
+    const hasExtension = (pathStr: string): boolean => {
+      const parts = pathStr.split(/[/\\]/);
+      const baseName = parts[parts.length - 1];
+      const dotIndex = baseName.lastIndexOf('.');
+      return dotIndex > 0 && dotIndex < baseName.length - 1;
+    };
+
     const relativePath = creatingNode.parentPath ? `${creatingNode.parentPath}/${name}` : name;
 
     try {
       if (creatingNode.type === "file") {
-        const nameWithExt = relativePath.endsWith(".md") ? relativePath : `${relativePath}.md`;
+        const nameWithExt = hasExtension(relativePath) ? relativePath : `${relativePath}.md`;
         await invoke("create_markdown_file", { name: nameWithExt });
         if (creatingNode.parentPath) {
           setExpandedPaths(prev => {
