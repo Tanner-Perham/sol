@@ -12,11 +12,24 @@ export interface ReworkSession {
   result: string;
   status: "idle" | "input" | "streaming" | "done" | "error";
   requestId: string | null;
+  stats?: {
+    prefill_ms: number;
+    prefill_tokens: number;
+    decode_tokens: number;
+    tok_per_s: number;
+    backend?: string;
+  } | null;
 }
 
 // Effects and annotations
 export const openRework = StateEffect.define<{ from: number; to: number; path: string }>();
-export const updateReworkResult = StateEffect.define<{ result: string; status: ReworkSession["status"]; requestId?: string | null }>();
+export const updateReworkResult = StateEffect.define<{
+  result: string;
+  status: ReworkSession["status"];
+  requestId?: string | null;
+  instruction?: string;
+  stats?: ReworkSession["stats"];
+}>();
 export const closeRework = StateEffect.define<void>();
 
 export const activeFileField = StateField.define<string | null>({
@@ -78,7 +91,8 @@ export const reworkStateField = StateField.define<ReworkSession | null>({
           result: effect.value.result,
           status: effect.value.status,
           requestId: effect.value.requestId !== undefined ? effect.value.requestId : value.requestId,
-          instruction: effect.value.instruction !== undefined ? effect.value.instruction : value.instruction
+          instruction: effect.value.instruction !== undefined ? effect.value.instruction : value.instruction,
+          stats: effect.value.stats !== undefined ? effect.value.stats : value.stats
         };
       }
       if (effect.is(closeRework)) {
@@ -132,6 +146,7 @@ class ReworkTooltip {
   dom: HTMLElement;
   input!: HTMLInputElement;
   preview!: HTMLPreElement;
+  statusInfo!: HTMLDivElement;
   actions!: HTMLDivElement;
   submitBtn!: HTMLButtonElement;
   replaceBtn!: HTMLButtonElement;
@@ -191,6 +206,13 @@ class ReworkTooltip {
     this.preview.style.color = "var(--text-primary, #ffffff)";
     this.preview.style.display = "none";
     this.dom.appendChild(this.preview);
+
+    this.statusInfo = document.createElement("div");
+    this.statusInfo.style.fontSize = "11px";
+    this.statusInfo.style.color = "var(--accent, #a78bfa)";
+    this.statusInfo.style.padding = "2px 4px";
+    this.statusInfo.style.display = "none";
+    this.dom.appendChild(this.statusInfo);
 
     this.actions = document.createElement("div");
     this.actions.style.display = "flex";
@@ -291,6 +313,7 @@ class ReworkTooltip {
 
     if (session.status === "input") {
       this.preview.style.display = "none";
+      this.statusInfo.style.display = "none";
       this.cancelBtn.style.display = "inline-block";
       this.cancelBtn.textContent = "Cancel";
       this.submitBtn.style.display = "inline-block";
@@ -301,6 +324,7 @@ class ReworkTooltip {
       this.retryBtn.style.display = "none";
     } else if (session.status === "streaming") {
       this.preview.style.display = "none";
+      this.statusInfo.style.display = "none";
       this.cancelBtn.style.display = "inline-block";
       this.cancelBtn.textContent = "Cancel";
       this.submitBtn.style.display = "inline-block";
@@ -311,6 +335,12 @@ class ReworkTooltip {
       this.retryBtn.style.display = "none";
     } else if (session.status === "done") {
       this.preview.style.display = "none";
+      if (session.stats) {
+        this.statusInfo.style.display = "block";
+        this.statusInfo.textContent = `Stats: ${session.stats.backend} · ${session.stats.tok_per_s.toFixed(1)} tok/s (${session.stats.decode_tokens} tokens)`;
+      } else {
+        this.statusInfo.style.display = "none";
+      }
       this.cancelBtn.style.display = "inline-block";
       this.cancelBtn.textContent = "Abandon";
       this.submitBtn.style.display = "none";
@@ -321,6 +351,7 @@ class ReworkTooltip {
       this.preview.style.display = "block";
       this.preview.textContent = "Error: " + session.result;
       this.preview.style.color = "var(--red, #f87171)";
+      this.statusInfo.style.display = "none";
       this.cancelBtn.style.display = "inline-block";
       this.cancelBtn.textContent = "Abandon";
       this.submitBtn.style.display = "none";
@@ -442,7 +473,7 @@ export async function executeRework(view: EditorView, session: ReworkSession, in
 
   try {
     await invoke("cancel_rework");
-    await invoke("generate_rework", {
+    const stats = await invoke<any>("generate_rework", {
       requestId,
       params: {
         path: session.path,
@@ -461,7 +492,8 @@ export async function executeRework(view: EditorView, session: ReworkSession, in
       view.dispatch({
         effects: updateReworkResult.of({
           result: accumulated,
-          status: "done"
+          status: "done",
+          stats
         })
       });
       view.focus();

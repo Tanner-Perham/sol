@@ -51,3 +51,66 @@ pub fn validate_provider_url(url_str: &str, allow_remote: bool) -> Result<Url, S
     
     Ok(url)
 }
+
+/// Translate connection failures or model errors into user-friendly diagnostic guidance.
+pub fn map_provider_error(err: &str, backend: &str, model_name: Option<&str>) -> String {
+    let lower = err.to_lowercase();
+    if lower.contains("connection refused")
+        || lower.contains("connect error")
+        || lower.contains("dns error")
+        || lower.contains("unreachable")
+        || lower.contains("timed out")
+        || lower.contains("failed to connect")
+    {
+        match backend {
+            "Ollama" => "Ollama is not running. Start it with `ollama serve`.".to_string(),
+            "LlamaCpp" => "llama-server is not running.".to_string(),
+            _ => err.to_string(),
+        }
+    } else if backend == "Ollama" && (lower.contains("not found") || lower.contains("does not exist") || lower.contains("404")) {
+        let name = model_name.unwrap_or("selected model");
+        format!("Model '{}' is not available. Pull it with `ollama pull {}`.", name, name)
+    } else if backend == "LlamaCpp" && (lower.contains("loading") || lower.contains("503")) {
+        "llama-server is still loading the model. Try again in a moment.".to_string()
+    } else {
+        err.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_provider_url_validation() {
+        assert!(validate_provider_url("http://localhost:11434", false).is_ok());
+        assert!(validate_provider_url("http://127.0.0.1:11434", false).is_ok());
+        assert!(validate_provider_url("http://[::1]:11434", false).is_ok());
+        assert!(validate_provider_url("http://example.com:11434", false).is_err());
+        assert!(validate_provider_url("http://example.com:11434", true).is_ok());
+    }
+
+    #[test]
+    fn test_map_provider_error() {
+        assert_eq!(
+            map_provider_error("connection refused", "Ollama", None),
+            "Ollama is not running. Start it with `ollama serve`."
+        );
+        assert_eq!(
+            map_provider_error("Failed to connect to llama.cpp server: connect error", "LlamaCpp", None),
+            "llama-server is not running."
+        );
+        assert_eq!(
+            map_provider_error("model qwen not found", "Ollama", Some("qwen")),
+            "Model 'qwen' is not available. Pull it with `ollama pull qwen`."
+        );
+        assert_eq!(
+            map_provider_error("HTTP status 503 Service Unavailable", "LlamaCpp", None),
+            "llama-server is still loading the model. Try again in a moment."
+        );
+        assert_eq!(
+            map_provider_error("some random error", "Ollama", None),
+            "some random error"
+        );
+    }
+}

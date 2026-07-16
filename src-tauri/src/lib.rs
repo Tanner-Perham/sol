@@ -779,7 +779,17 @@ enum CompletionMessage {
         prefill_tokens: usize,
         decode_tokens: usize,
         tok_per_s: f64,
+        backend: String,
     },
+}
+
+#[derive(serde::Serialize)]
+struct ReworkStatsResponse {
+    prefill_ms: u64,
+    prefill_tokens: usize,
+    decode_tokens: usize,
+    tok_per_s: f64,
+    backend: String,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -902,6 +912,7 @@ async fn generate_completion(
                             prefill_tokens: stats.prefill_tokens,
                             decode_tokens: stats.decode_tokens,
                             tok_per_s: stats.tok_per_s,
+                            backend: "Candle".to_string(),
                         };
                         let _ = channel_final.send(stats_msg);
                         Ok(())
@@ -946,11 +957,15 @@ async fn generate_completion(
                             prefill_tokens: stats.prefill_tokens,
                             decode_tokens: stats.decode_tokens,
                             tok_per_s: stats.tok_per_s,
+                            backend: "llama.cpp".to_string(),
                         };
                         let _ = channel_final.send(stats_msg);
                         Ok(())
                     }
-                    Err(e) => Err(e),
+                    Err(e) => {
+                        let mapped = llm::providers::map_provider_error(&e, "LlamaCpp", None);
+                        Err(mapped)
+                    }
                 }
             }
         }
@@ -1051,7 +1066,7 @@ async fn generate_rework(
     params: ReworkParams,
     channel: tauri::ipc::Channel<CompletionChunk>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<ReworkStatsResponse, String> {
     eprintln!("[generate_rework] Entry: request_id={} path={} instruction={}", request_id, params.path, params.instruction);
     let state = app.state::<WorkspaceState>();
 
@@ -1161,7 +1176,7 @@ async fn generate_rework(
                     }
                 };
 
-                let _stats = model.generate_stream(
+                match model.generate_stream(
                     &prompt,
                     max_tokens,
                     Some(temperature),
@@ -1177,14 +1192,22 @@ async fn generate_rework(
                         };
                         channel_clone.send(chunk).map_err(|e| e.to_string())
                     }
-                )?;
-                Ok(())
+                ) {
+                    Ok(stats) => Ok(ReworkStatsResponse {
+                        prefill_ms: stats.prefill_ms,
+                        prefill_tokens: stats.prefill_tokens,
+                        decode_tokens: stats.decode_tokens,
+                        tok_per_s: stats.tok_per_s,
+                        backend: "Candle".to_string(),
+                    }),
+                    Err(e) => Err(e),
+                }
             }
             ReworkInput::OllamaInput { instruction, selection } => {
                 let model_name = ollama_model.ok_or_else(|| "Ollama model missing".to_string())?;
                 eprintln!("[generate_rework] Spawning Ollama thread. url='{}', model='{}'", ollama_url, model_name);
                 let ollama_max_tokens = std::cmp::max(max_tokens, 1024);
-                let _stats = llm::providers::ollama::stream_rework(
+                match llm::providers::ollama::stream_rework(
                     &ollama_url,
                     allow_remote,
                     &model_name,
@@ -1203,14 +1226,27 @@ async fn generate_rework(
                         };
                         channel_clone.send(chunk).map_err(|e| e.to_string())
                     }
-                )?;
-                eprintln!("[generate_rework] Spawning Ollama thread finished.");
-                Ok(())
+                ) {
+                    Ok(stats) => {
+                        eprintln!("[generate_rework] Spawning Ollama thread finished.");
+                        Ok(ReworkStatsResponse {
+                            prefill_ms: stats.prefill_ms,
+                            prefill_tokens: stats.prefill_tokens,
+                            decode_tokens: stats.decode_tokens,
+                            tok_per_s: stats.tok_per_s,
+                            backend: "Ollama".to_string(),
+                        })
+                    }
+                    Err(e) => {
+                        let mapped = llm::providers::map_provider_error(&e, "Ollama", Some(&model_name));
+                        Err(mapped)
+                    }
+                }
             }
             ReworkInput::LlamaCppInput { instruction, selection } => {
                 eprintln!("[generate_rework] Spawning llama.cpp thread. url='{}'", llamacpp_url);
                 let llamacpp_max_tokens = std::cmp::max(max_tokens, 1024);
-                let _stats = llm::providers::llamacpp::stream_rework(
+                match llm::providers::llamacpp::stream_rework(
                     &llamacpp_url,
                     allow_remote,
                     &instruction,
@@ -1228,9 +1264,22 @@ async fn generate_rework(
                         };
                         channel_clone.send(chunk).map_err(|e| e.to_string())
                     }
-                )?;
-                eprintln!("[generate_rework] Spawning llama.cpp thread finished.");
-                Ok(())
+                ) {
+                    Ok(stats) => {
+                        eprintln!("[generate_rework] Spawning llama.cpp thread finished.");
+                        Ok(ReworkStatsResponse {
+                            prefill_ms: stats.prefill_ms,
+                            prefill_tokens: stats.prefill_tokens,
+                            decode_tokens: stats.decode_tokens,
+                            tok_per_s: stats.tok_per_s,
+                            backend: "llama.cpp".to_string(),
+                        })
+                    }
+                    Err(e) => {
+                        let mapped = llm::providers::map_provider_error(&e, "LlamaCpp", None);
+                        Err(mapped)
+                    }
+                }
             }
         }
     })

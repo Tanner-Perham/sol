@@ -69,19 +69,22 @@ pub fn check_health(url_str: &str, allow_remote: bool) -> Result<LlamaCppStatus,
     let resp = match client.get(health_url).send() {
         Ok(r) => r,
         Err(e) => {
+            let mapped = super::map_provider_error(&e.to_string(), "LlamaCpp", None);
             return Ok(LlamaCppStatus {
                 available: false,
                 model: None,
-                error: Some(format!("Failed to connect to llama.cpp server: {}", e)),
+                error: Some(mapped),
             });
         }
     };
     
     if !resp.status().is_success() {
+        let err_msg = format!("llama.cpp server health check returned HTTP {}", resp.status());
+        let mapped = super::map_provider_error(&err_msg, "LlamaCpp", None);
         return Ok(LlamaCppStatus {
             available: false,
             model: None,
-            error: Some(format!("llama.cpp server health check returned HTTP {}", resp.status())),
+            error: Some(mapped),
         });
     }
 
@@ -90,19 +93,22 @@ pub fn check_health(url_str: &str, allow_remote: bool) -> Result<LlamaCppStatus,
     let props_resp = match client.get(props_url).send() {
         Ok(r) => r,
         Err(e) => {
+            let mapped = super::map_provider_error(&e.to_string(), "LlamaCpp", None);
             return Ok(LlamaCppStatus {
                 available: true,
                 model: None,
-                error: Some(format!("Server is online, but failed to fetch model properties: {}", e)),
+                error: Some(mapped),
             });
         }
     };
 
     if !props_resp.status().is_success() {
+        let err_msg = format!("Server is online, but model properties check returned HTTP {}", props_resp.status());
+        let mapped = super::map_provider_error(&err_msg, "LlamaCpp", None);
         return Ok(LlamaCppStatus {
             available: true,
             model: None,
-            error: Some(format!("Server is online, but model properties check returned HTTP {}", props_resp.status())),
+            error: Some(mapped),
         });
     }
 

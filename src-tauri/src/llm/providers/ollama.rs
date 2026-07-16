@@ -88,11 +88,14 @@ pub fn check_health(url_str: &str, allow_remote: bool) -> Result<OllamaStatus, S
             if resp.status().is_success() {
                 Ok(OllamaStatus { available: true, error: None })
             } else {
-                Ok(OllamaStatus { available: false, error: Some(format!("HTTP status {}", resp.status())) })
+                let err_msg = format!("HTTP status {}", resp.status());
+                let mapped = super::map_provider_error(&err_msg, "Ollama", None);
+                Ok(OllamaStatus { available: false, error: Some(mapped) })
             }
         }
         Err(e) => {
-            Ok(OllamaStatus { available: false, error: Some(e.to_string()) })
+            let mapped = super::map_provider_error(&e.to_string(), "Ollama", None);
+            Ok(OllamaStatus { available: false, error: Some(mapped) })
         }
     }
 }

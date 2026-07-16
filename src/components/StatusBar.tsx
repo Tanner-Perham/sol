@@ -18,6 +18,7 @@ export interface StatusBarProps {
     tokensEst: number;
     prefillMs?: number;
     tokPerS?: number;
+    backend?: string;
   } | null;
 }
 
@@ -73,7 +74,10 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           {aiDebugInfo.tokPerS !== undefined && (
             <>
               <span style={{ opacity: 0.5 }}>·</span>
-              <span>{aiDebugInfo.tokPerS.toFixed(1)} tok/s</span>
+              <span>
+                {aiDebugInfo.backend ? `${aiDebugInfo.backend}: ` : ""}
+                {aiDebugInfo.tokPerS.toFixed(1)} tok/s
+              </span>
             </>
           )}
         </div>

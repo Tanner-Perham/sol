@@ -474,7 +474,8 @@ export const ghostTextTriggerPlugin = (
                   return {
                     ...prev,
                     prefillMs: message.prefill_ms,
-                    tokPerS: message.tok_per_s
+                    tokPerS: message.tok_per_s,
+                    backend: message.backend
                   };
                 });
               }
