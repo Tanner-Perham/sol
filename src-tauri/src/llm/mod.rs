@@ -65,6 +65,11 @@ fn default_llamacpp_url() -> String {
     "http://localhost:8080".to_string()
 }
 
+fn default_dry_multiplier() -> f32 { 0.8 }
+fn default_dry_base() -> f32 { 1.75 }
+fn default_dry_allowed_length() -> u32 { 2 }
+fn default_dry_penalty_last_n() -> i32 { -1 }
+
 /// LLM configuration stored in settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
@@ -92,6 +97,18 @@ pub struct LlmConfig {
 
     #[serde(default)]
     pub allow_remote_endpoints: bool,
+
+    #[serde(default = "default_dry_multiplier")]
+    pub llamacpp_dry_multiplier: f32,
+
+    #[serde(default = "default_dry_base")]
+    pub llamacpp_dry_base: f32,
+
+    #[serde(default = "default_dry_allowed_length")]
+    pub llamacpp_dry_allowed_length: u32,
+
+    #[serde(default = "default_dry_penalty_last_n")]
+    pub llamacpp_dry_penalty_last_n: i32,
 }
 
 impl Default for LlmConfig {
@@ -107,6 +124,10 @@ impl Default for LlmConfig {
             ollama_rework_model: None,
             llamacpp_url: default_llamacpp_url(),
             allow_remote_endpoints: false,
+            llamacpp_dry_multiplier: 0.8,
+            llamacpp_dry_base: 1.75,
+            llamacpp_dry_allowed_length: 2,
+            llamacpp_dry_penalty_last_n: -1,
         }
     }
 }

@@ -809,8 +809,8 @@ async fn generate_completion(
         token
     };
 
-    // 2. Resolve workspace and completion model ID, checking privacy rules first
-    let (workspace, model_id, assembled_context) = {
+    // 2. Resolve workspace, completion backend and model, checking privacy rules first
+    let (workspace, backend, model_id, config, assembled_context) = {
         let path_lock = lock!(state.path);
         let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
         
@@ -820,20 +820,21 @@ async fn generate_completion(
         }
 
         let config = LlmConfig::load(&workspace);
+        let backend = config.completion_backend.clone();
         
-        match config.completion_backend {
-            llm::providers::CompletionBackend::Builtin => {}
-            llm::providers::CompletionBackend::LlamaCpp => {
-                return Err("llama.cpp completion backend not yet implemented".to_string());
+        let model_id = match backend {
+            llm::providers::CompletionBackend::Builtin => {
+                let id = config.completion_model_id.as_ref()
+                    .or(config.active_model_id.as_ref())
+                    .ok_or_else(|| "No model selected for completion".to_string())?
+                    .clone();
+                Some(id)
             }
-        }
-
-        let model_id = config.completion_model_id
-            .or(config.active_model_id)
-            .ok_or_else(|| "No model selected for completion".to_string())?;
+            llm::providers::CompletionBackend::LlamaCpp => None,
+        };
 
         let assembled = llm::context::assemble_context(&workspace, &resolved, &params.text, params.cursor_offset, &state, &params.context);
-        (workspace, model_id, assembled)
+        (workspace, backend, model_id, config, assembled)
     };
 
     // Send Context message immediately
@@ -854,55 +855,104 @@ async fn generate_completion(
 
     // 3. Spawn blocking generation task off the main IPC thread
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<WorkspaceState>();
-        let mut loaded_model_lock = lock!(state.loaded_model);
-        
-        let model = match &mut *loaded_model_lock {
-            Some((cached_id, model)) if cached_id == &model_id => model,
-            _ => {
-                let new_model = match llm::inference::LoadedModel::load(&workspace, &model_id) {
-                    Ok(m) => m,
-                    Err(e) => return Err(format!("Failed to load model: {}", e)),
-                };
-                *loaded_model_lock = Some((model_id.clone(), new_model));
-                &mut loaded_model_lock.as_mut().unwrap().1
-            }
-        };
-
         let request_id_clone = request_id.clone();
         let request_id_final = request_id.clone();
         let channel_clone = channel.clone();
         let channel_final = channel.clone();
 
-        match model.generate_stream(
-            &prompt,
-            params.max_tokens,
-            params.temperature,
-            params.top_p,
-            params.seed,
-            &params.stop,
-            &params.rejected,
-            &cancel_token,
-            move |token: &str| {
-                let msg = CompletionMessage::Token {
-                    request_id: request_id_clone.clone(),
-                    token: token.to_string(),
+        match backend {
+            llm::providers::CompletionBackend::Builtin => {
+                let model_id = model_id.ok_or_else(|| "Model ID missing".to_string())?;
+                let state = app.state::<WorkspaceState>();
+                let mut loaded_model_lock = lock!(state.loaded_model);
+                
+                let model = match &mut *loaded_model_lock {
+                    Some((cached_id, model)) if cached_id == &model_id => model,
+                    _ => {
+                        let new_model = match llm::inference::LoadedModel::load(&workspace, &model_id) {
+                            Ok(m) => m,
+                            Err(e) => return Err(format!("Failed to load model: {}", e)),
+                        };
+                        *loaded_model_lock = Some((model_id.clone(), new_model));
+                        &mut loaded_model_lock.as_mut().unwrap().1
+                    }
                 };
-                channel_clone.send(msg).map_err(|e| e.to_string())
+
+                match model.generate_stream(
+                    &prompt,
+                    params.max_tokens,
+                    params.temperature,
+                    params.top_p,
+                    params.seed,
+                    &params.stop,
+                    &params.rejected,
+                    &cancel_token,
+                    move |token: &str| {
+                        let msg = CompletionMessage::Token {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(msg).map_err(|e| e.to_string())
+                    }
+                ) {
+                    Ok(stats) => {
+                        let stats_msg = CompletionMessage::Stats {
+                            request_id: request_id_final,
+                            prefill_ms: stats.prefill_ms,
+                            prefill_tokens: stats.prefill_tokens,
+                            decode_tokens: stats.decode_tokens,
+                            tok_per_s: stats.tok_per_s,
+                        };
+                        let _ = channel_final.send(stats_msg);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
             }
-        ) {
-            Ok(stats) => {
-                let stats_msg = CompletionMessage::Stats {
-                    request_id: request_id_final,
-                    prefill_ms: stats.prefill_ms,
-                    prefill_tokens: stats.prefill_tokens,
-                    decode_tokens: stats.decode_tokens,
-                    tok_per_s: stats.tok_per_s,
-                };
-                let _ = channel_final.send(stats_msg);
-                Ok(())
+            llm::providers::CompletionBackend::LlamaCpp => {
+                if !params.rejected.is_empty() {
+                    eprintln!("[generate_completion] Warning: rejected-suggestions are not supported by the llama.cpp backend");
+                }
+
+                let llamacpp_url = config.llamacpp_url.clone();
+                let allow_remote = config.allow_remote_endpoints;
+
+                match llm::providers::llamacpp::stream_completion(
+                    &llamacpp_url,
+                    allow_remote,
+                    &prompt,
+                    params.max_tokens,
+                    params.temperature.unwrap_or(0.7),
+                    params.top_p.unwrap_or(0.9),
+                    params.seed,
+                    config.llamacpp_dry_multiplier,
+                    config.llamacpp_dry_base,
+                    config.llamacpp_dry_allowed_length,
+                    config.llamacpp_dry_penalty_last_n,
+                    &params.stop,
+                    &cancel_token,
+                    move |token: &str| {
+                        let msg = CompletionMessage::Token {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(msg).map_err(|e| e.to_string())
+                    }
+                ) {
+                    Ok(stats) => {
+                        let stats_msg = CompletionMessage::Stats {
+                            request_id: request_id_final,
+                            prefill_ms: stats.prefill_ms,
+                            prefill_tokens: stats.prefill_tokens,
+                            decode_tokens: stats.decode_tokens,
+                            tok_per_s: stats.tok_per_s,
+                        };
+                        let _ = channel_final.send(stats_msg);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
             }
-            Err(e) => Err(e),
         }
     })
     .await

@@ -10,6 +10,10 @@ export interface ProviderConfig {
   ollama_rework_model: string | null;
   llamacpp_url: string;
   allow_remote_endpoints: boolean;
+  llamacpp_dry_multiplier: number;
+  llamacpp_dry_base: number;
+  llamacpp_dry_allowed_length: number;
+  llamacpp_dry_penalty_last_n: number;
 }
 
 export interface ModelSettingsProps {
@@ -32,6 +36,7 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
   const [testingOllama, setTestingOllama] = useState(false);
   const [llamacppStatus, setLlamaCppStatus] = useState<{ available: boolean; model: string | null; error: string | null } | null>(null);
   const [testingLlamaCpp, setTestingLlamaCpp] = useState(false);
+  const [showAdvancedLlamaCpp, setShowAdvancedLlamaCpp] = useState(false);
 
   const fetchOllamaModels = async (url: string, allowRemote: boolean) => {
     try {
@@ -490,11 +495,10 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
                 <button
                   type="button"
                   className={`segment-btn ${providerConfig.completion_backend === "LlamaCpp" ? "active" : ""}`}
-                  disabled
-                  title="llama.cpp completion coming in M3"
-                  style={{ padding: "4px 10px", fontSize: "12px", opacity: 0.5, cursor: "not-allowed" }}
+                  onClick={() => handleUpdateProviderConfig({ completion_backend: "LlamaCpp" })}
+                  style={{ padding: "4px 10px", fontSize: "12px", cursor: "pointer" }}
                 >
-                  llama.cpp (M3)
+                  llama.cpp
                 </button>
               </div>
             </div>
@@ -769,6 +773,127 @@ export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) 
                     </div>
                   </div>
                 )}
+
+                {/* Advanced llama.cpp Settings Collapsible */}
+                <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px", marginTop: "4px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedLlamaCpp(!showAdvancedLlamaCpp)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "var(--text-muted)",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: 0
+                    }}
+                  >
+                    <span>{showAdvancedLlamaCpp ? "▼" : "▶"} Advanced llama.cpp Settings (DRY Sampler)</span>
+                  </button>
+
+                  {showAdvancedLlamaCpp && (
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: "12px",
+                      marginTop: "12px",
+                      padding: "8px 12px",
+                      background: "var(--bg-dark)",
+                      borderRadius: "6px",
+                      border: "1px solid var(--border)"
+                    }}>
+                      <div title="DRY penalty multiplier. Functionally equivalent to Candle n-gram ban. Tweak to avoid prompt parroting.">
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                          DRY Multiplier (default: 0.8)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.05"
+                          className="settings-input"
+                          value={providerConfig.llamacpp_dry_multiplier}
+                          onChange={(e) => handleUpdateProviderConfig({ llamacpp_dry_multiplier: parseFloat(e.target.value) || 0.0 })}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "6px",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg)",
+                            color: "var(--text-normal)"
+                          }}
+                        />
+                      </div>
+
+                      <div title="DRY penalty base value. Higher values apply stronger decay to repeated tokens.">
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                          DRY Base (default: 1.75)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.05"
+                          className="settings-input"
+                          value={providerConfig.llamacpp_dry_base}
+                          onChange={(e) => handleUpdateProviderConfig({ llamacpp_dry_base: parseFloat(e.target.value) || 0.0 })}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "6px",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg)",
+                            color: "var(--text-normal)"
+                          }}
+                        />
+                      </div>
+
+                      <div title="DRY allowed length: repeats shorter than this length are not penalized.">
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                          DRY Allowed Length (default: 2)
+                        </label>
+                        <input
+                          type="number"
+                          className="settings-input"
+                          value={providerConfig.llamacpp_dry_allowed_length}
+                          onChange={(e) => handleUpdateProviderConfig({ llamacpp_dry_allowed_length: parseInt(e.target.value, 10) || 0 })}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "6px",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg)",
+                            color: "var(--text-normal)"
+                          }}
+                        />
+                      </div>
+
+                      <div title="DRY penalty context length. -1 checks the entire generation history.">
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                          DRY Penalty Last N (default: -1)
+                        </label>
+                        <input
+                          type="number"
+                          className="settings-input"
+                          value={providerConfig.llamacpp_dry_penalty_last_n}
+                          onChange={(e) => handleUpdateProviderConfig({ llamacpp_dry_penalty_last_n: parseInt(e.target.value, 10) })}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "6px",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg)",
+                            color: "var(--text-normal)"
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
