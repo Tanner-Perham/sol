@@ -18,6 +18,7 @@ import { Sidebar, VisibleItem } from "./components/Sidebar";
 import { SettingsModal, SettingsTabType } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
 import { EditorPaneComponent, pruneEditorState } from "./components/EditorPane/EditorPane";
+import { clearSuggestion } from "./components/EditorPane/ghostTextExtension";
 
 function App() {
   const [workspacePath, setWorkspacePath] = useState("");
@@ -25,6 +26,7 @@ function App() {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [aiDebugInfo, setAiDebugInfo] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabType>("general");
   const [recordingHotkey, setRecordingHotkey] = useState<keyof Keybindings | null>(null);
@@ -53,6 +55,17 @@ function App() {
   const [sidebarSelectedIndex, setSidebarSelectedIndex] = useState(0);
 
   const updateSettings = useCallback(async (newSettings: Partial<AppSettings>) => {
+    if (newSettings.completionEnabled === false) {
+      invoke("cancel_completion").catch(() => {});
+      // Clear suggestions immediately on all active editors
+      editorViewsRef.current.forEach((view) => {
+        try {
+          view.dispatch({ effects: clearSuggestion.of() });
+        } catch (e) {
+          // ignore if view is not initialized or state field is not present
+        }
+      });
+    }
     setSettings(prev => ({ ...prev, ...newSettings }));
   }, []);
 
@@ -155,6 +168,28 @@ function App() {
 
   const [conflictInfo, setConflictInfo] = useState<{ path: string; localContent: string; diskContent: string } | null>(null);
   const conflictResolveRef = useRef<((value: "overwrite" | "reload" | "cancel") => void) | null>(null);
+
+  const [aiStatus, setAiStatus] = useState<'allowed' | 'excluded' | 'loading'>('allowed');
+
+  const checkFileAiStatus = useCallback(async (relativePath: string | null) => {
+    if (!relativePath) {
+      setAiStatus("allowed");
+      return;
+    }
+    try {
+      setAiStatus("loading");
+      const allowed = await invoke<boolean>("is_note_allowed", { path: relativePath });
+      setAiStatus(allowed ? "allowed" : "excluded");
+    } catch (err) {
+      console.error("Error checking AI status:", err);
+      setAiStatus("allowed");
+    }
+  }, []);
+
+  useEffect(() => {
+    checkFileAiStatus(activeFile);
+  }, [activeFile, checkFileAiStatus]);
+
 
   useEffect(() => {
     return () => {
@@ -508,6 +543,21 @@ function App() {
     }
   };
 
+  const openPolicyFile = useCallback(async () => {
+    try {
+      setShowSettingsModal(false);
+      const policyFile = await invoke<string>("open_policy_file");
+      await openFile(policyFile);
+    } catch (err) {
+      console.error("Failed to open policy file:", err);
+    }
+  }, [openFile]);
+
+  const openPolicyFileRef = useRef(openPolicyFile);
+  useEffect(() => {
+    openPolicyFileRef.current = openPolicyFile;
+  }, [openPolicyFile]);
+
   // Close a tab
   const closeTab = async (paneId: PaneId, fileName: string) => {
     const leaf = findLeafNode(layout, paneId);
@@ -735,6 +785,11 @@ function App() {
 
         const modifiedPaths = event.payload;
         if (!modifiedPaths || !Array.isArray(modifiedPaths)) return;
+
+        // Re-check AI policy status if policy or the active file changed
+        if (modifiedPaths.includes(".solai") || (activeFileRef.current && modifiedPaths.includes(activeFileRef.current))) {
+          checkFileAiStatus(activeFileRef.current);
+        }
 
         const currentLayout = layoutRef.current;
         const leafIds = getLeafPaneIds(currentLayout);
@@ -1139,8 +1194,10 @@ function App() {
   const fileTreeRef = useRef(fileTree);
   const pendingHeadersRef = useRef<Map<PaneId, string>>(new Map());
   const settingsRef = useRef(settings);
+  const updateSettingsRef = useRef(updateSettings);
 
   useEffect(() => { layoutRef.current = layout; }, [layout]);
+  useEffect(() => { updateSettingsRef.current = updateSettings; }, [updateSettings]);
   useEffect(() => { activePaneIdRef.current = activePaneId; }, [activePaneId]);
   useEffect(() => { prefixActiveRef.current = prefixActive; }, [prefixActive]);
   useEffect(() => { openFileRef.current = openFile; }, [openFile]);
@@ -1166,6 +1223,24 @@ function App() {
 
     Vim.defineEx("qall", "qa", () => {
       closeAllTabsRef.current();
+    });
+
+    Vim.defineEx("policy", "policy", () => {
+      openPolicyFileRef.current();
+    });
+
+    Vim.defineEx("solai", "solai", () => {
+      openPolicyFileRef.current();
+    });
+
+    Vim.defineEx("completion", "completion", () => {
+      const current = settingsRef.current.completionEnabled !== false;
+      updateSettingsRef.current({ completionEnabled: !current });
+    });
+
+    Vim.defineEx("togglecompletion", "togglecompletion", () => {
+      const current = settingsRef.current.completionEnabled !== false;
+      updateSettingsRef.current({ completionEnabled: !current });
     });
   }, []);
 
@@ -1512,6 +1587,7 @@ function App() {
           registerState={registerState}
           onDocChange={onDocChange}
           onVimModeChange={onVimModeChange}
+          onAiDebugInfo={setAiDebugInfo}
         />
       );
     }
@@ -1707,6 +1783,10 @@ function App() {
         vimModeName={vimModeName}
         wordCount={wordCount}
         updateSettings={updateSettings}
+        aiStatus={aiStatus}
+        completionEnabled={settings.completionEnabled !== false}
+        aiDebugEnabled={settings.aiDebugEnabled}
+        aiDebugInfo={aiDebugInfo}
       />
 
       <SettingsModal
@@ -1718,6 +1798,7 @@ function App() {
         updateSettings={updateSettings}
         recordingHotkey={recordingHotkey}
         setRecordingHotkey={setRecordingHotkey}
+        openPolicyFile={openPolicyFile}
       />
 
       {conflictInfo && (

@@ -9,6 +9,8 @@ import { vim, Vim, getCM } from "@replit/codemirror-vim";
 import { prosePreviewPlugin } from "../../prosePreviewPlugin";
 import { PaneId, AppSettings, FileNode } from "../../types";
 import { customSelectionHighlightPlugin } from "./editorPlugins";
+import { ghostTextExtension } from "./ghostTextExtension";
+import { reworkExtension, activeFileField } from "./reworkExtension";
 import { findHeaderLine, computeWordCount, wikiCompletionSource } from "../../utils/editorUtils";
 
 export interface EditorPaneProps {
@@ -29,6 +31,7 @@ export interface EditorPaneProps {
   registerState: (paneId: string, isDirty: boolean, wordCount: number) => void;
   onDocChange: (paneId: string, content: string, changes?: any) => void;
   onVimModeChange: (mode: string) => void;
+  onAiDebugInfo?: (info: any) => void;
 }
 
 interface SavedEditorState {
@@ -68,7 +71,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   registerView,
   registerState,
   onDocChange,
-  onVimModeChange
+  onVimModeChange,
+  onAiDebugInfo
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -80,6 +84,11 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   }, [isLocalDirty]);
 
   const { vimMode, livePreview, lineWrapping, theme } = settings;
+
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   const vimCompartment = useMemo(() => new Compartment(), []);
   const wrapCompartment = useMemo(() => new Compartment(), []);
@@ -228,6 +237,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         },
       }, { dark: !["sepia", "light"].includes(theme) })),
       customSelectionHighlightPlugin,
+      ghostTextExtension(settingsRef, activeFile, onAiDebugInfo),
+      reworkExtension(settingsRef),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const isReload = update.transactions.some(tr => tr.annotation(Transaction.userEvent) === "reload");
@@ -241,7 +252,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         }
       })
     ];
-  }, [paneId, workspacePath, vimMode, lineWrapping, livePreview, theme, vimCompartment, wrapCompartment, previewCompartment, themeCompartment, onDocChange, registerState]);
+  }, [paneId, workspacePath, vimMode, lineWrapping, livePreview, theme, settingsRef, activeFile, vimCompartment, wrapCompartment, previewCompartment, themeCompartment, onDocChange, registerState, onAiDebugInfo]);
 
   // Clean up view on unmount
   useEffect(() => {
@@ -277,7 +288,10 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       state = EditorState.create({
         doc: loadedContent,
         selection,
-        extensions: buildExtensions()
+        extensions: [
+          ...buildExtensions(),
+          activeFileField.init(() => activeFile)
+        ]
       });
       fileEditorStates.set(cacheKey, state);
     }

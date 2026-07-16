@@ -3,7 +3,7 @@ import { AppSettings, Keybindings } from "../types";
 import { DEFAULT_KEYBINDINGS } from "../constants";
 import { ModelSettings } from "./ModelSettings";
 
-export type SettingsTabType = "general" | "appearance" | "hotkeys" | "models";
+export type SettingsTabType = "general" | "appearance" | "hotkeys" | "models" | "ai";
 
 export interface SettingsModalProps {
   showSettingsModal: boolean;
@@ -14,6 +14,7 @@ export interface SettingsModalProps {
   updateSettings: (newSettings: Partial<AppSettings>) => Promise<void>;
   recordingHotkey: keyof Keybindings | null;
   setRecordingHotkey: (hotkey: keyof Keybindings | null) => void;
+  openPolicyFile?: () => Promise<void>;
 }
 
 const renderShortcutBadges = (shortcutStr: string) => {
@@ -55,7 +56,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   settings,
   updateSettings,
   recordingHotkey,
-  setRecordingHotkey
+  setRecordingHotkey,
+  openPolicyFile
 }) => {
   return (
     <div className={`settings-modal-overlay ${showSettingsModal ? "open" : ""}`} onClick={() => setShowSettingsModal(false)}>
@@ -117,6 +119,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <path d="M2 12l10 5 10-5" />
               </svg>
               AI Models
+            </button>
+            <button
+              className={`settings-tab-btn ${activeSettingsTab === "ai" ? "active" : ""}`}
+              onClick={() => setActiveSettingsTab("ai")}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+                <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+                <line x1="12" y1="22.08" x2="12" y2="12" />
+              </svg>
+              AI Settings
             </button>
           </div>
 
@@ -428,7 +441,282 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             )}
 
             {activeSettingsTab === "models" && (
-              <ModelSettings />
+              <ModelSettings openPolicyFile={openPolicyFile} />
+            )}
+
+            {activeSettingsTab === "ai" && (
+              <div className="settings-section" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                {/* Completion Group */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border)", paddingBottom: "6px" }}>
+                    <span className="settings-section-title" style={{ borderBottom: "none", margin: 0, padding: 0 }}>Completion</span>
+                    <button
+                      type="button"
+                      onClick={() => updateSettings({
+                        completionDebounceMs: 400,
+                        completionMaxTokens: 100,
+                        completionTemperature: 0.35,
+                        completionTopP: 0.95
+                      })}
+                      style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "11px", textDecoration: "underline", padding: 0 }}
+                    >
+                      Reset Group
+                    </button>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Enable Completions</span>
+                      <span className="settings-control-desc">Enable autocomplete suggestions</span>
+                    </div>
+                    <label className="settings-switch">
+                      <input
+                        type="checkbox"
+                        checked={settings.completionEnabled !== false}
+                        onChange={(e) => updateSettings({ completionEnabled: e.target.checked })}
+                      />
+                      <span className="switch-slider" />
+                    </label>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Debounce Latency</span>
+                      <span className="settings-control-desc">Wait time before suggestions trigger</span>
+                    </div>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        min="100"
+                        max="2000"
+                        step="50"
+                        value={settings.completionDebounceMs ?? 400}
+                        onChange={(e) => updateSettings({ completionDebounceMs: parseInt(e.target.value) })}
+                        className="settings-slider"
+                      />
+                      <span className="slider-value">{(settings.completionDebounceMs ?? 400)}ms</span>
+                    </div>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Max Tokens</span>
+                      <span className="settings-control-desc">Max tokens generated per completion</span>
+                    </div>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        min="16"
+                        max="256"
+                        step="8"
+                        value={settings.completionMaxTokens ?? 100}
+                        onChange={(e) => updateSettings({ completionMaxTokens: parseInt(e.target.value) })}
+                        className="settings-slider"
+                      />
+                      <span className="slider-value">{(settings.completionMaxTokens ?? 100)} tok</span>
+                    </div>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Temperature</span>
+                      <span className="settings-control-desc">Creativity scaling for completions</span>
+                    </div>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        min="0"
+                        max="1.5"
+                        step="0.05"
+                        value={settings.completionTemperature ?? 0.35}
+                        onChange={(e) => updateSettings({ completionTemperature: parseFloat(e.target.value) })}
+                        className="settings-slider"
+                      />
+                      <span className="slider-value">{(settings.completionTemperature ?? 0.35).toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Top P</span>
+                      <span className="settings-control-desc">Nucleus sampling threshold</span>
+                    </div>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={settings.completionTopP ?? 0.95}
+                        onChange={(e) => updateSettings({ completionTopP: parseFloat(e.target.value) })}
+                        className="settings-slider"
+                      />
+                      <span className="slider-value">{(settings.completionTopP ?? 0.95).toFixed(2)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Context Group */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "10px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border)", paddingBottom: "6px" }}>
+                    <span className="settings-section-title" style={{ borderBottom: "none", margin: 0, padding: 0 }}>Context</span>
+                    <button
+                      type="button"
+                      onClick={() => updateSettings({
+                        contextPrefixChars: 800,
+                        contextMaxLinkedNotes: 1,
+                        contextExcerptChars: 150
+                      })}
+                      style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "11px", textDecoration: "underline", padding: 0 }}
+                    >
+                      Reset Group
+                    </button>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Context Prefix Characters</span>
+                      <span className="settings-control-desc">Prefix length analyzed for autocomplete</span>
+                    </div>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        min="200"
+                        max="4000"
+                        step="100"
+                        value={settings.contextPrefixChars ?? 800}
+                        onChange={(e) => updateSettings({ contextPrefixChars: parseInt(e.target.value) })}
+                        className="settings-slider"
+                      />
+                      <span className="slider-value">{(settings.contextPrefixChars ?? 800)} ch</span>
+                    </div>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Max Linked Notes</span>
+                      <span className="settings-control-desc">Notes loaded via Wikilinks (0 disables linked notes)</span>
+                    </div>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        min="0"
+                        max="3"
+                        step="1"
+                        value={settings.contextMaxLinkedNotes ?? 1}
+                        onChange={(e) => updateSettings({ contextMaxLinkedNotes: parseInt(e.target.value) })}
+                        className="settings-slider"
+                      />
+                      <span className="slider-value">{(settings.contextMaxLinkedNotes ?? 1)}</span>
+                    </div>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Excerpt Characters</span>
+                      <span className="settings-control-desc">Characters extracted from each linked note</span>
+                    </div>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        min="50"
+                        max="500"
+                        step="10"
+                        value={settings.contextExcerptChars ?? 150}
+                        onChange={(e) => updateSettings({ contextExcerptChars: parseInt(e.target.value) })}
+                        className="settings-slider"
+                      />
+                      <span className="slider-value">{(settings.contextExcerptChars ?? 150)} ch</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Rework Group */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "10px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border)", paddingBottom: "6px" }}>
+                    <span className="settings-section-title" style={{ borderBottom: "none", margin: 0, padding: 0 }}>Rework</span>
+                    <button
+                      type="button"
+                      onClick={() => updateSettings({
+                        reworkTemperature: 0.3,
+                        reworkMaxTokensCap: 512
+                      })}
+                      style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "11px", textDecoration: "underline", padding: 0 }}
+                    >
+                      Reset Group
+                    </button>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Rework Temperature</span>
+                      <span className="settings-control-desc">Creativity scaling for inline rewrite</span>
+                    </div>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        min="0"
+                        max="1.5"
+                        step="0.05"
+                        value={settings.reworkTemperature ?? 0.3}
+                        onChange={(e) => updateSettings({ reworkTemperature: parseFloat(e.target.value) })}
+                        className="settings-slider"
+                      />
+                      <span className="slider-value">{(settings.reworkTemperature ?? 0.3).toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Rework Max Tokens Cap</span>
+                      <span className="settings-control-desc">Max rewrite generation tokens limit</span>
+                    </div>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        min="64"
+                        max="1024"
+                        step="32"
+                        value={settings.reworkMaxTokensCap ?? 512}
+                        onChange={(e) => updateSettings({ reworkMaxTokensCap: parseInt(e.target.value) })}
+                        className="settings-slider"
+                      />
+                      <span className="slider-value">{(settings.reworkMaxTokensCap ?? 512)} tok</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Debug Group */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "10px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border)", paddingBottom: "6px" }}>
+                    <span className="settings-section-title" style={{ borderBottom: "none", margin: 0, padding: 0 }}>Debug</span>
+                    <button
+                      type="button"
+                      onClick={() => updateSettings({
+                        aiDebugEnabled: false
+                      })}
+                      style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "11px", textDecoration: "underline", padding: 0 }}
+                    >
+                      Reset Group
+                    </button>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Enable AI Debug</span>
+                      <span className="settings-control-desc">Show context highlight & status bar metrics</span>
+                    </div>
+                    <label className="settings-switch">
+                      <input
+                        type="checkbox"
+                        checked={settings.aiDebugEnabled === true}
+                        onChange={(e) => updateSettings({ aiDebugEnabled: e.target.checked })}
+                      />
+                      <span className="switch-slider" />
+                    </label>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </div>

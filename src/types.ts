@@ -39,8 +39,19 @@ export interface AppSettings {
   lineWrapping: boolean;
   vimMode: boolean;
   livePreview: boolean;
+  completionEnabled?: boolean;
   showHidden: boolean;
   keybindings?: Keybindings;
+  completionDebounceMs?: number;
+  completionMaxTokens?: number;
+  completionTemperature?: number;
+  completionTopP?: number;
+  contextPrefixChars?: number;
+  contextMaxLinkedNotes?: number;
+  contextExcerptChars?: number;
+  aiDebugEnabled?: boolean;
+  reworkTemperature?: number;
+  reworkMaxTokensCap?: number;
 }
 
 export interface ModelFile {
@@ -68,6 +79,8 @@ export type ModelStatusType =
 
 export interface ModelWithStatus extends ModelInfo {
   status: ModelStatusType["status"];
+  is_completion_active: boolean;
+  is_rework_active: boolean;
 }
 
 export interface DownloadProgress {

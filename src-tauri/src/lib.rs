@@ -15,12 +15,24 @@ use tauri::{Emitter, Manager};
 
 mod llm;
 use llm::{LlmConfig, ModelStatus, ModelWithStatus};
+mod policy;
 
 struct WorkspaceState {
     path: Mutex<Option<PathBuf>>,
     watcher: Mutex<Option<RecommendedWatcher>>,
     download_state: llm::download::SharedDownloadState,
     loaded_model: Mutex<Option<(String, llm::inference::LoadedModel)>>,
+    active_completion_cancel: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    active_rework_cancel: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    policy_engine: Mutex<Option<policy::PolicyEngine>>,
+}
+
+pub(crate) fn is_ai_allowed(state: &WorkspaceState, workspace: &Path, note_path: &Path) -> bool {
+    let mut policy_lock = state.policy_engine.lock().unwrap();
+    if policy_lock.is_none() {
+        *policy_lock = Some(policy::PolicyEngine::new(workspace.to_path_buf()));
+    }
+    policy_lock.as_mut().unwrap().ai_allowed(note_path)
 }
 
 fn get_saved_workspace(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -202,7 +214,7 @@ fn build_tree_rec(
     Ok(nodes)
 }
 
-fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<PathBuf, String> {
     let user_path = Path::new(user_path);
     if user_path.is_absolute() {
         return Err("Absolute paths are not allowed".to_string());
@@ -393,6 +405,12 @@ async fn change_workspace(
         old
     };
 
+    // Reset policy engine with the new workspace path
+    {
+        let mut policy_lock = lock!(state.policy_engine);
+        *policy_lock = Some(policy::PolicyEngine::new(new_path.clone()));
+    }
+
     if let Some(old) = old_path {
         let _ = app.asset_protocol_scope().forbid_directory(&old, true);
         
@@ -411,6 +429,17 @@ async fn change_workspace(
         let mut watcher =
             notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
+                    // Invalidate policy cache
+                    let state = app_handle.state::<WorkspaceState>();
+                    {
+                        let mut policy_lock = lock!(state.policy_engine);
+                        if let Some(ref mut engine) = *policy_lock {
+                            for path in &event.paths {
+                                engine.invalidate_path(path);
+                            }
+                        }
+                    }
+
                     let mut modified_paths = Vec::new();
                     for path in event.paths {
                         if is_ignored_path(&path, &new_path_clone) {
@@ -511,6 +540,8 @@ fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
         .map(|info| {
             let is_downloaded = llm::is_model_downloaded(&workspace, &info.id);
             let is_active = config.active_model_id.as_ref() == Some(&info.id);
+            let is_completion_active = config.completion_model_id.as_ref() == Some(&info.id);
+            let is_rework_active = config.rework_model_id.as_ref() == Some(&info.id);
 
             let status = if is_active && is_downloaded {
                 ModelStatus::Active
@@ -520,7 +551,7 @@ fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
                 ModelStatus::NotDownloaded
             };
 
-            ModelWithStatus { info, status }
+            ModelWithStatus { info, status, is_completion_active, is_rework_active }
         })
         .collect()
 }
@@ -640,10 +671,22 @@ fn delete_model(model_id: String, state: tauri::State<'_, WorkspaceState>) -> Re
     let path_lock = lock!(state.path);
     let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
 
-    // If this was the active model, clear it
+    // If this was the active model or active completion model, clear it
     let mut config = LlmConfig::load(workspace);
+    let mut modified = false;
     if config.active_model_id.as_ref() == Some(&model_id) {
         config.active_model_id = None;
+        modified = true;
+    }
+    if config.completion_model_id.as_ref() == Some(&model_id) {
+        config.completion_model_id = None;
+        modified = true;
+    }
+    if config.rework_model_id.as_ref() == Some(&model_id) {
+        config.rework_model_id = None;
+        modified = true;
+    }
+    if modified {
         config.save(workspace)?;
     }
 
@@ -693,6 +736,680 @@ fn is_model_ready(state: tauri::State<'_, WorkspaceState>) -> bool {
     }
 }
 
+#[derive(serde::Deserialize, Clone)]
+struct CompletionParams {
+    path: String,
+    text: String,
+    cursor_offset: usize,
+    max_tokens: usize,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    stop: Vec<String>,
+    seed: u64,
+    #[serde(default)]
+    rejected: Vec<String>,
+    #[serde(default)]
+    context: llm::context::ContextOptions,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct LinkedMetaDto {
+    title: String,
+    path: String,
+    chars_used: usize,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum CompletionMessage {
+    Context {
+        request_id: String,
+        prefix_from: usize,
+        prefix_to: usize,
+        linked: Vec<LinkedMetaDto>,
+        prompt_tokens_est: usize,
+    },
+    Token {
+        request_id: String,
+        token: String,
+    },
+    Stats {
+        request_id: String,
+        prefill_ms: u64,
+        prefill_tokens: usize,
+        decode_tokens: usize,
+        tok_per_s: f64,
+        backend: String,
+    },
+}
+
+#[derive(serde::Serialize)]
+struct ReworkStatsResponse {
+    prefill_ms: u64,
+    prefill_tokens: usize,
+    decode_tokens: usize,
+    tok_per_s: f64,
+    backend: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct CompletionChunk {
+    request_id: String,
+    token: String,
+}
+
+/// Generate completions streaming tokens via the provided channel
+#[tauri::command]
+async fn generate_completion(
+    request_id: String,
+    params: CompletionParams,
+    channel: tauri::ipc::Channel<CompletionMessage>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let state = app.state::<WorkspaceState>();
+
+    // 1. Manage/trigger cancellation of any existing completion
+    let cancel_token = {
+        let mut active_cancel = lock!(state.active_completion_cancel);
+        if let Some(ref old_token) = *active_cancel {
+            old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *active_cancel = Some(token.clone());
+        token
+    };
+
+    // 2. Resolve workspace, completion backend and model, checking privacy rules first
+    let (workspace, backend, model_id, config, assembled_context) = {
+        let path_lock = lock!(state.path);
+        let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
+        
+        let resolved = resolve_safe_path(&workspace, &params.path)?;
+        if !is_ai_allowed(&state, &workspace, &resolved) {
+            return Err("AI context is disabled for this file by privacy policy".to_string());
+        }
+
+        let config = LlmConfig::load(&workspace);
+        let backend = config.completion_backend.clone();
+        
+        let model_id = match backend {
+            llm::providers::CompletionBackend::Builtin => {
+                let id = config.completion_model_id.as_ref()
+                    .or(config.active_model_id.as_ref())
+                    .ok_or_else(|| "No model selected for completion".to_string())?
+                    .clone();
+                Some(id)
+            }
+            llm::providers::CompletionBackend::LlamaCpp => None,
+        };
+
+        let assembled = llm::context::assemble_context(&workspace, &resolved, &params.text, params.cursor_offset, &state, &params.context);
+        (workspace, backend, model_id, config, assembled)
+    };
+
+    // Send Context message immediately
+    let context_msg = CompletionMessage::Context {
+        request_id: request_id.clone(),
+        prefix_from: assembled_context.prefix_range_utf16.0,
+        prefix_to: assembled_context.prefix_range_utf16.1,
+        linked: assembled_context.linked.iter().map(|meta| LinkedMetaDto {
+            title: meta.title.clone(),
+            path: meta.path.clone(),
+            chars_used: meta.chars_used,
+        }).collect(),
+        prompt_tokens_est: assembled_context.prompt_token_estimate,
+    };
+    let _ = channel.send(context_msg);
+
+    let prompt = assembled_context.prompt;
+
+    // 3. Spawn blocking generation task off the main IPC thread
+    tauri::async_runtime::spawn_blocking(move || {
+        let request_id_clone = request_id.clone();
+        let request_id_final = request_id.clone();
+        let channel_clone = channel.clone();
+        let channel_final = channel.clone();
+
+        match backend {
+            llm::providers::CompletionBackend::Builtin => {
+                let model_id = model_id.ok_or_else(|| "Model ID missing".to_string())?;
+                let state = app.state::<WorkspaceState>();
+                let mut loaded_model_lock = lock!(state.loaded_model);
+                
+                let model = match &mut *loaded_model_lock {
+                    Some((cached_id, model)) if cached_id == &model_id => model,
+                    _ => {
+                        let new_model = match llm::inference::LoadedModel::load(&workspace, &model_id) {
+                            Ok(m) => m,
+                            Err(e) => return Err(format!("Failed to load model: {}", e)),
+                        };
+                        *loaded_model_lock = Some((model_id.clone(), new_model));
+                        &mut loaded_model_lock.as_mut().unwrap().1
+                    }
+                };
+
+                match model.generate_stream(
+                    &prompt,
+                    params.max_tokens,
+                    params.temperature,
+                    params.top_p,
+                    params.seed,
+                    &params.stop,
+                    &params.rejected,
+                    &cancel_token,
+                    move |token: &str| {
+                        let msg = CompletionMessage::Token {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(msg).map_err(|e| e.to_string())
+                    }
+                ) {
+                    Ok(stats) => {
+                        let stats_msg = CompletionMessage::Stats {
+                            request_id: request_id_final,
+                            prefill_ms: stats.prefill_ms,
+                            prefill_tokens: stats.prefill_tokens,
+                            decode_tokens: stats.decode_tokens,
+                            tok_per_s: stats.tok_per_s,
+                            backend: "Candle".to_string(),
+                        };
+                        let _ = channel_final.send(stats_msg);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            llm::providers::CompletionBackend::LlamaCpp => {
+                if !params.rejected.is_empty() {
+                    eprintln!("[generate_completion] Warning: rejected-suggestions are not supported by the llama.cpp backend");
+                }
+
+                let llamacpp_url = config.llamacpp_url.clone();
+                let allow_remote = config.allow_remote_endpoints;
+
+                match llm::providers::llamacpp::stream_completion(
+                    &llamacpp_url,
+                    allow_remote,
+                    &prompt,
+                    params.max_tokens,
+                    params.temperature.unwrap_or(0.7),
+                    params.top_p.unwrap_or(0.9),
+                    params.seed,
+                    config.llamacpp_dry_multiplier,
+                    config.llamacpp_dry_base,
+                    config.llamacpp_dry_allowed_length,
+                    config.llamacpp_dry_penalty_last_n,
+                    &params.stop,
+                    &cancel_token,
+                    move |token: &str| {
+                        let msg = CompletionMessage::Token {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(msg).map_err(|e| e.to_string())
+                    }
+                ) {
+                    Ok(stats) => {
+                        let stats_msg = CompletionMessage::Stats {
+                            request_id: request_id_final,
+                            prefill_ms: stats.prefill_ms,
+                            prefill_tokens: stats.prefill_tokens,
+                            decode_tokens: stats.decode_tokens,
+                            tok_per_s: stats.tok_per_s,
+                            backend: "llama.cpp".to_string(),
+                        };
+                        let _ = channel_final.send(stats_msg);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let mapped = llm::providers::map_provider_error(&e, "LlamaCpp", None);
+                        Err(mapped)
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("Spawn blocking failed: {}", e))?
+}
+
+/// Explicitly cancel the current completion generation
+#[tauri::command]
+fn cancel_completion(state: tauri::State<'_, WorkspaceState>) {
+    let mut active_cancel = lock!(state.active_completion_cancel);
+    if let Some(ref old_token) = *active_cancel {
+        old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    *active_cancel = None;
+}
+
+/// Get the active completion model ID
+#[tauri::command]
+fn get_completion_model(state: tauri::State<'_, WorkspaceState>) -> Option<String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref()?;
+    let config = LlmConfig::load(workspace);
+    config.completion_model_id
+}
+
+/// Set the active completion model ID
+#[tauri::command]
+fn set_completion_model(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+
+    if !llm::is_model_downloaded(workspace, &model_id) {
+        return Err("Model not downloaded".to_string());
+    }
+
+    let mut config = LlmConfig::load(workspace);
+    config.completion_model_id = Some(model_id);
+    config.save(workspace)
+}
+
+/// Get the active rework model ID
+#[tauri::command]
+fn get_rework_model(state: tauri::State<'_, WorkspaceState>) -> Option<String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref()?;
+    let config = LlmConfig::load(workspace);
+    config.rework_model_id
+}
+
+/// Set the active rework model ID
+#[tauri::command]
+fn set_rework_model(
+    model_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+
+    if !llm::is_model_downloaded(workspace, &model_id) {
+        return Err("Model not downloaded".to_string());
+    }
+
+    let mut config = LlmConfig::load(workspace);
+    config.rework_model_id = Some(model_id);
+    config.save(workspace)
+}
+
+/// Explicitly cancel the current rework generation
+#[tauri::command]
+fn cancel_rework(state: tauri::State<'_, WorkspaceState>) {
+    let mut active_cancel = lock!(state.active_rework_cancel);
+    if let Some(ref old_token) = *active_cancel {
+        old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    *active_cancel = None;
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct ReworkParams {
+    path: String,
+    selection: String,
+    instruction: String,
+    max_tokens: Option<usize>,
+    seed: Option<u64>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+}
+
+/// Generate rework streaming tokens via the provided channel
+#[tauri::command]
+async fn generate_rework(
+    request_id: String,
+    params: ReworkParams,
+    channel: tauri::ipc::Channel<CompletionChunk>,
+    app: tauri::AppHandle,
+) -> Result<ReworkStatsResponse, String> {
+    eprintln!("[generate_rework] Entry: request_id={} path={} instruction={}", request_id, params.path, params.instruction);
+    let state = app.state::<WorkspaceState>();
+
+    // 1. Cancel active completion and any existing rework
+    {
+        let mut active_comp = lock!(state.active_completion_cancel);
+        if let Some(ref old_token) = *active_comp {
+            old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        *active_comp = None;
+    }
+    let cancel_token = {
+        let mut active_cancel = lock!(state.active_rework_cancel);
+        if let Some(ref old_token) = *active_cancel {
+            old_token.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *active_cancel = Some(token.clone());
+        token
+    };
+
+    enum ReworkInput {
+        BuiltinPrompt(String),
+        OllamaInput { instruction: String, selection: String },
+        LlamaCppInput { instruction: String, selection: String },
+    }
+
+    // 2. Resolve workspace and model, checking privacy
+    let (workspace, _backend, allow_remote, ollama_url, ollama_model, llamacpp_url, model_id, prompt_or_input) = {
+        let path_lock = lock!(state.path);
+        let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
+        
+        let resolved = resolve_safe_path(&workspace, &params.path)?;
+        if !is_ai_allowed(&state, &workspace, &resolved) {
+            return Err("AI context is disabled for this file by privacy policy".to_string());
+        }
+
+        let config = LlmConfig::load(&workspace);
+        let backend = config.rework_backend.clone();
+        let allow_remote = config.allow_remote_endpoints;
+        let ollama_url = config.ollama_url.clone();
+        let ollama_model = config.ollama_rework_model.clone();
+        let llamacpp_url = config.llamacpp_url.clone();
+
+        match backend {
+            llm::providers::ReworkBackend::Builtin => {
+                let model_id = config.rework_model_id
+                    .or(config.active_model_id)
+                    .ok_or_else(|| "No model selected for rework".to_string())?;
+
+                let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
+                let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
+
+                let prompt = format!(
+                    "<|im_start|>system\nYou rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations.<|im_end|>\n<|im_start|>user\nInstruction: {}\n\nText:\n{}<|im_end|>\n<|im_start|>assistant\n",
+                    sanitized_instruction,
+                    sanitized_selection
+                );
+                (workspace, backend, allow_remote, ollama_url, ollama_model, llamacpp_url, Some(model_id), ReworkInput::BuiltinPrompt(prompt))
+            }
+            llm::providers::ReworkBackend::Ollama => {
+                eprintln!("[generate_rework] Ollama backend selected. url='{}', model={:?}, allow_remote={}", ollama_url, ollama_model, allow_remote);
+                let model = ollama_model.clone().ok_or_else(|| "No Ollama model selected for rework. Please select one in Settings.".to_string())?;
+                let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
+                let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
+                (workspace, backend, allow_remote, ollama_url, Some(model), llamacpp_url, None::<String>, ReworkInput::OllamaInput {
+                    instruction: sanitized_instruction,
+                    selection: sanitized_selection,
+                })
+            }
+            llm::providers::ReworkBackend::LlamaCpp => {
+                eprintln!("[generate_rework] llama.cpp backend selected. url='{}', allow_remote={}", llamacpp_url, allow_remote);
+                let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
+                let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
+                (workspace, backend, allow_remote, ollama_url, None, llamacpp_url.clone(), None::<String>, ReworkInput::LlamaCppInput {
+                    instruction: sanitized_instruction,
+                    selection: sanitized_selection,
+                })
+            }
+        }
+    };
+
+    // 3. Spawn blocking generation task
+    tauri::async_runtime::spawn_blocking(move || {
+        let max_tokens = params.max_tokens.unwrap_or(256);
+        let seed = params.seed.unwrap_or(42);
+        let temperature = params.temperature.unwrap_or(0.3);
+        let top_p = params.top_p.unwrap_or(0.9);
+        let request_id_clone = request_id.clone();
+        let channel_clone = channel.clone();
+
+        match prompt_or_input {
+            ReworkInput::BuiltinPrompt(prompt) => {
+                let model_id = model_id.ok_or_else(|| "Model ID missing".to_string())?;
+                let state = app.state::<WorkspaceState>();
+                let mut loaded_model_lock = lock!(state.loaded_model);
+                
+                let model = match &mut *loaded_model_lock {
+                    Some((cached_id, model)) if cached_id == &model_id => model,
+                    _ => {
+                        let new_model = match llm::inference::LoadedModel::load(&workspace, &model_id) {
+                            Ok(m) => m,
+                            Err(e) => return Err(format!("Failed to load model: {}", e)),
+                        };
+                        *loaded_model_lock = Some((model_id.clone(), new_model));
+                        &mut loaded_model_lock.as_mut().unwrap().1
+                    }
+                };
+
+                match model.generate_stream(
+                    &prompt,
+                    max_tokens,
+                    Some(temperature),
+                    Some(top_p),
+                    seed,
+                    &[],
+                    &[],
+                    &cancel_token,
+                    move |token: &str| {
+                        let chunk = CompletionChunk {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(chunk).map_err(|e| e.to_string())
+                    }
+                ) {
+                    Ok(stats) => Ok(ReworkStatsResponse {
+                        prefill_ms: stats.prefill_ms,
+                        prefill_tokens: stats.prefill_tokens,
+                        decode_tokens: stats.decode_tokens,
+                        tok_per_s: stats.tok_per_s,
+                        backend: "Candle".to_string(),
+                    }),
+                    Err(e) => Err(e),
+                }
+            }
+            ReworkInput::OllamaInput { instruction, selection } => {
+                let model_name = ollama_model.ok_or_else(|| "Ollama model missing".to_string())?;
+                eprintln!("[generate_rework] Spawning Ollama thread. url='{}', model='{}'", ollama_url, model_name);
+                let ollama_max_tokens = std::cmp::max(max_tokens, 1024);
+                match llm::providers::ollama::stream_rework(
+                    &ollama_url,
+                    allow_remote,
+                    &model_name,
+                    &instruction,
+                    &selection,
+                    temperature,
+                    top_p,
+                    seed,
+                    ollama_max_tokens,
+                    &cancel_token,
+                    move |token: &str| {
+                        eprintln!("[generate_rework] Ollama token received: {:?}", token);
+                        let chunk = CompletionChunk {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(chunk).map_err(|e| e.to_string())
+                    }
+                ) {
+                    Ok(stats) => {
+                        eprintln!("[generate_rework] Spawning Ollama thread finished.");
+                        Ok(ReworkStatsResponse {
+                            prefill_ms: stats.prefill_ms,
+                            prefill_tokens: stats.prefill_tokens,
+                            decode_tokens: stats.decode_tokens,
+                            tok_per_s: stats.tok_per_s,
+                            backend: "Ollama".to_string(),
+                        })
+                    }
+                    Err(e) => {
+                        let mapped = llm::providers::map_provider_error(&e, "Ollama", Some(&model_name));
+                        Err(mapped)
+                    }
+                }
+            }
+            ReworkInput::LlamaCppInput { instruction, selection } => {
+                eprintln!("[generate_rework] Spawning llama.cpp thread. url='{}'", llamacpp_url);
+                let llamacpp_max_tokens = std::cmp::max(max_tokens, 1024);
+                match llm::providers::llamacpp::stream_rework(
+                    &llamacpp_url,
+                    allow_remote,
+                    &instruction,
+                    &selection,
+                    temperature,
+                    top_p,
+                    seed,
+                    llamacpp_max_tokens,
+                    &cancel_token,
+                    move |token: &str| {
+                        eprintln!("[generate_rework] llama.cpp token received: {:?}", token);
+                        let chunk = CompletionChunk {
+                            request_id: request_id_clone.clone(),
+                            token: token.to_string(),
+                        };
+                        channel_clone.send(chunk).map_err(|e| e.to_string())
+                    }
+                ) {
+                    Ok(stats) => {
+                        eprintln!("[generate_rework] Spawning llama.cpp thread finished.");
+                        Ok(ReworkStatsResponse {
+                            prefill_ms: stats.prefill_ms,
+                            prefill_tokens: stats.prefill_tokens,
+                            decode_tokens: stats.decode_tokens,
+                            tok_per_s: stats.tok_per_s,
+                            backend: "llama.cpp".to_string(),
+                        })
+                    }
+                    Err(e) => {
+                        let mapped = llm::providers::map_provider_error(&e, "LlamaCpp", None);
+                        Err(mapped)
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("Spawn blocking failed: {}", e))?
+}
+
+/// Check if AI features are allowed for a note
+#[tauri::command]
+fn is_note_allowed(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<bool, String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let resolved = resolve_safe_path(workspace, &path)?;
+    Ok(is_ai_allowed(&state, workspace, &resolved))
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct ProviderConfig {
+    pub completion_backend: llm::providers::CompletionBackend,
+    pub rework_backend: llm::providers::ReworkBackend,
+    pub ollama_url: String,
+    pub ollama_rework_model: Option<String>,
+    pub llamacpp_url: String,
+    pub allow_remote_endpoints: bool,
+}
+
+#[tauri::command]
+fn get_provider_config(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<ProviderConfig, String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let config = LlmConfig::load(workspace);
+    Ok(ProviderConfig {
+        completion_backend: config.completion_backend,
+        rework_backend: config.rework_backend,
+        ollama_url: config.ollama_url,
+        ollama_rework_model: config.ollama_rework_model,
+        llamacpp_url: config.llamacpp_url,
+        allow_remote_endpoints: config.allow_remote_endpoints,
+    })
+}
+
+#[tauri::command]
+fn set_provider_config(
+    config: ProviderConfig,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+
+    // Validate URLs
+    llm::providers::validate_provider_url(&config.ollama_url, config.allow_remote_endpoints)
+        .map_err(|e| format!("Ollama URL error: {}", e))?;
+    llm::providers::validate_provider_url(&config.llamacpp_url, config.allow_remote_endpoints)
+        .map_err(|e| format!("llama.cpp URL error: {}", e))?;
+
+    let mut llm_config = LlmConfig::load(workspace);
+    llm_config.completion_backend = config.completion_backend;
+    llm_config.rework_backend = config.rework_backend;
+    llm_config.ollama_url = config.ollama_url;
+    llm_config.ollama_rework_model = config.ollama_rework_model;
+    llm_config.llamacpp_url = config.llamacpp_url;
+    llm_config.allow_remote_endpoints = config.allow_remote_endpoints;
+
+    llm_config.save(workspace)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn check_ollama(
+    url: String,
+    allow_remote: bool,
+) -> Result<llm::providers::ollama::OllamaStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        llm::providers::ollama::check_health(&url, allow_remote)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn list_ollama_models(
+    url: String,
+    allow_remote: bool,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        llm::providers::ollama::list_models(&url, allow_remote)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn check_llamacpp(
+    url: String,
+    allow_remote: bool,
+) -> Result<llm::providers::llamacpp::LlamaCppStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        llm::providers::llamacpp::check_health(&url, allow_remote)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Create/open the AI policy file
+#[tauri::command]
+fn open_policy_file(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<String, String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let solai_path = workspace.join(".solai");
+    
+    if !solai_path.exists() {
+        let default_content = b"# Sol AI Policy Configuration File\n\
+# Use standard gitignore-like patterns to exclude notes and folders from AI context (embeddings, completions, etc.).\n\
+# Prepend a path with '!' to whitelist/allow it even if a parent folder is excluded.\n\n\
+# Exclude sensitive folders:\n\
+# private/\n\
+# secret.md\n";
+        std::fs::write(&solai_path, default_content).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(".solai".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -707,6 +1424,17 @@ pub fn run() {
                 let mut watcher =
                     notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                         if let Ok(event) = res {
+                            // Invalidate policy cache
+                            let state = app_handle_clone.state::<WorkspaceState>();
+                            {
+                                let mut policy_lock = lock!(state.policy_engine);
+                                if let Some(ref mut engine) = *policy_lock {
+                                    for path in &event.paths {
+                                        engine.invalidate_path(path);
+                                    }
+                                }
+                            }
+
                             let mut modified_paths = Vec::new();
                             for path in event.paths {
                                 if is_ignored_path(&path, &p_clone) {
@@ -719,7 +1447,7 @@ pub fn run() {
                                 }
                             }
                             if !modified_paths.is_empty() {
-                                let _ = app_handle_clone.emit("workspace-changed", modified_paths);
+                                  let _ = app_handle_clone.emit("workspace-changed", modified_paths);
                             }
                         }
                     })
@@ -738,11 +1466,16 @@ pub fn run() {
             // Create download state for LLM model downloads
             let download_state = llm::download::new_download_state();
 
+            let policy_engine = path.as_ref().map(|p| policy::PolicyEngine::new(p.clone()));
+
             app.manage(WorkspaceState {
                 path: Mutex::new(path),
                 watcher: Mutex::new(watcher),
                 download_state,
                 loaded_model: Mutex::new(None),
+                active_completion_cancel: Mutex::new(None),
+                active_rework_cancel: Mutex::new(None),
+                policy_engine: Mutex::new(policy_engine),
             });
             Ok(())
         })
@@ -766,7 +1499,22 @@ pub fn run() {
             cancel_model_download,
             delete_model,
             generate_topic_name,
-            is_model_ready
+            is_model_ready,
+            generate_completion,
+            cancel_completion,
+            get_completion_model,
+            set_completion_model,
+            get_rework_model,
+            set_rework_model,
+            cancel_rework,
+            generate_rework,
+            is_note_allowed,
+            open_policy_file,
+            get_provider_config,
+            set_provider_config,
+            check_ollama,
+            list_ollama_models,
+            check_llamacpp
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -849,5 +1597,150 @@ mod tests {
         
         let _ = std::fs::remove_dir_all(&outside_dir);
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn test_llm_config_serde() {
+        let temp_dir = std::env::temp_dir();
+        let unique_dir = temp_dir.join(format!("sol_config_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&unique_dir).unwrap();
+        let workspace = std::fs::canonicalize(&unique_dir).unwrap();
+
+        // Test default loading (when file doesn't exist)
+        let config = LlmConfig::load(&workspace);
+        assert!(config.active_model_id.is_none());
+        assert!(config.completion_model_id.is_none());
+        assert!(config.downloaded_models.is_empty());
+
+        // Test saving and loading
+        let mut config = LlmConfig::default();
+        config.active_model_id = Some("qwen2-0.5b".to_string());
+        config.completion_model_id = Some("qwen2.5-0.5b".to_string());
+        config.downloaded_models = vec!["qwen2-0.5b".to_string(), "qwen2.5-0.5b".to_string()];
+        config.save(&workspace).unwrap();
+
+        let loaded = LlmConfig::load(&workspace);
+        assert_eq!(loaded.active_model_id, Some("qwen2-0.5b".to_string()));
+        assert_eq!(loaded.completion_model_id, Some("qwen2.5-0.5b".to_string()));
+        assert_eq!(loaded.downloaded_models, vec!["qwen2-0.5b".to_string(), "qwen2.5-0.5b".to_string()]);
+
+        // Test loading legacy config without completion_model_id
+        let legacy_json = r#"{
+            "active_model_id": "qwen2-0.5b",
+            "downloaded_models": ["qwen2-0.5b"]
+        }"#;
+        let sol_dir = workspace.join(".sol");
+        std::fs::create_dir_all(&sol_dir).unwrap();
+        std::fs::write(sol_dir.join("llm_config.json"), legacy_json).unwrap();
+
+        let loaded_legacy = LlmConfig::load(&workspace);
+        assert_eq!(loaded_legacy.active_model_id, Some("qwen2-0.5b".to_string()));
+        assert!(loaded_legacy.completion_model_id.is_none());
+        assert_eq!(loaded_legacy.downloaded_models, vec!["qwen2-0.5b".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn test_policy_engine() {
+        let temp_dir = std::env::temp_dir();
+        let unique_dir = temp_dir.join(format!("sol_policy_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&unique_dir).unwrap();
+        let workspace = std::fs::canonicalize(&unique_dir).unwrap();
+
+        // 1. Setup policy files and folders
+        let sensitive_dir = workspace.join("sensitive");
+        std::fs::create_dir_all(&sensitive_dir).unwrap();
+
+        let allowed_note = workspace.join("allowed.md");
+        let excluded_note = sensitive_dir.join("excluded.md");
+        let override_note = sensitive_dir.join("override.md");
+
+        std::fs::write(&allowed_note, "allowed text").unwrap();
+        std::fs::write(&excluded_note, "excluded text").unwrap();
+        std::fs::write(&override_note, "---\nai: true\n---\noverride text").unwrap();
+
+        // Write .solai policy: exclude "sensitive/"
+        let solai_path = workspace.join(".solai");
+        std::fs::write(&solai_path, "sensitive/\n").unwrap();
+
+        let mut engine = policy::PolicyEngine::new(workspace.clone());
+
+        // Check allowed note
+        assert!(engine.ai_allowed(&allowed_note));
+
+        // Check excluded note
+        assert!(!engine.ai_allowed(&excluded_note));
+
+        // Check override note (opts back in even though it's inside sensitive/)
+        assert!(engine.ai_allowed(&override_note));
+
+        // Test opt-out in root directory
+        let opt_out_note = workspace.join("opt_out.md");
+        std::fs::write(&opt_out_note, "---\nai: false\n---\nsome text").unwrap();
+        assert!(!engine.ai_allowed(&opt_out_note));
+
+        // 2. Test cache invalidation
+        // Change opt_out_note to allowed
+        std::fs::write(&opt_out_note, "---\nai: true\n---\nsome text").unwrap();
+        // Since it is cached, checking it now should still return false (cached)
+        assert!(!engine.ai_allowed(&opt_out_note));
+
+        // Invalidate it
+        engine.invalidate_path(&opt_out_note);
+        // Now it should retrieve the updated frontmatter and return true
+        assert!(engine.ai_allowed(&opt_out_note));
+
+        // 3. Test .solai policy file change invalidation
+        let new_allowed_note = sensitive_dir.join("new_allowed.md");
+        std::fs::write(&new_allowed_note, "new allowed text").unwrap();
+        // Checked and should be excluded because of "sensitive/"
+        assert!(!engine.ai_allowed(&new_allowed_note));
+
+        // Modify .solai to whitelist "new_allowed.md" using gitignore rules
+        std::fs::write(&solai_path, "sensitive/\n!sensitive/new_allowed.md\n").unwrap();
+        // Invalidate the .solai path
+        engine.invalidate_path(&solai_path);
+
+        // Checked again, now should be allowed
+        assert!(engine.ai_allowed(&new_allowed_note));
+
+        // 4. Test WorkspaceState helper is_ai_allowed integration (no deadlock)
+        let state = WorkspaceState {
+            path: Mutex::new(Some(workspace.clone())),
+            watcher: Mutex::new(None),
+            download_state: llm::download::new_download_state(),
+            loaded_model: Mutex::new(None),
+            active_completion_cancel: Mutex::new(None),
+            active_rework_cancel: Mutex::new(None),
+            policy_engine: Mutex::new(None),
+        };
+        assert!(is_ai_allowed(&state, &workspace, &allowed_note));
+        assert!(!is_ai_allowed(&state, &workspace, &excluded_note));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn test_provider_config_validation() {
+        use llm::providers::validate_provider_url;
+        
+        // Loopback URLs when remote is not allowed
+        assert!(validate_provider_url("http://localhost:11434", false).is_ok());
+        assert!(validate_provider_url("http://127.0.0.1:8080", false).is_ok());
+        assert!(validate_provider_url("http://[::1]:8080", false).is_ok());
+        
+        // Non-loopback URLs when remote is not allowed
+        assert!(validate_provider_url("http://192.168.1.50:11434", false).is_err());
+        assert!(validate_provider_url("http://example.com/api", false).is_err());
+        
+        // Remote URLs allowed
+        assert!(validate_provider_url("http://192.168.1.50:11434", true).is_ok());
+        assert!(validate_provider_url("https://example.com/api", true).is_ok());
+        
+        // Invalid schemes
+        assert!(validate_provider_url("ftp://localhost:21", true).is_err());
+        assert!(validate_provider_url("invalid-url", true).is_err());
     }
 }

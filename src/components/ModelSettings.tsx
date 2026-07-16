@@ -3,12 +3,117 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ModelWithStatus, DownloadProgress } from "../types";
 
-export const ModelSettings: React.FC = () => {
+export interface ProviderConfig {
+  completion_backend: "Builtin" | "LlamaCpp";
+  rework_backend: "Builtin" | "Ollama" | "LlamaCpp";
+  ollama_url: string;
+  ollama_rework_model: string | null;
+  llamacpp_url: string;
+  allow_remote_endpoints: boolean;
+  llamacpp_dry_multiplier: number;
+  llamacpp_dry_base: number;
+  llamacpp_dry_allowed_length: number;
+  llamacpp_dry_penalty_last_n: number;
+}
+
+export interface ModelSettingsProps {
+  openPolicyFile?: () => Promise<void>;
+}
+
+export const ModelSettings: React.FC<ModelSettingsProps> = ({ openPolicyFile }) => {
   const [models, setModels] = useState<ModelWithStatus[]>([]);
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const [completionModelId, setCompletionModelId] = useState<string | null>(null);
+  const [reworkModelId, setReworkModelId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, DownloadProgress>>({});
   const [error, setError] = useState<string | null>(null);
   const [downloadingModels, setDownloadingModels] = useState<Set<string>>(new Set());
+
+  // Provider states
+  const [providerConfig, setProviderConfig] = useState<ProviderConfig | null>(null);
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [ollamaStatus, setOllamaStatus] = useState<{ available: boolean; error: string | null } | null>(null);
+  const [testingOllama, setTestingOllama] = useState(false);
+  const [llamacppStatus, setLlamaCppStatus] = useState<{ available: boolean; model: string | null; error: string | null } | null>(null);
+  const [testingLlamaCpp, setTestingLlamaCpp] = useState(false);
+  const [showAdvancedLlamaCpp, setShowAdvancedLlamaCpp] = useState(false);
+
+  const fetchOllamaModels = async (url: string, allowRemote: boolean) => {
+    try {
+      const list = await invoke<string[]>("list_ollama_models", { url, allowRemote });
+      setOllamaModels(list);
+    } catch (err) {
+      console.error("Error listing Ollama models:", err);
+      setOllamaModels([]);
+    }
+  };
+
+  const checkOllamaStatus = async (url: string, allowRemote: boolean) => {
+    setTestingOllama(true);
+    try {
+      const status = await invoke<{ available: boolean; error: string | null }>("check_ollama", { url, allowRemote });
+      setOllamaStatus(status);
+    } catch (err) {
+      setOllamaStatus({ available: false, error: String(err) });
+    } finally {
+      setTestingOllama(false);
+    }
+  };
+
+  const checkLlamaCppStatus = async (url: string, allowRemote: boolean) => {
+    setTestingLlamaCpp(true);
+    try {
+      const status = await invoke<{ available: boolean; model: string | null; error: string | null }>("check_llamacpp", { url, allowRemote });
+      setLlamaCppStatus(status);
+    } catch (err) {
+      setLlamaCppStatus({ available: false, model: null, error: String(err) });
+    } finally {
+      setTestingLlamaCpp(false);
+    }
+  };
+
+  const loadProviderConfig = async () => {
+    try {
+      const config = await invoke<ProviderConfig>("get_provider_config");
+      setProviderConfig(config);
+      if (config.rework_backend === "Ollama") {
+        fetchOllamaModels(config.ollama_url, config.allow_remote_endpoints);
+        checkOllamaStatus(config.ollama_url, config.allow_remote_endpoints);
+      } else if (config.rework_backend === "LlamaCpp" || config.completion_backend === "LlamaCpp") {
+        checkLlamaCppStatus(config.llamacpp_url, config.allow_remote_endpoints);
+      }
+    } catch (err) {
+      console.error("Error loading provider config:", err);
+    }
+  };
+
+  const handleUpdateProviderConfig = async (updates: Partial<ProviderConfig>) => {
+    if (!providerConfig) return;
+    const nextConfig = { ...providerConfig, ...updates };
+    setProviderConfig(nextConfig);
+    try {
+      await invoke("set_provider_config", { config: nextConfig });
+      setError(null);
+      if (
+        updates.rework_backend === "Ollama" ||
+        (nextConfig.rework_backend === "Ollama" &&
+          (updates.ollama_url !== undefined || updates.allow_remote_endpoints !== undefined))
+      ) {
+        fetchOllamaModels(nextConfig.ollama_url, nextConfig.allow_remote_endpoints);
+        checkOllamaStatus(nextConfig.ollama_url, nextConfig.allow_remote_endpoints);
+      } else if (
+        updates.rework_backend === "LlamaCpp" ||
+        updates.completion_backend === "LlamaCpp" ||
+        ((nextConfig.rework_backend === "LlamaCpp" || nextConfig.completion_backend === "LlamaCpp") &&
+          (updates.llamacpp_url !== undefined || updates.allow_remote_endpoints !== undefined))
+      ) {
+        checkLlamaCppStatus(nextConfig.llamacpp_url, nextConfig.allow_remote_endpoints);
+      }
+    } catch (err) {
+      console.error("Error saving provider config:", err);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const loadModels = async () => {
     try {
@@ -19,6 +124,12 @@ export const ModelSettings: React.FC = () => {
       const active = await invoke<string | null>("get_active_model");
       console.log("Active model:", active);
       setActiveModelId(active);
+      const completion = await invoke<string | null>("get_completion_model");
+      console.log("Completion model:", completion);
+      setCompletionModelId(completion);
+      const rework = await invoke<string | null>("get_rework_model");
+      console.log("Rework model:", rework);
+      setReworkModelId(rework);
     } catch (err) {
       console.error("Error loading models:", err);
       setError(err instanceof Error ? err.message : String(err));
@@ -27,6 +138,7 @@ export const ModelSettings: React.FC = () => {
 
   useEffect(() => {
     loadModels();
+    loadProviderConfig();
 
     // Listen for download progress events
     const unlisten = listen<DownloadProgress>("model-download-progress", (event) => {
@@ -133,6 +245,26 @@ export const ModelSettings: React.FC = () => {
     }
   };
 
+  const handleSetCompletion = async (modelId: string) => {
+    try {
+      await invoke("set_completion_model", { modelId });
+      setCompletionModelId(modelId);
+      loadModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleSetRework = async (modelId: string) => {
+    try {
+      await invoke("set_rework_model", { modelId });
+      setReworkModelId(modelId);
+      loadModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const formatSize = (bytes: number) => {
     if (bytes >= 1_000_000_000) {
       return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
@@ -163,8 +295,36 @@ export const ModelSettings: React.FC = () => {
 
   return (
     <div className="model-settings">
-      <h3>AI Models</h3>
-      <p className="settings-description">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+        <h3 style={{ margin: 0 }}>AI Models</h3>
+        {openPolicyFile && (
+          <button
+            type="button"
+            className="btn-header-action"
+            onClick={openPolicyFile}
+            style={{
+              padding: "6px 12px",
+              fontSize: "12px",
+              borderRadius: "6px",
+              border: "1px solid var(--border)",
+              background: "var(--bg-light)",
+              color: "var(--text-normal)",
+              cursor: "pointer",
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px"
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            Manage AI Policy
+          </button>
+        )}
+      </div>
+      <p className="settings-description" style={{ marginTop: 0 }}>
         Download and manage AI models for topic discovery. Models are stored locally.
       </p>
 
@@ -182,24 +342,25 @@ export const ModelSettings: React.FC = () => {
           console.log("Rendering model:", model.id, "status:", status, "raw model:", model);
           const progress = downloadProgress[model.id];
           const isActive = activeModelId === model.id;
+          const isCompletion = completionModelId === model.id;
+          const isRework = reworkModelId === model.id;
+          const hasAnyRole = isActive || isCompletion || isRework;
 
           return (
             <div
               key={model.id}
-              className={`model-card ${isActive ? "active" : ""} ${(status === "downloaded" || status === "active") ? "clickable" : ""}`}
-              onClick={() => {
-                if ((status === "downloaded" || status === "active") && !isActive) {
-                  handleSetActive(model.id);
-                }
-              }}
-              style={{ cursor: (status === "downloaded" || status === "active") && !isActive ? "pointer" : "default" }}
+              className={`model-card ${hasAnyRole ? "active" : ""}`}
             >
               <div className="model-header">
                 <div className="model-info">
                   <span className="model-name">{model.name}</span>
                   <span className="model-size">{formatSize(model.size_bytes)}</span>
                 </div>
-                {isActive && <span className="active-badge">Active</span>}
+                <div style={{ display: "flex", gap: "6px" }}>
+                  {isActive && <span className="active-badge">General</span>}
+                  {isCompletion && <span className="active-badge" style={{ background: "var(--accent-glow)", color: "var(--accent)" }}>Completion</span>}
+                  {isRework && <span className="active-badge" style={{ background: "var(--accent-glow)", color: "var(--accent)" }}>Rework</span>}
+                </div>
               </div>
 
               <p className="model-description">{model.description}</p>
@@ -259,23 +420,485 @@ export const ModelSettings: React.FC = () => {
                   </>
                 )}
 
-                {(status === "downloaded" || status === "active") && (
-                  <>
-                    {!isActive && (
-                      <button type="button" onClick={() => handleSetActive(model.id)} className="btn-activate">
-                        Use This Model
-                      </button>
-                    )}
-                    <button type="button" onClick={() => handleDelete(model.id)} className="btn-delete">
-                      Delete
-                    </button>
-                  </>
+                {(status === "downloaded" || status === "active" || hasAnyRole) && (
+                  <button type="button" onClick={() => handleDelete(model.id)} className="btn-delete">
+                    Delete
+                  </button>
                 )}
               </div>
+
+              {(status === "downloaded" || status === "active" || hasAnyRole) && (
+                <div className="model-roles" style={{ display: "flex", gap: "16px", marginTop: "12px", borderTop: "1px solid var(--border)", paddingTop: "12px" }} onClick={(e) => e.stopPropagation()}>
+                  <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)", marginRight: "auto" }}>Assign Roles:</span>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", cursor: "pointer", color: isActive ? "var(--accent)" : "var(--text-muted)" }}>
+                    <input
+                      type="radio"
+                      name={`general-model-${model.id}`}
+                      checked={isActive}
+                      onChange={() => handleSetActive(model.id)}
+                      style={{ accentColor: "var(--accent)" }}
+                    />
+                    General
+                  </label>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", cursor: "pointer", color: isCompletion ? "var(--accent)" : "var(--text-muted)" }}>
+                    <input
+                      type="radio"
+                      name={`completion-model-${model.id}`}
+                      checked={isCompletion}
+                      onChange={() => handleSetCompletion(model.id)}
+                      style={{ accentColor: "var(--accent)" }}
+                    />
+                    Completion
+                  </label>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", cursor: "pointer", color: isRework ? "var(--accent)" : "var(--text-muted)" }}>
+                    <input
+                      type="radio"
+                      name={`rework-model-${model.id}`}
+                      checked={isRework}
+                      onChange={() => handleSetRework(model.id)}
+                      style={{ accentColor: "var(--accent)" }}
+                    />
+                    Rework
+                  </label>
+                </div>
+              )}
             </div>
           );
         })}
       </div>
+
+      {providerConfig && (
+        <div className="provider-settings" style={{ marginTop: "24px", borderTop: "1px solid var(--border)", paddingTop: "20px" }}>
+          <h4 style={{ margin: "0 0 4px 0", fontSize: "15px" }}>Inference Providers</h4>
+          <p className="settings-description" style={{ marginTop: 0, marginBottom: "16px" }}>
+            Configure external backends for completion and text rework.
+          </p>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+            {/* Completion Backend Selector */}
+            <div className="settings-control-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="settings-control-label">
+                <span style={{ fontWeight: 600, fontSize: "13px" }}>Completion Backend</span>
+                <span className="settings-control-desc" style={{ fontSize: "11px", color: "var(--text-muted)", display: "block" }}>
+                  Backend engine for autocomplete suggestions
+                </span>
+              </div>
+              <div className="segmented-control" style={{ display: "flex", gap: "4px" }}>
+                <button
+                  type="button"
+                  className={`segment-btn ${providerConfig.completion_backend === "Builtin" ? "active" : ""}`}
+                  onClick={() => handleUpdateProviderConfig({ completion_backend: "Builtin" })}
+                  style={{ padding: "4px 10px", fontSize: "12px", cursor: "pointer" }}
+                >
+                  Built-in (Candle)
+                </button>
+                <button
+                  type="button"
+                  className={`segment-btn ${providerConfig.completion_backend === "LlamaCpp" ? "active" : ""}`}
+                  onClick={() => handleUpdateProviderConfig({ completion_backend: "LlamaCpp" })}
+                  style={{ padding: "4px 10px", fontSize: "12px", cursor: "pointer" }}
+                >
+                  llama.cpp
+                </button>
+              </div>
+            </div>
+
+            {/* Rework Backend Selector */}
+            <div className="settings-control-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="settings-control-label">
+                <span style={{ fontWeight: 600, fontSize: "13px" }}>Rework Backend</span>
+                <span className="settings-control-desc" style={{ fontSize: "11px", color: "var(--text-muted)", display: "block" }}>
+                  Backend engine for rewriting text selections
+                </span>
+              </div>
+              <div className="segmented-control" style={{ display: "flex", gap: "4px" }}>
+                <button
+                  type="button"
+                  className={`segment-btn ${providerConfig.rework_backend === "Builtin" ? "active" : ""}`}
+                  onClick={() => handleUpdateProviderConfig({ rework_backend: "Builtin" })}
+                  style={{ padding: "4px 10px", fontSize: "12px", cursor: "pointer" }}
+                >
+                  Built-in (Candle)
+                </button>
+                <button
+                  type="button"
+                  className={`segment-btn ${providerConfig.rework_backend === "Ollama" ? "active" : ""}`}
+                  onClick={() => handleUpdateProviderConfig({ rework_backend: "Ollama" })}
+                  style={{ padding: "4px 10px", fontSize: "12px", cursor: "pointer" }}
+                >
+                  Ollama
+                </button>
+                <button
+                  type="button"
+                  className={`segment-btn ${providerConfig.rework_backend === "LlamaCpp" ? "active" : ""}`}
+                  onClick={() => handleUpdateProviderConfig({ rework_backend: "LlamaCpp" })}
+                  style={{ padding: "4px 10px", fontSize: "12px", cursor: "pointer" }}
+                >
+                  llama.cpp
+                </button>
+              </div>
+            </div>
+
+            {/* Remote endpoints toggle */}
+            <div className="settings-control-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="settings-control-label">
+                <span style={{ fontWeight: 600, fontSize: "13px" }}>Allow Remote Endpoints</span>
+                <span className="settings-control-desc" style={{ fontSize: "11px", color: "var(--text-muted)", display: "block" }}>
+                  Allow connections to non-loopback IPs (e.g. homelab servers)
+                </span>
+              </div>
+              <label className="settings-switch">
+                <input
+                  type="checkbox"
+                  checked={providerConfig.allow_remote_endpoints}
+                  onChange={(e) => handleUpdateProviderConfig({ allow_remote_endpoints: e.target.checked })}
+                />
+                <span className="switch-slider" />
+              </label>
+            </div>
+
+            {/* Ollama Details Panel */}
+            {providerConfig.rework_backend === "Ollama" && (
+              <div style={{
+                background: "var(--bg-light)",
+                borderRadius: "8px",
+                padding: "12px 16px",
+                border: "1px solid var(--border)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "12px",
+                marginTop: "4px"
+              }}>
+                <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                      Ollama API URL
+                    </label>
+                    <input
+                      type="text"
+                      className="settings-input"
+                      value={providerConfig.ollama_url}
+                      onChange={(e) => handleUpdateProviderConfig({ ollama_url: e.target.value })}
+                      style={{
+                        width: "100%",
+                        padding: "6px 10px",
+                        fontSize: "12px",
+                        borderRadius: "6px",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        color: "var(--text-normal)"
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                      Status
+                    </label>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", height: "30px" }}>
+                      {ollamaStatus ? (
+                        <>
+                          <span style={{
+                            width: "8px",
+                            height: "8px",
+                            borderRadius: "50%",
+                            background: ollamaStatus.available ? "#22c55e" : "#ef4444",
+                            display: "inline-block"
+                          }} />
+                          <span style={{ fontSize: "12px", color: ollamaStatus.available ? "#22c55e" : "#ef4444" }}>
+                            {ollamaStatus.available ? "Online" : "Offline"}
+                          </span>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Unknown</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ alignSelf: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        fetchOllamaModels(providerConfig.ollama_url, providerConfig.allow_remote_endpoints);
+                        checkOllamaStatus(providerConfig.ollama_url, providerConfig.allow_remote_endpoints);
+                      }}
+                      disabled={testingOllama}
+                      style={{
+                        padding: "6px 12px",
+                        fontSize: "12px",
+                        borderRadius: "6px",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        color: "var(--text-normal)",
+                        cursor: "pointer"
+                      }}
+                    >
+                      {testingOllama ? "Testing..." : "Test & Refresh"}
+                    </button>
+                  </div>
+                </div>
+
+                {ollamaStatus && ollamaStatus.error && (
+                  <div style={{ fontSize: "11px", color: "#ef4444", background: "rgba(239, 68, 68, 0.08)", padding: "8px 12px", borderRadius: "6px" }}>
+                    {ollamaStatus.error}
+                  </div>
+                )}
+
+                <div>
+                  <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                    Ollama Rework Model
+                  </label>
+                  <select
+                    value={providerConfig.ollama_rework_model || ""}
+                    onChange={(e) => handleUpdateProviderConfig({ ollama_rework_model: e.target.value || null })}
+                    style={{
+                      width: "100%",
+                      padding: "6px 10px",
+                      fontSize: "12px",
+                      borderRadius: "6px",
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text-normal)"
+                    }}
+                  >
+                    <option value="">-- Select a model --</option>
+                    {ollamaModels.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* llama.cpp Details Panel */}
+            {providerConfig.rework_backend === "LlamaCpp" && (
+              <div style={{
+                background: "var(--bg-light)",
+                borderRadius: "8px",
+                padding: "12px 16px",
+                border: "1px solid var(--border)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "12px",
+                marginTop: "4px"
+              }}>
+                <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                      llama.cpp API URL
+                    </label>
+                    <input
+                      type="text"
+                      className="settings-input"
+                      value={providerConfig.llamacpp_url}
+                      onChange={(e) => handleUpdateProviderConfig({ llamacpp_url: e.target.value })}
+                      style={{
+                        width: "100%",
+                        padding: "6px 10px",
+                        fontSize: "12px",
+                        borderRadius: "6px",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        color: "var(--text-normal)"
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                      Status
+                    </label>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", height: "30px" }}>
+                      {llamacppStatus ? (
+                        <>
+                          <span style={{
+                            width: "8px",
+                            height: "8px",
+                            borderRadius: "50%",
+                            background: llamacppStatus.available ? "#22c55e" : "#ef4444",
+                            display: "inline-block"
+                          }} />
+                          <span style={{ fontSize: "12px", color: llamacppStatus.available ? "#22c55e" : "#ef4444" }}>
+                            {llamacppStatus.available ? "Online" : "Offline"}
+                          </span>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Unknown</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ alignSelf: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        checkLlamaCppStatus(providerConfig.llamacpp_url, providerConfig.allow_remote_endpoints);
+                      }}
+                      disabled={testingLlamaCpp}
+                      style={{
+                        padding: "6px 12px",
+                        fontSize: "12px",
+                        borderRadius: "6px",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        color: "var(--text-normal)",
+                        cursor: "pointer"
+                      }}
+                    >
+                      {testingLlamaCpp ? "Testing..." : "Test & Refresh"}
+                    </button>
+                  </div>
+                </div>
+
+                {llamacppStatus && llamacppStatus.error && (
+                  <div style={{ fontSize: "11px", color: "#ef4444", background: "rgba(239, 68, 68, 0.08)", padding: "8px 12px", borderRadius: "6px" }}>
+                    {llamacppStatus.error}
+                  </div>
+                )}
+
+                {llamacppStatus && llamacppStatus.available && llamacppStatus.model && (
+                  <div>
+                    <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                      Loaded Model (Read-Only)
+                    </label>
+                    <div style={{
+                      padding: "6px 10px",
+                      fontSize: "12px",
+                      borderRadius: "6px",
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-dark)",
+                      color: "var(--text-muted)"
+                    }}>
+                      {llamacppStatus.model}
+                    </div>
+                  </div>
+                )}
+
+                {/* Advanced llama.cpp Settings Collapsible */}
+                <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px", marginTop: "4px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedLlamaCpp(!showAdvancedLlamaCpp)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "var(--text-muted)",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: 0
+                    }}
+                  >
+                    <span>{showAdvancedLlamaCpp ? "▼" : "▶"} Advanced llama.cpp Settings (DRY Sampler)</span>
+                  </button>
+
+                  {showAdvancedLlamaCpp && (
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: "12px",
+                      marginTop: "12px",
+                      padding: "8px 12px",
+                      background: "var(--bg-dark)",
+                      borderRadius: "6px",
+                      border: "1px solid var(--border)"
+                    }}>
+                      <div title="DRY penalty multiplier. Functionally equivalent to Candle n-gram ban. Tweak to avoid prompt parroting.">
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                          DRY Multiplier (default: 0.8)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.05"
+                          className="settings-input"
+                          value={providerConfig.llamacpp_dry_multiplier}
+                          onChange={(e) => handleUpdateProviderConfig({ llamacpp_dry_multiplier: parseFloat(e.target.value) || 0.0 })}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "6px",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg)",
+                            color: "var(--text-normal)"
+                          }}
+                        />
+                      </div>
+
+                      <div title="DRY penalty base value. Higher values apply stronger decay to repeated tokens.">
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                          DRY Base (default: 1.75)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.05"
+                          className="settings-input"
+                          value={providerConfig.llamacpp_dry_base}
+                          onChange={(e) => handleUpdateProviderConfig({ llamacpp_dry_base: parseFloat(e.target.value) || 0.0 })}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "6px",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg)",
+                            color: "var(--text-normal)"
+                          }}
+                        />
+                      </div>
+
+                      <div title="DRY allowed length: repeats shorter than this length are not penalized.">
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                          DRY Allowed Length (default: 2)
+                        </label>
+                        <input
+                          type="number"
+                          className="settings-input"
+                          value={providerConfig.llamacpp_dry_allowed_length}
+                          onChange={(e) => handleUpdateProviderConfig({ llamacpp_dry_allowed_length: parseInt(e.target.value, 10) || 0 })}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "6px",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg)",
+                            color: "var(--text-normal)"
+                          }}
+                        />
+                      </div>
+
+                      <div title="DRY penalty context length. -1 checks the entire generation history.">
+                        <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", marginBottom: "4px" }}>
+                          DRY Penalty Last N (default: -1)
+                        </label>
+                        <input
+                          type="number"
+                          className="settings-input"
+                          value={providerConfig.llamacpp_dry_penalty_last_n}
+                          onChange={(e) => handleUpdateProviderConfig({ llamacpp_dry_penalty_last_n: parseInt(e.target.value, 10) })}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "6px",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg)",
+                            color: "var(--text-normal)"
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

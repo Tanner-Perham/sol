@@ -2166,3 +2166,14 @@ body,
 .btn-conflict-action.cancel:hover {
   color: var(--text-primary);
 }
+
+/* Rework selection highlight */
+.cm-rework-source {
+  background-color: rgba(207, 177, 140, 0.25) !important;
+  border-bottom: 2px solid var(--accent) !important;
+}
+
+/* AI Context highlight */
+.cm-ai-context {
+  background-color: color-mix(in srgb, var(--accent) 12%, transparent) !important;
+}
