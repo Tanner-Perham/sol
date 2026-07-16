@@ -17,7 +17,7 @@ import { computeWordCount, findHeaderLine, threeWayMerge, computeSimpleLineDiff 
 import { Sidebar, VisibleItem } from "./components/Sidebar";
 import { SettingsModal, SettingsTabType } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
-import { EditorPaneComponent, pruneEditorState } from "./components/EditorPane/EditorPane";
+import { EditorPaneComponent, pruneEditorState, renameEditorState, saveEditorState } from "./components/EditorPane/EditorPane";
 import { clearSuggestion } from "./components/EditorPane/ghostTextExtension";
 
 function App() {
@@ -639,6 +639,211 @@ function App() {
       const nextState = paneStatesRef.current.get(nextActivePaneId) || { isDirty: false, wordCount: 0 };
       setIsDirty(nextState.isDirty);
       setWordCount(nextState.wordCount);
+    }
+  };
+
+  // Rename a path inside layout node and migrate states
+  const renamePathInLayout = (node: PaneNode, oldPath: string, newPath: string, isDir: boolean): PaneNode => {
+    const mapPath = (p: string) => {
+      if (isDir) {
+        if (p === oldPath) return newPath;
+        if (p.startsWith(oldPath + "/")) {
+          return newPath + p.slice(oldPath.length);
+        }
+      } else {
+        if (p === oldPath) return newPath;
+      }
+      return p;
+    };
+
+    if (node.type === "leaf") {
+      const newTabs = node.tabs.map(mapPath);
+      const nextActive = node.activeFile ? mapPath(node.activeFile) : null;
+      
+      node.tabs.forEach(t => {
+        const mapped = mapPath(t);
+        if (mapped !== t) {
+          renameEditorState(node.id, t, mapped);
+          
+          if (fileMtimesRef.current.has(t)) {
+            fileMtimesRef.current.set(mapped, fileMtimesRef.current.get(t)!);
+            fileMtimesRef.current.delete(t);
+          }
+          if (fileBasesRef.current.has(t)) {
+            fileBasesRef.current.set(mapped, fileBasesRef.current.get(t)!);
+            fileBasesRef.current.delete(t);
+          }
+        }
+      });
+
+      return {
+        ...node,
+        tabs: newTabs,
+        activeFile: nextActive
+      };
+    }
+
+    return {
+      ...node,
+      children: node.children.map(c => renamePathInLayout(c, oldPath, newPath, isDir))
+    };
+  };
+
+  const deleteItem = async (itemPath: string, isDir: boolean) => {
+    const baseName = itemPath.split(/[/\\]/).pop() || itemPath;
+    if (!window.confirm(`Are you sure you want to delete "${baseName}"?${isDir ? " This will delete all contents inside this directory." : ""}`)) {
+      return;
+    }
+
+    try {
+      await invoke("delete_item", { path: itemPath });
+
+      const shouldClose = (tabPath: string) => {
+        if (isDir) {
+          return tabPath === itemPath || tabPath.startsWith(itemPath + "/");
+        } else {
+          return tabPath === itemPath;
+        }
+      };
+
+      const closeTabsForDeleted = (node: PaneNode): PaneNode => {
+        if (node.type === "leaf") {
+          const newTabs = node.tabs.filter(t => !shouldClose(t));
+          let nextActive = node.activeFile;
+          if (node.activeFile && shouldClose(node.activeFile)) {
+            nextActive = newTabs.length > 0 ? newTabs[0] : null;
+            pruneEditorState(node.id, node.activeFile);
+          }
+          return {
+            ...node,
+            tabs: newTabs,
+            activeFile: nextActive
+          };
+        }
+        return {
+          ...node,
+          children: node.children.map(closeTabsForDeleted)
+        };
+      };
+
+      setLayout(prevLayout => closeTabsForDeleted(prevLayout));
+
+      const tree = await invoke<FileNode[]>("get_file_tree");
+      setFileTree(tree);
+    } catch (err) {
+      console.error("Failed to delete item", err);
+    }
+  };
+
+  const renameItem = async (oldPath: string, newName: string, isDir: boolean, isBlur: boolean) => {
+    const parts = oldPath.split("/");
+    
+    // Auto-append .md if renaming a file and they didn't specify an extension
+    let finalNewName = newName;
+    if (!isDir) {
+      const hasExtension = (pathStr: string): boolean => {
+        const dotIndex = pathStr.lastIndexOf('.');
+        return dotIndex > 0 && dotIndex < pathStr.length - 1;
+      };
+      finalNewName = hasExtension(newName) ? newName : `${newName}.md`;
+    }
+
+    parts[parts.length - 1] = finalNewName;
+    const newPath = parts.join("/");
+
+    if (newPath === oldPath) return;
+
+    // 1. Force save all active editor views to the cache to capture current scroll/selection
+    const leafIds = getLeafPaneIds(layout);
+    leafIds.forEach(paneId => {
+      const leaf = findLeafNode(layout, paneId);
+      const view = editorViewsRef.current.get(paneId);
+      if (leaf && leaf.activeFile && view) {
+        saveEditorState(paneId, leaf.activeFile, view);
+      }
+    });
+
+    // 2. Save any dirty files inside oldPath before renaming on disk
+    const shouldSave = (p: string) => {
+      if (isDir) {
+        return p === oldPath || p.startsWith(oldPath + "/");
+      } else {
+        return p === oldPath;
+      }
+    };
+
+    for (const paneId of leafIds) {
+      const leaf = findLeafNode(layout, paneId);
+      if (leaf && leaf.activeFile && shouldSave(leaf.activeFile)) {
+        const view = editorViewsRef.current.get(paneId);
+        const paneState = paneStatesRef.current.get(paneId);
+        if (paneState?.isDirty && view) {
+          const content = view.state.doc.toString();
+          const timeout = saveTimeoutsRef.current.get(leaf.activeFile);
+          if (timeout) {
+            clearTimeout(timeout);
+            saveTimeoutsRef.current.delete(leaf.activeFile);
+          }
+          try {
+            await writeMarkdownFileWithConflictCheck(leaf.activeFile, content);
+          } catch (err) {
+            console.error("Failed to auto-save file on rename", err);
+          }
+        }
+      }
+    }
+
+    try {
+      await invoke("rename_item", { oldPath, newPath });
+
+      // 3. Update expanded paths for folder renames
+      if (isDir) {
+        setExpandedPaths(prev => {
+          const next = new Set<string>();
+          prev.forEach(p => {
+            if (p === oldPath) {
+              next.add(newPath);
+            } else if (p.startsWith(oldPath + "/")) {
+              next.add(newPath + p.slice(oldPath.length));
+            } else {
+              next.add(p);
+            }
+          });
+          return next;
+        });
+      }
+
+      // 4. Migrate active save timeouts to the new path
+      const mapPath = (p: string) => {
+        if (isDir) {
+          if (p === oldPath) return newPath;
+          if (p.startsWith(oldPath + "/")) {
+            return newPath + p.slice(oldPath.length);
+          }
+        } else {
+          if (p === oldPath) return newPath;
+        }
+        return p;
+      };
+
+      saveTimeoutsRef.current.forEach((timeout, p) => {
+        const mapped = mapPath(p);
+        if (mapped !== p) {
+          saveTimeoutsRef.current.set(mapped, timeout);
+          saveTimeoutsRef.current.delete(p);
+        }
+      });
+
+      // 5. Update layout and migrate editor/selection caches
+      setLayout(prevLayout => renamePathInLayout(prevLayout, oldPath, newPath, isDir));
+
+      const tree = await invoke<FileNode[]>("get_file_tree");
+      setFileTree(tree);
+    } catch (err) {
+      console.error("Failed to rename item", err);
+      if (!isBlur) {
+        alert(`Rename failed: ${err}`);
+      }
     }
   };
 
@@ -1775,6 +1980,8 @@ function App() {
           activeFile={activeFile}
           handleNewNodeSubmit={handleNewNodeSubmit}
           inputFocusedRef={inputFocusedRef}
+          deleteItem={deleteItem}
+          renameItem={renameItem}
         />
 
         <main className="app-main">

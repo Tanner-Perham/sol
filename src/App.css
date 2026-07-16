@@ -599,7 +599,30 @@ body,
 }
 
 .cm-gutters {
-  display: none !important;
+  background-color: var(--bg-dark) !important;
+  color: var(--text-muted) !important;
+  border-right: none !important;
+  user-select: none;
+  min-width: 32px;
+}
+
+.cm-gutter {
+  background-color: var(--bg-dark) !important;
+}
+
+.cm-gutterElement {
+  padding: 0 8px 0 12px !important;
+  font-family: var(--editor-font-family, var(--font-mono)) !important;
+  font-size: 13px !important;
+  color: var(--text-muted) !important;
+  opacity: 0.4;
+}
+
+.cm-activeLineGutter {
+  background-color: transparent !important;
+  color: var(--accent) !important;
+  opacity: 0.9;
+  font-weight: bold;
 }
 
 .cm-activeLine {
@@ -1283,6 +1306,37 @@ body,
 /* Fix Cursor Height on Wrapped Lines */
 .cm-cursor {
   max-height: 1.25em !important;
+}
+
+/* Sidebar Relative Line Numbers */
+.sidebar-relative-number {
+  min-width: 18px;
+  margin-right: 8px;
+  text-align: right;
+  color: var(--text-muted);
+  opacity: 0.35;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.file-tree-row.active .sidebar-relative-number,
+.file-tree-row:hover .sidebar-relative-number {
+  opacity: 0.7;
+}
+
+.file-tree-row-content {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  overflow: hidden;
+}
+
+.rename-node-form {
+  display: flex;
+  align-items: center;
+  width: 100%;
 }
 
 /* Settings Modal Styles */

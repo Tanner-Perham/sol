@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { EditorState, Compartment, Transaction, Prec } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, historyKeymap, history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { autocompletion } from "@codemirror/autocomplete";
@@ -54,6 +54,52 @@ export function clearAllEditorStates() {
   editorStates.clear();
   fileEditorStates.clear();
 }
+
+export function saveEditorState(paneId: string, file: string, view: EditorView) {
+  const cacheKey = `${paneId}:${file}`;
+  const selection = view.state.selection;
+  const scrollTop = view.scrollDOM ? view.scrollDOM.scrollTop : 0;
+  const scrollLeft = view.scrollDOM ? view.scrollDOM.scrollLeft : 0;
+  editorStates.set(cacheKey, { selection, scrollTop, scrollLeft });
+  fileEditorStates.set(cacheKey, view.state);
+}
+
+export function renameEditorState(paneId: string, oldFile: string, newFile: string) {
+  const oldKey = `${paneId}:${oldFile}`;
+  const newKey = `${paneId}:${newFile}`;
+
+  const state = editorStates.get(oldKey);
+  if (state) {
+    editorStates.set(newKey, state);
+    editorStates.delete(oldKey);
+  }
+
+  const edState = fileEditorStates.get(oldKey);
+  if (edState) {
+    fileEditorStates.set(newKey, edState);
+    fileEditorStates.delete(oldKey);
+  }
+}
+
+const toggleFormatting = (view: EditorView, prefix: string, suffix: string): boolean => {
+  const selection = view.state.selection;
+  const mainRange = selection.main;
+  if (mainRange.empty) {
+    const insertText = prefix + suffix;
+    view.dispatch({
+      changes: { from: mainRange.from, insert: insertText },
+      selection: { anchor: mainRange.from + prefix.length }
+    });
+  } else {
+    const selectedText = view.state.doc.sliceString(mainRange.from, mainRange.to);
+    view.dispatch({
+      changes: { from: mainRange.from, to: mainRange.to, insert: prefix + selectedText + suffix },
+      selection: { anchor: mainRange.from + prefix.length, head: mainRange.from + prefix.length + selectedText.length }
+    });
+  }
+  return true;
+};
+
 
 export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   paneId,
@@ -157,6 +203,37 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
   const buildExtensions = useCallback(() => {
     return [
+      lineNumbers({
+        formatNumber: (lineNo, state) => {
+          const cursorLine = state.doc.lineAt(state.selection.main.head).number;
+          const diff = Math.abs(lineNo - cursorLine);
+          return diff.toString();
+        }
+      }),
+      Prec.highest(
+        keymap.of([
+          {
+            key: "Mod-b",
+            run: (view) => toggleFormatting(view, "**", "**")
+          },
+          {
+            key: "Mod-i",
+            run: (view) => toggleFormatting(view, "*", "*")
+          },
+          {
+            key: "Mod-u",
+            run: (view) => toggleFormatting(view, "<u>", "</u>")
+          },
+          {
+            key: "Mod-Shift-s",
+            run: (view) => toggleFormatting(view, "~~", "~~")
+          },
+          {
+            key: "Mod-Shift-x",
+            run: (view) => toggleFormatting(view, "~~", "~~")
+          }
+        ])
+      ),
       history(),
       EditorView.inputHandler.of((view, from, to, text) => {
         const cm = getCM(view);
@@ -279,7 +356,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
     let state = fileEditorStates.get(cacheKey);
 
-    if (!state) {
+    if (!state || state.field(activeFileField) !== activeFile) {
       const savedState = editorStates.get(cacheKey);
       let selection = undefined;
       if (savedState && savedState.selection) {
@@ -496,11 +573,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
     return () => {
       if (loadedFile && view) {
-        const selection = view.state.selection;
-        const scrollTop = view.scrollDOM ? view.scrollDOM.scrollTop : 0;
-        const scrollLeft = view.scrollDOM ? view.scrollDOM.scrollLeft : 0;
-        editorStates.set(cacheKey, { selection, scrollTop, scrollLeft });
-        fileEditorStates.set(cacheKey, view.state);
+        saveEditorState(paneId, loadedFile, view);
       }
 
       if (view) {

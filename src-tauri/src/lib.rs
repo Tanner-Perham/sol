@@ -386,6 +386,41 @@ fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Re
     fs::create_dir_all(&full_path).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn delete_item(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let resolved = resolve_safe_path(workspace, &path)?;
+    if !resolved.exists() {
+        return Err("Item does not exist".to_string());
+    }
+    if resolved.is_dir() {
+        fs::remove_dir_all(&resolved).map_err(|e| e.to_string())?;
+    } else {
+        fs::remove_file(&resolved).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_item(old_path: String, new_path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let resolved_old = resolve_safe_path(workspace, &old_path)?;
+    let resolved_new = resolve_safe_path(workspace, &new_path)?;
+    if !resolved_old.exists() {
+        return Err("Source item does not exist".to_string());
+    }
+    if resolved_new.exists() {
+        return Err("Target item already exists".to_string());
+    }
+    if let Some(parent) = resolved_new.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::rename(&resolved_old, &resolved_new).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 struct ChangeWorkspaceResult {
     workspace_path: String,
@@ -1497,6 +1532,8 @@ pub fn run() {
             create_markdown_file,
             get_file_tree,
             create_directory,
+            delete_item,
+            rename_item,
             change_workspace,
             read_settings,
             write_settings,
