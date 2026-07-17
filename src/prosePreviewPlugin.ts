@@ -347,6 +347,15 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           }
         }
 
+        // Check if cursor character position intersects node range (for inline elements)
+        let isInlineRaw = false;
+        for (const range of state.selection.ranges) {
+          if (range.from <= to && range.to >= from) {
+            isInlineRaw = true;
+            break;
+          }
+        }
+
         // 1. Headings
         if (name.startsWith("ATXHeading") || name.startsWith("SetextHeading")) {
           let level = 1;
@@ -494,7 +503,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (firstChild && firstChild.name === "EmphasisMark") {
             markerLen = firstChild.to - firstChild.from;
           }
-          if (!isRaw) {
+          if (!isInlineRaw) {
             collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
             collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
           }
@@ -508,7 +517,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (firstChild && firstChild.name === "EmphasisMark") {
             markerLen = firstChild.to - firstChild.from;
           }
-          if (!isRaw) {
+          if (!isInlineRaw) {
             collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
             collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
           }
@@ -522,7 +531,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (firstChild && firstChild.name === "CodeMark") {
             markerLen = firstChild.to - firstChild.from;
           }
-          if (!isRaw) {
+          if (!isInlineRaw) {
             collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
             collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
           }
@@ -541,7 +550,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (firstChild && firstChild.name === "StrikethroughMark") {
             markerLen = firstChild.to - firstChild.from;
           }
-          if (!isRaw) {
+          if (!isInlineRaw) {
             collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
             collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
           }
@@ -551,6 +560,44 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
             dec: Decoration.mark({ class: "cm-prose-strike" }),
             category: 3
           });
+        }
+
+        // 9.5 Inline Underline (HTMLTag <u>)
+        else if (name === "HTMLTag") {
+          const tagText = state.doc.sliceString(from, to);
+          if (/^<\s*u\s*>$/i.test(tagText)) {
+            // Find matching </u>
+            let closeNode = null;
+            let sibling = node.nextSibling;
+            while (sibling) {
+              if (sibling.name === "HTMLTag" && /^<\s*\/\s*u\s*>$/i.test(state.doc.sliceString(sibling.from, sibling.to))) {
+                closeNode = sibling;
+                break;
+              }
+              sibling = sibling.nextSibling;
+            }
+
+            if (closeNode) {
+              let isThisInlineRaw = false;
+              for (const range of state.selection.ranges) {
+                if (range.from <= closeNode.to && range.to >= from) {
+                  isThisInlineRaw = true;
+                  break;
+                }
+              }
+
+              if (!isThisInlineRaw) {
+                collected.push({ from: from, to: to, dec: REPLACE, category: 2 });
+                collected.push({ from: closeNode.from, to: closeNode.to, dec: REPLACE, category: 2 });
+              }
+              collected.push({
+                from: to,
+                to: closeNode.from,
+                dec: Decoration.mark({ class: "cm-prose-underline" }),
+                category: 3
+              });
+            }
+          }
         }
 
         // 10. Links and Images
@@ -566,7 +613,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
 
           if (titleNode && targetNode) {
             const url = state.doc.sliceString(targetNode.from, targetNode.to);
-            if (!isRaw) {
+            if (!isInlineRaw) {
               collected.push({ from: from, to: titleNode.from, dec: REPLACE, category: 2 });
               collected.push({ from: titleNode.to, to: to, dec: REPLACE, category: 2 });
             }
@@ -592,7 +639,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
             child = child.nextSibling;
           }
 
-          if (targetNode && !isRaw) {
+          if (targetNode && !isInlineRaw) {
             const url = state.doc.sliceString(targetNode.from, targetNode.to);
             const alt = titleNode ? state.doc.sliceString(titleNode.from, titleNode.to) : "";
             const resolvedUrl = resolveUrl(url, workspacePath);

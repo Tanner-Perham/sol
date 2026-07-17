@@ -1244,6 +1244,11 @@ body,
   color: var(--text-muted);
 }
 
+/* Underline */
+.cm-prose-underline {
+  text-decoration: underline;
+}
+
 /* Heading 3 & 4 */
 .cm-line.cm-prose-h3 {
   font-size: 1.15em;
