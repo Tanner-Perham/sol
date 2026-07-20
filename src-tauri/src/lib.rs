@@ -359,7 +359,20 @@ fn create_markdown_file(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    write_atomically(&path, b"").map_err(|e| e.to_string())?;
+
+    let title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    let initial_content = if !title.is_empty() {
+        format!("# {}\n\n", title)
+    } else {
+        String::new()
+    };
+
+    write_atomically(&path, initial_content.as_bytes()).map_err(|e| e.to_string())?;
     path.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "Failed to convert path to string".to_string())

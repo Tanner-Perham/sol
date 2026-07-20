@@ -373,6 +373,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
     if (!state || state.field(activeFileField) !== activeFile) {
       const savedState = editorStates.get(cacheKey);
+      const isNewState = !savedState;
       let selection = undefined;
       if (savedState && savedState.selection) {
         const maxPos = loadedContent.length;
@@ -380,6 +381,10 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         if (savedSel.main && savedSel.main.to <= maxPos) {
           selection = savedSel;
         }
+      } else {
+        const firstLineEnd = loadedContent.indexOf("\n");
+        const pos = firstLineEnd !== -1 ? firstLineEnd : loadedContent.length;
+        selection = { anchor: pos };
       }
 
       state = EditorState.create({
@@ -391,6 +396,18 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ]
       });
       fileEditorStates.set(cacheKey, state);
+
+      if (isNewState && vimMode) {
+        setTimeout(() => {
+          const currentView = viewRef.current;
+          if (currentView) {
+            const cm = getCM(currentView);
+            if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {
+              Vim.handleKey(cm, "i", "mapping");
+            }
+          }
+        }, 50);
+      }
     }
 
     let view = viewRef.current;
