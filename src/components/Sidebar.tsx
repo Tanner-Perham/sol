@@ -336,7 +336,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 className="file-item-creating-wrapper"
                 style={{ paddingLeft: "8px" }}
               >
-                <span className="sidebar-relative-number">
+                <span className={`sidebar-relative-number ${relativeDist === 0 ? "zero" : ""}`}>
                   {relativeDist}
                 </span>
                 <div className="file-tree-row-content" style={{ paddingLeft: `${item.depth * 16}px` }}>
@@ -417,7 +417,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }
               }}
             >
-              <span className="sidebar-relative-number">
+              <span className={`sidebar-relative-number ${relativeDist === 0 ? "zero" : ""}`}>
                 {relativeDist}
               </span>
               

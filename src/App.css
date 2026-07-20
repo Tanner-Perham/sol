@@ -794,8 +794,8 @@ body,
 .cm-activeLineGutter {
   background-color: transparent !important;
   color: var(--accent) !important;
-  opacity: 0.9;
-  font-weight: bold;
+  opacity: 1 !important;
+  font-weight: 600 !important;
 }
 
 .cm-activeLine {
@@ -1497,6 +1497,12 @@ body,
   font-family: var(--font-mono);
   user-select: none;
   flex-shrink: 0;
+}
+
+.sidebar-relative-number.zero {
+  color: var(--accent) !important;
+  opacity: 1 !important;
+  font-weight: 600;
 }
 
 .file-tree-row.active .sidebar-relative-number,

@@ -1,7 +1,17 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { EditorState, Compartment, Transaction, Prec } from "@codemirror/state";
-import { EditorView, keymap, lineNumbers } from "@codemirror/view";
+import { EditorState, Compartment, Transaction, Prec, RangeSet } from "@codemirror/state";
+import { EditorView, keymap, lineNumbers, GutterMarker, lineNumberMarkers } from "@codemirror/view";
+
+class CursorLineGutterMarker extends GutterMarker {
+  elementClass = "cm-activeLineGutter";
+  constructor(public line: number) {
+    super();
+  }
+  eq(other: CursorLineGutterMarker) {
+    return this.line === other.line;
+  }
+}
 import { defaultKeymap, historyKeymap, history } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { autocompletion } from "@codemirror/autocomplete";
@@ -209,6 +219,11 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           const diff = Math.abs(lineNo - cursorLine);
           return diff.toString();
         }
+      }),
+      lineNumberMarkers.compute(["selection"], (state) => {
+        const cursorLine = state.doc.lineAt(state.selection.main.head).number;
+        const linePos = state.doc.line(cursorLine).from;
+        return RangeSet.of([new CursorLineGutterMarker(cursorLine).range(linePos)]);
       }),
       Prec.highest(
         keymap.of([
