@@ -1829,88 +1829,95 @@ function App() {
 
   if (!workspacePath) {
     return (
-      <div className="app-container" style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100vh",
-        background: "radial-gradient(circle at center, #1e1e2e 0%, #11111b 100%)",
-        color: "#cdd6f4",
-        fontFamily: "'Outfit', 'Inter', sans-serif"
-      }}>
-        <div style={{
-          maxWidth: "480px",
-          textAlign: "center",
-          padding: "48px 40px",
-          borderRadius: "16px",
-          backgroundColor: "#181825",
-          border: "1px solid #313244",
-          boxShadow: "0 15px 40px rgba(0,0,0,0.5)",
-          backdropFilter: "blur(10px)",
-        }}>
-          <div style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: "80px",
-            height: "80px",
-            borderRadius: "50%",
-            background: "linear-gradient(135deg, #b4befe 0%, #cba6f7 100%)",
-            marginBottom: "24px",
-            boxShadow: "0 8px 24px rgba(180, 190, 254, 0.3)"
-          }}>
-            <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#11111b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-              <polyline points="9 22 9 12 15 12 15 22" />
+      <div className="landing-container fade-in">
+        <header className="app-header">
+          <div className="app-title-group">
+            <svg className="logo-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="12" cy="12" r="5" />
+              <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
+            <span className="app-title">SOL</span>
+            <span className="app-subtitle">no workspace</span>
           </div>
-          <h1 style={{
-            fontSize: "32px",
-            fontWeight: 800,
-            marginBottom: "12px",
-            background: "linear-gradient(to right, #cdd6f4, #bac2de)",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            letterSpacing: "-0.02em"
-          }}>
-            Welcome to Sol
-          </h1>
-          <p style={{
-            color: "#a6adc8",
-            marginBottom: "32px",
-            fontSize: "15px",
-            lineHeight: "1.6",
-            fontWeight: 400
-          }}>
-            A secure, privacy-first markdown vault for your local notes. Organize your thoughts and discover patterns with local AI.
-          </p>
-          <button
-            onClick={changeWorkspace}
-            style={{
-              background: "linear-gradient(135deg, #b4befe 0%, #89b4fa 100%)",
-              color: "#11111b",
-              border: "none",
-              padding: "14px 28px",
-              borderRadius: "8px",
-              fontSize: "16px",
-              fontWeight: 700,
-              cursor: "pointer",
-              transition: "transform 0.2s ease, box-shadow 0.2s ease",
-              boxShadow: "0 4px 15px rgba(137, 180, 250, 0.2)"
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.transform = "scale(1.03)";
-              e.currentTarget.style.boxShadow = "0 6px 20px rgba(137, 180, 250, 0.3)";
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.transform = "scale(1)";
-              e.currentTarget.style.boxShadow = "0 4px 15px rgba(137, 180, 250, 0.2)";
-            }}
-          >
-            Open Workspace Folder
-          </button>
+
+          <div className="app-actions">
+            <button
+              className="btn-header-action"
+              onClick={() => {
+                setShowSettingsModal(true);
+                setActiveSettingsTab("general");
+              }}
+              title="Settings"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px", width: "30px", height: "30px" }}
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <div className="landing-body">
+          <div className="landing-backdrop-glow"></div>
+          <div className="landing-card">
+            <div className="landing-logo-badge">
+              <svg className="landing-sol-logo" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="12" cy="12" r="5" />
+                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+            
+            <h1 className="landing-title">Welcome to Sol</h1>
+            <p className="landing-description">
+              A secure, privacy-first markdown vault for your local notes.
+              Organize your thoughts and discover patterns with local AI.
+            </p>
+
+            <div className="landing-features">
+              <div className="landing-feature-chip">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                </svg>
+                <span>Local & Private</span>
+              </div>
+              <div className="landing-feature-chip">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                </svg>
+                <span>Vim & Split Panes</span>
+              </div>
+              <div className="landing-feature-chip">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <path d="M12 16v-4"></path>
+                  <path d="M12 8h.01"></path>
+                </svg>
+                <span>Local AI Assistant</span>
+              </div>
+            </div>
+
+            <button className="landing-btn-primary" onClick={changeWorkspace}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+              <span>Open Workspace Folder</span>
+            </button>
+          </div>
         </div>
+
+        <SettingsModal
+          showSettingsModal={showSettingsModal}
+          setShowSettingsModal={setShowSettingsModal}
+          activeSettingsTab={activeSettingsTab}
+          setActiveSettingsTab={setActiveSettingsTab}
+          settings={settings}
+          updateSettings={updateSettings}
+          recordingHotkey={recordingHotkey}
+          setRecordingHotkey={setRecordingHotkey}
+          openPolicyFile={openPolicyFile}
+        />
       </div>
     );
   }
