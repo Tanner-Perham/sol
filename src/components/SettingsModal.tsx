@@ -314,6 +314,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                   <div className="keybind-list">
                     {[
+                      { id: "newNote", name: "New Note", desc: "Create a new document in workspace", vim: ":new" },
                       { id: "save", name: "Save Document", desc: "Saves changes in active editor pane", vim: ":w" },
                       { id: "togglePreview", name: "Toggle Live Preview", desc: "Toggle visual rendering style" },
                       { id: "toggleSidebar", name: "Toggle Sidebar Panel", desc: "Show or hide the file tree sidebar" },

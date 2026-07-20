@@ -1383,6 +1383,35 @@ function App() {
     setVimModeName(mode);
   }, []);
 
+  const handleCreateNewNote = useCallback(() => {
+    let targetPath = "";
+    const currentItem = visibleItems[sidebarSelectedIndex];
+    if (currentItem && currentItem.path !== "__creating__") {
+      if (currentItem.isDir) {
+        targetPath = currentItem.path;
+      } else {
+        const lastSlashIdx = currentItem.path.lastIndexOf("/");
+        targetPath = lastSlashIdx !== -1 ? currentItem.path.substring(0, lastSlashIdx) : "";
+      }
+    } else if (activeFileRef.current) {
+      const lastSlashIdx = activeFileRef.current.lastIndexOf("/");
+      targetPath = lastSlashIdx !== -1 ? activeFileRef.current.substring(0, lastSlashIdx) : "";
+    }
+
+    setSidebarOpen(true);
+    setFocusedComponent("sidebar");
+    inputFocusedRef.current = false;
+    setCreatingNode({ type: "file", parentPath: targetPath });
+    setNewInputName("untitled.md");
+    if (targetPath) {
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        next.add(targetPath);
+        return next;
+      });
+    }
+  }, [visibleItems, sidebarSelectedIndex]);
+
   // Refs to avoid stale closures in global keydown listener
   const layoutRef = useRef(layout);
   const activePaneIdRef = useRef(activePaneId);
@@ -1400,6 +1429,7 @@ function App() {
   const pendingHeadersRef = useRef<Map<PaneId, string>>(new Map());
   const settingsRef = useRef(settings);
   const updateSettingsRef = useRef(updateSettings);
+  const handleCreateNewNoteRef = useRef(handleCreateNewNote);
 
   useEffect(() => { layoutRef.current = layout; }, [layout]);
   useEffect(() => { updateSettingsRef.current = updateSettings; }, [updateSettings]);
@@ -1415,9 +1445,17 @@ function App() {
   useEffect(() => { workspacePathRef.current = workspacePath; }, [workspacePath]);
   useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { handleCreateNewNoteRef.current = handleCreateNewNote; }, [handleCreateNewNote]);
 
   // Register Vim custom Ex commands
   useEffect(() => {
+    Vim.defineEx("new", "new", () => {
+      handleCreateNewNoteRef.current();
+    });
+
+    Vim.defineEx("newnote", "newnote", () => {
+      handleCreateNewNoteRef.current();
+    });
     Vim.defineEx("quit", "q", () => {
       const currentActivePaneId = activePaneIdRef.current;
       const leaf = findLeafNode(layoutRef.current, currentActivePaneId);
@@ -1514,6 +1552,14 @@ function App() {
       }
 
       const keybindings = settingsRef.current.keybindings || DEFAULT_KEYBINDINGS;
+
+      // Ctrl+N (mod+n) to create a new note
+      if (matchKeybinding(e, keybindings.newNote) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n" && !e.altKey && !e.shiftKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleCreateNewNoteRef.current();
+        return;
+      }
 
       // Enter prefix mode
       if (matchKeybinding(e, keybindings.prefixMode)) {

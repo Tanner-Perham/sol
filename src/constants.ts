@@ -1,6 +1,7 @@
 import { Keybindings, AppSettings } from "./types";
 
 export const DEFAULT_KEYBINDINGS: Keybindings = {
+  newNote: "mod+n",
   save: "mod+s",
   togglePreview: "mod+p",
   toggleSidebar: "mod+e",

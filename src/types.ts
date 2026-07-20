@@ -24,6 +24,7 @@ export interface FileNode {
 }
 
 export interface Keybindings {
+  newNote: string;
   save: string;
   togglePreview: string;
   toggleSidebar: string;
