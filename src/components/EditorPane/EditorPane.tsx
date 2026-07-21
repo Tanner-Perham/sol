@@ -12,7 +12,7 @@ class CursorLineGutterMarker extends GutterMarker {
     return this.line === other.line;
   }
 }
-import { defaultKeymap, historyKeymap, history } from "@codemirror/commands";
+import { defaultKeymap, historyKeymap, history, indentWithTab } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { autocompletion } from "@codemirror/autocomplete";
 import { vim, Vim, getCM } from "@replit/codemirror-vim";
@@ -301,6 +301,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
             return false;
           }
         },
+        indentWithTab,
         ...defaultKeymap,
         ...historyKeymap
       ]),
