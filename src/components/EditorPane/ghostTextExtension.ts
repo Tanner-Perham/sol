@@ -407,7 +407,7 @@ export const ghostTextTriggerPlugin = (
         const state = this.view.state;
         const pos = state.selection.main.head;
 
-        // 1. Suppress if cursor inside fenced code blocks
+        // 1. Check if cursor inside fenced code blocks
         let insideCode = false;
         let parent: any = syntaxTree(state).resolveInner(pos, -1);
         while (parent) {
@@ -417,7 +417,6 @@ export const ghostTextTriggerPlugin = (
           }
           parent = parent.parent;
         }
-        if (insideCode) return;
 
         // 2. Validate prefix text
         const text = state.doc.toString();
@@ -505,6 +504,8 @@ export const ghostTextTriggerPlugin = (
             excerpt_chars: settingsRef.current.contextExcerptChars ?? 150
           };
 
+          const stop = insideCode ? ["\n", "```"] : ["\n", "."];
+
           // Start generation
           await invoke("generate_completion", {
             requestId,
@@ -515,7 +516,7 @@ export const ghostTextTriggerPlugin = (
               max_tokens: maxTokens,
               temperature,
               top_p: topP,
-              stop: ["\n", "."],
+              stop,
               seed,
               rejected,
               context: contextOpts
