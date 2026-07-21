@@ -1335,6 +1335,61 @@ body,
   border-bottom-right-radius: 6px;
 }
 
+/* Code Block Syntax Highlighting (Scoped strictly to code block lines) */
+.cm-prose-code-line .tok-keyword { color: var(--accent); font-weight: 600; }
+.cm-prose-code-line .tok-operator { color: #81a1c1; }
+.cm-prose-code-line .tok-string,
+.cm-prose-code-line .tok-string2 { color: #a3be8c; }
+.cm-prose-code-line .tok-number,
+.cm-prose-code-line .tok-bool,
+.cm-prose-code-line .tok-null { color: #d08770; }
+.cm-prose-code-line .tok-comment { color: #758296; font-style: italic; opacity: 0.85; }
+.cm-prose-code-line .tok-variableName,
+.cm-prose-code-line .tok-propertyName { color: var(--text-primary); }
+.cm-prose-code-line .tok-typeName,
+.cm-prose-code-line .tok-className { color: #b48ead; }
+.cm-prose-code-line .tok-definition,
+.cm-prose-code-line .tok-function,
+.cm-prose-code-line .tok-labelName { color: #88c0d0; }
+.cm-prose-code-line .tok-meta { color: #ebcb8b; }
+.cm-prose-code-line .tok-tag { color: #bf616a; }
+.cm-prose-code-line .tok-attributeName { color: #ebcb8b; }
+.cm-prose-code-line .tok-attributeValue { color: #a3be8c; }
+.cm-prose-code-line .tok-punctuation,
+.cm-prose-code-line .tok-bracket { color: var(--text-muted); opacity: 0.8; }
+
+/* Light & Sepia theme overrides for code block tokens */
+.theme-sepia .cm-prose-code-line,
+.theme-light .cm-prose-code-line {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+.theme-sepia .cm-prose-code-line .tok-keyword,
+.theme-light .cm-prose-code-line .tok-keyword { color: #9e5900; font-weight: 600; }
+.theme-sepia .cm-prose-code-line .tok-operator,
+.theme-light .cm-prose-code-line .tok-operator { color: #607d8b; }
+.theme-sepia .cm-prose-code-line .tok-string,
+.theme-sepia .cm-prose-code-line .tok-string2,
+.theme-light .cm-prose-code-line .tok-string,
+.theme-light .cm-prose-code-line .tok-string2 { color: #2e7d32; }
+.theme-sepia .cm-prose-code-line .tok-number,
+.theme-sepia .cm-prose-code-line .tok-bool,
+.theme-sepia .cm-prose-code-line .tok-null,
+.theme-light .cm-prose-code-line .tok-number,
+.theme-light .cm-prose-code-line .tok-bool,
+.theme-light .cm-prose-code-line .tok-null { color: #c62828; }
+.theme-sepia .cm-prose-code-line .tok-comment,
+.theme-light .cm-prose-code-line .tok-comment { color: #786c5e; font-style: italic; opacity: 0.85; }
+.theme-sepia .cm-prose-code-line .tok-typeName,
+.theme-sepia .cm-prose-code-line .tok-className,
+.theme-light .cm-prose-code-line .tok-typeName,
+.theme-light .cm-prose-code-line .tok-className { color: #6a1b9a; }
+.theme-sepia .cm-prose-code-line .tok-definition,
+.theme-sepia .cm-prose-code-line .tok-function,
+.theme-sepia .cm-prose-code-line .tok-labelName,
+.theme-light .cm-prose-code-line .tok-definition,
+.theme-light .cm-prose-code-line .tok-function,
+.theme-light .cm-prose-code-line .tok-labelName { color: #0277bd; }
+
 /* Links */
 .cm-prose-link {
   color: var(--accent);

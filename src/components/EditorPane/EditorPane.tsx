@@ -14,6 +14,9 @@ class CursorLineGutterMarker extends GutterMarker {
 }
 import { defaultKeymap, historyKeymap, history, indentWithTab } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { languages } from "@codemirror/language-data";
+import { syntaxHighlighting } from "@codemirror/language";
+import { classHighlighter } from "@lezer/highlight";
 import { autocompletion } from "@codemirror/autocomplete";
 import { vim, Vim, getCM } from "@replit/codemirror-vim";
 import { Strikethrough } from "@lezer/markdown";
@@ -305,7 +308,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ...defaultKeymap,
         ...historyKeymap
       ]),
-      markdown({ extensions: [Strikethrough] }),
+      markdown({ codeLanguages: languages, extensions: [Strikethrough] }),
+      syntaxHighlighting(classHighlighter),
       vimCompartment.of(vimMode ? [Prec.highest(vim())] : []),
       wrapCompartment.of(lineWrapping ? [EditorView.lineWrapping] : []),
       previewCompartment.of(livePreview ? [prosePreviewPlugin(workspacePath, markdownFilesSet)] : []),
