@@ -61,3 +61,16 @@ export const findFirstMdFile = (nodes: FileNode[]): string | null => {
 export const findDefaultFile = (nodes: FileNode[]): string | null => {
   return findFirstMdFile(nodes);
 };
+
+export const getAllFilePaths = (nodes: FileNode[]): Set<string> => {
+  const paths = new Set<string>();
+  const traverse = (node: FileNode) => {
+    if (!node.is_dir) {
+      paths.add(node.path);
+    } else if (node.children) {
+      node.children.forEach(traverse);
+    }
+  };
+  nodes.forEach(traverse);
+  return paths;
+};

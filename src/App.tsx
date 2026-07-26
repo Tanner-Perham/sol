@@ -543,6 +543,28 @@ function App() {
     }
   };
 
+  const openPeriodicNote = async (relativePath: string) => {
+    try {
+      let exists = false;
+      try {
+        await invoke("read_markdown_file", { path: relativePath });
+        exists = true;
+      } catch (e) {
+        exists = false;
+      }
+
+      if (!exists) {
+        await invoke("create_markdown_file", { name: relativePath });
+        const tree = await invoke<FileNode[]>("get_file_tree");
+        setFileTree(tree);
+      }
+
+      await openFile(relativePath);
+    } catch (err) {
+      console.error("Failed to open or create periodic note:", err);
+    }
+  };
+
   const openPolicyFile = useCallback(async () => {
     try {
       setShowSettingsModal(false);
@@ -2035,6 +2057,9 @@ function App() {
           inputFocusedRef={inputFocusedRef}
           deleteItem={deleteItem}
           renameItem={renameItem}
+          fileTree={fileTree}
+          openPeriodicNote={openPeriodicNote}
+          settings={settings}
         />
 
         <main className="app-main">

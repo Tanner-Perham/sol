@@ -53,6 +53,11 @@ export interface AppSettings {
   aiDebugEnabled?: boolean;
   reworkTemperature?: number;
   reworkMaxTokensCap?: number;
+  showCalendar?: boolean;
+  dailyNotesFolder?: string;
+  dailyNotesFormat?: string;
+  weeklyNotesFolder?: string;
+  weeklyNotesFormat?: string;
 }
 
 export interface ModelFile {

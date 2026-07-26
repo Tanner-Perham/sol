@@ -29,5 +29,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   contextExcerptChars: 150,
   aiDebugEnabled: false,
   reworkTemperature: 0.3,
-  reworkMaxTokensCap: 512
+  reworkMaxTokensCap: 512,
+  showCalendar: true,
+  dailyNotesFolder: "daily",
+  dailyNotesFormat: "YYYY-MM-DD",
+  weeklyNotesFolder: "weekly",
+  weeklyNotesFormat: "YYYY-[W]WW"
 };

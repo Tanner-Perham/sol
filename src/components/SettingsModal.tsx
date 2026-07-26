@@ -3,7 +3,7 @@ import { AppSettings, Keybindings } from "../types";
 import { DEFAULT_KEYBINDINGS } from "../constants";
 import { ModelSettings } from "./ModelSettings";
 
-export type SettingsTabType = "general" | "appearance" | "hotkeys" | "models" | "ai";
+export type SettingsTabType = "general" | "appearance" | "hotkeys" | "models" | "ai" | "periodic";
 
 export interface SettingsModalProps {
   showSettingsModal: boolean;
@@ -130,6 +130,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <line x1="12" y1="22.08" x2="12" y2="12" />
               </svg>
               AI Settings
+            </button>
+            <button
+              className={`settings-tab-btn ${activeSettingsTab === "periodic" ? "active" : ""}`}
+              onClick={() => setActiveSettingsTab("periodic")}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                <line x1="16" y1="2" x2="16" y2="6" />
+                <line x1="8" y1="2" x2="8" y2="6" />
+                <line x1="3" y1="10" x2="21" y2="10" />
+              </svg>
+              Periodic Notes
             </button>
           </div>
 
@@ -546,7 +558,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <input
                         type="range"
                         min="0"
-                        max="1"
+                        max="1.5"
                         step="0.05"
                         value={settings.completionTopP ?? 0.95}
                         onChange={(e) => updateSettings({ completionTopP: parseFloat(e.target.value) })}
@@ -716,6 +728,92 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <span className="switch-slider" />
                     </label>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {activeSettingsTab === "periodic" && (
+              <div className="settings-section" style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
+                <span className="settings-section-title">Periodic Notes & Calendar</span>
+                
+                {/* Show Calendar Widget */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Show Calendar Widget</span>
+                    <span className="settings-control-desc">Display the calendar widget at the bottom of the sidebar</span>
+                  </div>
+                  <label className="settings-switch">
+                    <input
+                      type="checkbox"
+                      checked={settings.showCalendar !== false}
+                      onChange={(e) => updateSettings({ showCalendar: e.target.checked })}
+                    />
+                    <span className="switch-slider" />
+                  </label>
+                </div>
+
+                {/* Daily Notes Folder */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Daily Notes Folder</span>
+                    <span className="settings-control-desc">Directory where daily notes are saved</span>
+                  </div>
+                  <input
+                    type="text"
+                    className="new-node-input"
+                    style={{ maxWidth: "200px" }}
+                    value={settings.dailyNotesFolder ?? "daily"}
+                    onChange={(e) => updateSettings({ dailyNotesFolder: e.target.value })}
+                    placeholder="e.g. daily"
+                  />
+                </div>
+
+                {/* Daily Notes Format */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Daily Notes Format</span>
+                    <span className="settings-control-desc">Date format for daily notes</span>
+                  </div>
+                  <input
+                    type="text"
+                    className="new-node-input"
+                    style={{ maxWidth: "200px" }}
+                    value={settings.dailyNotesFormat ?? "YYYY-MM-DD"}
+                    onChange={(e) => updateSettings({ dailyNotesFormat: e.target.value })}
+                    placeholder="e.g. YYYY-MM-DD"
+                  />
+                </div>
+
+                {/* Weekly Notes Folder */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Weekly Notes Folder</span>
+                    <span className="settings-control-desc">Directory where weekly notes are saved</span>
+                  </div>
+                  <input
+                    type="text"
+                    className="new-node-input"
+                    style={{ maxWidth: "200px" }}
+                    value={settings.weeklyNotesFolder ?? "weekly"}
+                    onChange={(e) => updateSettings({ weeklyNotesFolder: e.target.value })}
+                    placeholder="e.g. weekly"
+                  />
+                </div>
+
+                {/* Weekly Notes Format */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Weekly Notes Format</span>
+                    <span className="settings-control-desc">Format for weekly notes (use WW for ISO week number)</span>
+                  </div>
+                  <input
+                    type="text"
+                    className="new-node-input"
+                    style={{ maxWidth: "200px" }}
+                    value={settings.weeklyNotesFormat ?? "YYYY-[W]WW"}
+                    onChange={(e) => updateSettings({ weeklyNotesFormat: e.target.value })}
+                    placeholder="e.g. YYYY-[W]WW"
+                  />
                 </div>
               </div>
             )}

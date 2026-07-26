@@ -2523,3 +2523,183 @@ body,
 .cm-ai-context {
   background-color: color-mix(in srgb, var(--accent) 12%, transparent) !important;
 }
+
+/* Calendar Widget Styles */
+.sidebar-calendar-widget {
+  border-top: 1px solid var(--border);
+  padding: 12px 14px;
+  background-color: var(--bg-card);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  user-select: none;
+}
+
+.calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.calendar-title-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.calendar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.calendar-title:hover {
+  color: var(--accent);
+}
+
+.calendar-nav-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-calendar-nav {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.btn-calendar-nav:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr); /* 1 for week number + 7 for days */
+  gap: 2px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.calendar-grid-header {
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.calendar-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  position: relative;
+  transition: all 0.15s ease;
+}
+
+.day-cell {
+  color: var(--text-primary);
+}
+
+.day-cell.other-month {
+  color: var(--text-muted);
+  opacity: 0.4;
+}
+
+.day-cell:hover {
+  background-color: var(--bg-hover);
+}
+
+.day-cell.today {
+  border: 1px solid var(--accent);
+  font-weight: bold;
+}
+
+.day-cell.active-note {
+  background-color: var(--accent-glow);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.week-cell {
+  color: var(--accent);
+  opacity: 0.7;
+  font-weight: 500;
+  border-right: 1px solid var(--border);
+  border-radius: 4px 0 0 4px;
+}
+
+.week-cell:hover {
+  background-color: var(--bg-hover);
+  opacity: 1;
+}
+
+.note-dot {
+  position: absolute;
+  bottom: 2px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  opacity: 0.8;
+}
+
+.week-note-dot {
+  position: absolute;
+  bottom: 2px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  opacity: 0.6;
+}
+
+/* Collapsible Calendar Header */
+.calendar-toggle-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-top: 1px solid var(--border);
+  background-color: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  user-select: none;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.calendar-toggle-header:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-hover);
+}
+
+.calendar-toggle-chevron {
+  width: 10px;
+  height: 10px;
+  transition: transform 0.25s ease;
+}
+
+.calendar-toggle-chevron.collapsed {
+  transform: rotate(-90deg);
+}

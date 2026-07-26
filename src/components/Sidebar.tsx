@@ -1,5 +1,6 @@
 import React, { useRef, useState } from "react";
 import { FileNode, AppSettings } from "../types";
+import { CalendarWidget } from "./CalendarWidget";
 
 export interface VisibleItem {
   path: string;
@@ -32,6 +33,9 @@ export interface SidebarProps {
   inputFocusedRef: React.MutableRefObject<boolean>;
   deleteItem: (itemPath: string, isDir: boolean) => Promise<void>;
   renameItem: (oldPath: string, newName: string, isDir: boolean, isBlur: boolean) => Promise<void>;
+  fileTree: FileNode[];
+  openPeriodicNote: (relativePath: string) => Promise<void>;
+  settings: AppSettings;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -56,12 +60,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
   handleNewNodeSubmit,
   inputFocusedRef,
   deleteItem,
-  renameItem
+  renameItem,
+  fileTree,
+  openPeriodicNote,
+  settings
 }) => {
   const sidebarVimBufferRef = useRef<string>("");
   const [renamingNode, setRenamingNode] = useState<{ path: string; name: string; isDir: boolean } | null>(null);
   const [renameInputName, setRenameInputName] = useState<string>("");
   const renameInputFocusedRef = useRef(false);
+  const [calendarExpanded, setCalendarExpanded] = useState(true);
 
   const handleRenameSubmit = async (isBlur = false) => {
     if (!renamingNode) return;
@@ -574,6 +582,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
           );
         })}
       </div>
+
+      {settings.showCalendar !== false && (
+        <>
+          <div
+            className="calendar-toggle-header"
+            onClick={() => setCalendarExpanded(!calendarExpanded)}
+            title="Toggle Calendar Panel"
+          >
+            <span>Calendar</span>
+            <svg
+              className={`calendar-toggle-chevron ${calendarExpanded ? "" : "collapsed"}`}
+              viewBox="0 0 24 24"
+              width="10"
+              height="10"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
+          {calendarExpanded && (
+            <CalendarWidget
+              settings={settings}
+              fileTree={fileTree}
+              openPeriodicNote={openPeriodicNote}
+              activeFile={activeFile}
+            />
+          )}
+        </>
+      )}
     </aside>
   );
 };
