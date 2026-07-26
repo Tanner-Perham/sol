@@ -162,6 +162,7 @@ function App() {
   const reloadTreeRef = useRef<any>(null);
   const prevActiveFileRef = useRef<string | null>(null);
   const inputFocusedRef = useRef(false);
+  const skipExpandRef = useRef(false);
   const fileMtimesRef = useRef<Map<string, number>>(new Map());
   const fileBasesRef = useRef<Map<string, string>>(new Map());
   const isSettingsLoadingRef = useRef(false);
@@ -545,6 +546,7 @@ function App() {
 
   const openPeriodicNote = async (relativePath: string) => {
     try {
+      skipExpandRef.current = true;
       let exists = false;
       try {
         await invoke("read_markdown_file", { path: relativePath });
@@ -963,7 +965,11 @@ function App() {
 
   useEffect(() => {
     if (activeFile) {
-      expandParentsOfFile(activeFile);
+      if (skipExpandRef.current) {
+        skipExpandRef.current = false;
+      } else {
+        expandParentsOfFile(activeFile);
+      }
     }
   }, [activeFile, expandParentsOfFile]);
 
