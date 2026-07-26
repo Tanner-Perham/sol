@@ -41,7 +41,10 @@ export const CalendarWidget: React.FC<CalendarWidgetProps> = ({
   };
 
   const handleGoToToday = () => {
-    setCurrentDate(new Date());
+    const today = new Date();
+    setCurrentDate(today);
+    const dailyPath = getDailyNotePath(today);
+    openPeriodicNote(dailyPath);
   };
 
   // Helper to generate paths
@@ -179,7 +182,12 @@ export const CalendarWidget: React.FC<CalendarWidgetProps> = ({
               {/* Week Number Cell */}
               <div
                 className={`calendar-cell week-cell ${isWeeklyActive ? "active-note" : ""}`}
-                onClick={() => openPeriodicNote(weeklyPath)}
+                onClick={() => {
+                  openPeriodicNote(weeklyPath);
+                  if (thursdayDate.getMonth() !== month || thursdayDate.getFullYear() !== year) {
+                    setCurrentDate(thursdayDate);
+                  }
+                }}
                 title={`Open weekly note: ${weeklyPath}`}
               >
                 {weekNo}
@@ -196,7 +204,12 @@ export const CalendarWidget: React.FC<CalendarWidgetProps> = ({
                   <div
                     key={dIdx}
                     className={`calendar-cell day-cell ${cell.isCurrentMonth ? "" : "other-month"} ${cell.isToday ? "today" : ""} ${isDailyActive ? "active-note" : ""}`}
-                    onClick={() => openPeriodicNote(dailyPath)}
+                    onClick={() => {
+                      openPeriodicNote(dailyPath);
+                      if (!cell.isCurrentMonth) {
+                        setCurrentDate(cell.date);
+                      }
+                    }}
                     title={`Open daily note: ${dailyPath}`}
                   >
                     <span>{cell.date.getDate()}</span>
