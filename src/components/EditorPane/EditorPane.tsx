@@ -229,6 +229,11 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   // Load content when activeFile changes
   useEffect(() => {
     if (!activeFile) {
+      if (viewRef.current) {
+        viewRef.current.destroy();
+        viewRef.current = null;
+        registerView(paneId, null);
+      }
       setFileData(null);
       setIsLocalDirty(false);
       registerState(paneId, false, 0);
@@ -653,7 +658,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     }
 
     return () => {
-      if (loadedFile && view) {
+      if (loadedFile && view && viewRef.current === view) {
         saveEditorState(paneId, loadedFile, view);
       }
 
@@ -758,9 +763,9 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       )}
       <div className="editor-wrapper" style={{ flex: 1, overflow: "hidden", position: "relative" }} onClick={onFocus}>
         {activeFile ? (
-          <div ref={containerRef} className="editor-inner" style={{ height: "100%" }} />
+          <div ref={containerRef} key="editor-inner" className="editor-inner" style={{ height: "100%" }} />
         ) : (
-          <div className="editor-empty-state">
+          <div key="editor-empty" className="editor-empty-state">
             <svg className="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <polyline points="14 2 14 8 20 8" />
