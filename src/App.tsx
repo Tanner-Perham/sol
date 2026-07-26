@@ -654,17 +654,125 @@ function App() {
     }
 
     setLayout(updatedLayout);
-
-    const leafIds = getLeafPaneIds(updatedLayout);
-    if (!leafIds.includes(activePaneId)) {
-      const nextActivePaneId = leafIds[0] || "pane-root";
-      setActivePaneId(nextActivePaneId);
-      
-      const nextState = paneStatesRef.current.get(nextActivePaneId) || { isDirty: false, wordCount: 0 };
-      setIsDirty(nextState.isDirty);
-      setWordCount(nextState.wordCount);
-    }
-  };
+ 
+     const leafIds = getLeafPaneIds(updatedLayout);
+     if (!leafIds.includes(activePaneId)) {
+       const nextActivePaneId = leafIds[0] || "pane-root";
+       setActivePaneId(nextActivePaneId);
+       
+       const nextState = paneStatesRef.current.get(nextActivePaneId) || { isDirty: false, wordCount: 0 };
+       setIsDirty(nextState.isDirty);
+       setWordCount(nextState.wordCount);
+     }
+   };
+ 
+   // Close multiple tabs in a pane
+   const closeTabs = async (paneId: PaneId, fileNamesToClose: string[]) => {
+     const leaf = findLeafNode(layout, paneId);
+     if (!leaf) return;
+ 
+     // 1. Save the active file if it is in the list of files to close, is dirty, and has a view
+     const view = editorViewsRef.current.get(paneId);
+     const paneState = paneStatesRef.current.get(paneId);
+     if (leaf.activeFile && fileNamesToClose.includes(leaf.activeFile) && paneState?.isDirty && view) {
+       const content = view.state.doc.toString();
+       const timeout = saveTimeoutsRef.current.get(leaf.activeFile);
+       if (timeout) {
+         clearTimeout(timeout);
+         saveTimeoutsRef.current.delete(leaf.activeFile);
+       }
+       try {
+         await writeMarkdownFileWithConflictCheck(leaf.activeFile, content);
+       } catch (err) {
+         console.error("Failed to auto-save file on closeTabs", err);
+       }
+     }
+ 
+     // 2. Clear timeouts and prune editor states for all closed files
+     fileNamesToClose.forEach((fileName) => {
+       const timeout = saveTimeoutsRef.current.get(fileName);
+       if (timeout) {
+         clearTimeout(timeout);
+         saveTimeoutsRef.current.delete(fileName);
+       }
+       pruneEditorState(paneId, fileName);
+     });
+ 
+     const newTabs = leaf.tabs.filter((t) => !fileNamesToClose.includes(t));
+ 
+     // 3. Find next active file if current active file is being closed
+     let nextActiveFile = leaf.activeFile;
+     if (leaf.activeFile && fileNamesToClose.includes(leaf.activeFile)) {
+       const closedIdx = leaf.tabs.indexOf(leaf.activeFile);
+       let found = false;
+       for (let i = closedIdx + 1; i < leaf.tabs.length; i++) {
+         if (!fileNamesToClose.includes(leaf.tabs[i])) {
+           nextActiveFile = leaf.tabs[i];
+           found = true;
+           break;
+         }
+       }
+       if (!found) {
+         for (let i = closedIdx - 1; i >= 0; i--) {
+           if (!fileNamesToClose.includes(leaf.tabs[i])) {
+             nextActiveFile = leaf.tabs[i];
+             found = true;
+             break;
+           }
+         }
+       }
+       if (!found) {
+         nextActiveFile = null;
+       }
+     }
+ 
+     const updatePaneInTree = (node: PaneNode): PaneNode => {
+       if (node.type === "leaf") {
+         if (node.id === paneId) {
+           return {
+             ...node,
+             tabs: newTabs,
+             activeFile: nextActiveFile
+           };
+         }
+         return node;
+       }
+       return {
+         ...node,
+         children: node.children.map(updatePaneInTree)
+       };
+     };
+ 
+     let updatedLayout = updatePaneInTree(layout);
+ 
+     if (newTabs.length === 0) {
+       const cleanTree = removePaneFromTree(updatedLayout, paneId);
+       if (cleanTree) {
+         updatedLayout = cleanTree;
+       } else {
+         updatedLayout = {
+           type: "leaf",
+           id: "pane-root",
+           activeFile: null,
+           tabs: []
+         };
+       }
+       editorViewsRef.current.delete(paneId);
+       paneStatesRef.current.delete(paneId);
+     }
+ 
+     setLayout(updatedLayout);
+ 
+     const leafIds = getLeafPaneIds(updatedLayout);
+     if (!leafIds.includes(activePaneId)) {
+       const nextActivePaneId = leafIds[0] || "pane-root";
+       setActivePaneId(nextActivePaneId);
+       
+       const nextState = paneStatesRef.current.get(nextActivePaneId) || { isDirty: false, wordCount: 0 };
+       setIsDirty(nextState.isDirty);
+       setWordCount(nextState.wordCount);
+     }
+   };
 
   // Rename a path inside layout node and migrate states
   const renamePathInLayout = (node: PaneNode, oldPath: string, newPath: string, isDir: boolean): PaneNode => {
@@ -1868,6 +1976,7 @@ function App() {
             setFocusedComponent("editor");
           }}
           onCloseTab={closeTab}
+          onCloseTabs={closeTabs}
           onOpenFile={openFile}
           registerView={registerView}
           registerState={registerState}

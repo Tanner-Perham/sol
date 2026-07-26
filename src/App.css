@@ -2703,3 +2703,96 @@ body,
 .calendar-toggle-chevron.collapsed {
   transform: rotate(-90deg);
 }
+
+/* Tab Context Menu styling */
+.tab-context-menu {
+  background: rgba(22, 22, 22, 0.85);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(255, 255, 255, 0.05);
+  padding: 5px;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: contextMenuFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: top left;
+}
+
+@keyframes contextMenuFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.tab-context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 5px;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+}
+
+.tab-context-menu-item:hover {
+  background-color: var(--accent-glow);
+  color: var(--accent);
+}
+
+.tab-context-menu-item .kbd-shortcut {
+  font-size: 9px;
+  opacity: 0.7;
+  margin-left: 12px;
+  background-color: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.tab-context-menu-item:hover .kbd-shortcut {
+  background-color: rgba(255, 255, 255, 0.15);
+  color: var(--accent);
+  opacity: 1;
+}
+
+.tab-context-menu-separator {
+  height: 1px;
+  background-color: rgba(255, 255, 255, 0.08);
+  margin: 4px 5px;
+}
+
+/* Light / Sepia Theme adjustments */
+.theme-light .tab-context-menu,
+.theme-sepia .tab-context-menu {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+}
+
+.theme-light .tab-context-menu-item,
+.theme-sepia .tab-context-menu-item {
+  color: var(--text-muted);
+}
+
+.theme-light .tab-context-menu-item:hover,
+.theme-sepia .tab-context-menu-item:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+  color: var(--text-primary);
+}
+
+.theme-light .tab-context-menu-separator,
+.theme-sepia .tab-context-menu-separator {
+  background-color: rgba(0, 0, 0, 0.08);
+}

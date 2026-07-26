@@ -40,6 +40,7 @@ export interface EditorPaneProps {
   fileBasesRef: React.MutableRefObject<Map<string, string>>;
   onFocus: () => void;
   onCloseTab: (paneId: string, file: string) => void;
+  onCloseTabs: (paneId: string, files: string[]) => void;
   onOpenFile: (file: string) => void;
   registerView: (paneId: string, view: EditorView | null) => void;
   registerState: (paneId: string, isDirty: boolean, wordCount: number) => void;
@@ -127,6 +128,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   fileBasesRef,
   onFocus,
   onCloseTab,
+  onCloseTabs,
   onOpenFile,
   registerView,
   registerState,
@@ -142,6 +144,48 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   useEffect(() => {
     isLocalDirtyRef.current = isLocalDirty;
   }, [isLocalDirty]);
+
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    tab: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleClose = (e: MouseEvent) => {
+      const menuEl = document.getElementById(`context-menu-${paneId}`);
+      if (menuEl && menuEl.contains(e.target as Node)) {
+        return;
+      }
+      setContextMenu(null);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setContextMenu(null);
+      }
+    };
+    window.addEventListener("mousedown", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("contextmenu", handleClose);
+    return () => {
+      window.removeEventListener("mousedown", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("contextmenu", handleClose);
+    };
+  }, [contextMenu, paneId]);
+
+  const handleTabContextMenu = useCallback((e: React.MouseEvent, tab: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      tab
+    });
+  }, []);
 
   const { vimMode, livePreview, lineWrapping, theme } = settings;
 
@@ -692,6 +736,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
                     onCloseTab(paneId, tab);
                   }
                 }}
+                onContextMenu={(e) => handleTabContextMenu(e, tab)}
                 title={`${tab} (Alt+${idx + 1})`}
               >
                 <span className="tab-name">{tab.replace(/\.md$/, "")}</span>
@@ -727,6 +772,81 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           </div>
         )}
       </div>
+
+      {contextMenu && (
+        <div
+          id={`context-menu-${paneId}`}
+          className="tab-context-menu"
+          style={{
+            position: "fixed",
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+            zIndex: 1000
+          }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <div
+            className="tab-context-menu-item"
+            onClick={() => {
+              onCloseTab(paneId, contextMenu.tab);
+              setContextMenu(null);
+            }}
+          >
+            <span>Close</span>
+            <span className="kbd-shortcut" style={{ fontSize: "9px" }}>Alt+W</span>
+          </div>
+          <div
+            className="tab-context-menu-item"
+            onClick={() => {
+              const others = tabs.filter(t => t !== contextMenu.tab);
+              onCloseTabs(paneId, others);
+              setContextMenu(null);
+            }}
+          >
+            <span>Close Others</span>
+          </div>
+          {tabs.indexOf(contextMenu.tab) < tabs.length - 1 && (
+            <div
+              className="tab-context-menu-item"
+              onClick={() => {
+                const tabIdx = tabs.indexOf(contextMenu.tab);
+                const toRight = tabs.slice(tabIdx + 1);
+                onCloseTabs(paneId, toRight);
+                setContextMenu(null);
+              }}
+            >
+              <span>Close to the Right</span>
+            </div>
+          )}
+          {tabs.indexOf(contextMenu.tab) > 0 && (
+            <div
+              className="tab-context-menu-item"
+              onClick={() => {
+                const tabIdx = tabs.indexOf(contextMenu.tab);
+                const toLeft = tabs.slice(0, tabIdx);
+                onCloseTabs(paneId, toLeft);
+                setContextMenu(null);
+              }}
+            >
+              <span>Close to the Left</span>
+            </div>
+          )}
+          <div className="tab-context-menu-separator" />
+          <div
+            className="tab-context-menu-item"
+            onClick={() => {
+              onCloseTabs(paneId, tabs);
+              setContextMenu(null);
+            }}
+          >
+            <span>Close All</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
