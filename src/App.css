@@ -93,6 +93,19 @@
   --selection-bg-focused: rgba(255, 255, 0, 0.65);
 }
 
+.theme-pink {
+  --bg-dark: #1f1418;
+  --bg-card: #2a1b21;
+  --bg-hover: #3d2731;
+  --text-primary: #f8ecee;
+  --text-muted: #b391a0;
+  --accent: #ff758f;
+  --accent-glow: rgba(255, 117, 143, 0.15);
+  --border: #3f2933;
+  --selection-bg: rgba(255, 117, 143, 0.25);
+  --selection-bg-focused: rgba(255, 117, 143, 0.45);
+}
+
 html,
 body,
 #root {

@@ -216,7 +216,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       { id: "forest", name: "Forest Moss", colors: ["#141715", "#87af92", "#e3e8e4"] },
                       { id: "sepia", name: "Sepia", colors: ["#fbf8f3", "#c07a34", "#433422"] },
                       { id: "light", name: "Sol Light", colors: ["#fafafa", "#3b82f6", "#171717"] },
-                      { id: "lego", name: "Lego Block 🧩", colors: ["#0055a5", "#e60012", "#ffffff"] }
+                      { id: "lego", name: "Lego Block 🧩", colors: ["#0055a5", "#e60012", "#ffffff"] },
+                      { id: "pink", name: "Sakura 🌸", colors: ["#1f1418", "#ff758f", "#f8ecee"] }
                     ].map((t) => (
                       <div
                         key={t.id}

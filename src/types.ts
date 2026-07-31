@@ -33,7 +33,7 @@ export interface Keybindings {
 }
 
 export interface AppSettings {
-  theme: "sol-dark" | "nord" | "monokai" | "forest" | "sepia" | "light" | "lego";
+  theme: "sol-dark" | "nord" | "monokai" | "forest" | "sepia" | "light" | "lego" | "pink";
   fontFamily: "sans" | "serif" | "mono";
   fontSize: number;
   lineHeight: number;
