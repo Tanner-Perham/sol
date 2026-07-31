@@ -125,6 +125,7 @@ pub fn stream_rework<F>(
     url_str: &str,
     allow_remote: bool,
     model_name: &str,
+    system_prompt: &str,
     instruction: &str,
     selection: &str,
     temperature: f64,
@@ -156,7 +157,7 @@ where
         messages: vec![
             ReworkMessage {
                 role: "system".to_string(),
-                content: "You rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations. Do not output any thinking or reasoning, reply directly with the rewrite.".to_string(),
+                content: system_prompt.to_string(),
             },
             ReworkMessage {
                 role: "user".to_string(),
@@ -366,6 +367,7 @@ mod tests {
                 &server.uri(),
                 true,
                 "some-model",
+                "system prompt",
                 "rewrite",
                 "hello text",
                 0.3,
@@ -416,6 +418,7 @@ mod tests {
                 &server.uri(),
                 true,
                 "some-model",
+                "system prompt",
                 "rewrite",
                 "hello text",
                 0.3,

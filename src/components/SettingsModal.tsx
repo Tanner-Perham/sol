@@ -15,6 +15,7 @@ export interface SettingsModalProps {
   recordingHotkey: keyof Keybindings | null;
   setRecordingHotkey: (hotkey: keyof Keybindings | null) => void;
   openPolicyFile?: () => Promise<void>;
+  openReworkPromptFile?: () => Promise<void>;
 }
 
 const renderShortcutBadges = (shortcutStr: string) => {
@@ -57,7 +58,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   updateSettings,
   recordingHotkey,
   setRecordingHotkey,
-  openPolicyFile
+  openPolicyFile,
+  openReworkPromptFile
 }) => {
   return (
     <div className={`settings-modal-overlay ${showSettingsModal ? "open" : ""}`} onClick={() => setShowSettingsModal(false)}>
@@ -696,6 +698,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       />
                       <span className="slider-value">{(settings.reworkMaxTokensCap ?? 512)} tok</span>
                     </div>
+                  </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Rework Prompt File</span>
+                      <span className="settings-control-desc">Customize system instructions for inline rewriting</span>
+                    </div>
+                    {openReworkPromptFile && (
+                      <button
+                        type="button"
+                        className="btn-header-action"
+                        onClick={openReworkPromptFile}
+                        style={{
+                          padding: "6px 12px",
+                          fontSize: "12px",
+                          borderRadius: "6px",
+                          border: "1px solid var(--border)",
+                          background: "var(--bg-light)",
+                          color: "var(--text-normal)",
+                          cursor: "pointer",
+                          fontWeight: 600,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px"
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                          <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z" />
+                        </svg>
+                        Edit Rework Prompt
+                      </button>
+                    )}
                   </div>
                 </div>
 

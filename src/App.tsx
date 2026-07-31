@@ -582,6 +582,16 @@ function App() {
     openPolicyFileRef.current = openPolicyFile;
   }, [openPolicyFile]);
 
+  const openReworkPromptFile = useCallback(async () => {
+    try {
+      setShowSettingsModal(false);
+      const reworkPromptFile = await invoke<string>("open_rework_prompt_file");
+      await openFile(reworkPromptFile);
+    } catch (err) {
+      console.error("Failed to open rework prompt file:", err);
+    }
+  }, [openFile]);
+
   // Close a tab
   const closeTab = async (paneId: PaneId, fileName: string) => {
     const leaf = findLeafNode(layout, paneId);
@@ -2206,6 +2216,7 @@ function App() {
         recordingHotkey={recordingHotkey}
         setRecordingHotkey={setRecordingHotkey}
         openPolicyFile={openPolicyFile}
+        openReworkPromptFile={openReworkPromptFile}
       />
 
       {conflictInfo && (
