@@ -1119,7 +1119,7 @@ fn open_rework_prompt_file(
     
     if !prompt_path.exists() {
         let default_content = "You rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations. Do not output any thinking or reasoning, reply directly with the rewrite.";
-        fs::write(&prompt_path, default_content).map_err(|e| e.to_string())?;
+        write_atomically(&prompt_path, default_content.as_bytes()).map_err(|e| e.to_string())?;
     }
     
     Ok(".sol/rework_prompt.md".to_string())
