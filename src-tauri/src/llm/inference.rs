@@ -7,7 +7,7 @@ use candle_transformers::models::llama::{Llama as LlamaModel, LlamaConfig, Confi
 use candle_transformers::models::quantized_qwen2::ModelWeights as QuantizedQwen2;
 use candle_transformers::models::quantized_llama::ModelWeights as QuantizedLlama;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tokenizers::Tokenizer;
 use std::collections::{HashMap, HashSet};
 use super::stream::{StreamPostProcessor, ProcessResult};
@@ -116,7 +116,7 @@ pub struct GenerationStats {
 
 impl LoadedModel {
     /// Load a model from disk
-    pub fn load(workspace: &PathBuf, model_id: &str) -> Result<Self, String> {
+    pub fn load(workspace: &Path, model_id: &str) -> Result<Self, String> {
         let model_dir = models_dir(workspace).join(model_id);
 
         if !model_dir.exists() {

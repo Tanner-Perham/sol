@@ -203,11 +203,7 @@ pub fn assemble_context(
     };
 
     let prefix_chars_count = prefix.chars().count();
-    let prefix_from_char = if prefix_chars_count > options.prefix_chars {
-        prefix_chars_count - options.prefix_chars
-    } else {
-        0
-    };
+    let prefix_from_char = prefix_chars_count.saturating_sub(options.prefix_chars);
     let prefix_from_utf16 = char_index_to_utf16_offset(prefix, prefix_from_char);
     let prefix_to_utf16 = byte_to_utf16_offset(buffer_text, byte_offset);
 

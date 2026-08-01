@@ -1,7 +1,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 use sha2::{Sha256, Digest};
@@ -64,7 +64,7 @@ fn hf_download_url(repo_id: &str, filename: &str) -> String {
 
 /// Download a model from HuggingFace Hub using direct HTTP requests
 pub fn download_model(
-    workspace: &PathBuf,
+    workspace: &Path,
     model_id: &str,
     app_handle: &tauri::AppHandle,
     download_state: &SharedDownloadState,
@@ -128,7 +128,7 @@ pub fn download_model(
 }
 
 fn download_model_inner(
-    workspace: &PathBuf,
+    workspace: &Path,
     model_id: &str,
     app_handle: &tauri::AppHandle,
     download_state: &SharedDownloadState,
@@ -401,7 +401,7 @@ pub fn resume_download(model_id: &str, download_state: &SharedDownloadState) {
 }
 
 /// Delete a downloaded model
-pub fn delete_model(workspace: &PathBuf, model_id: &str) -> Result<(), String> {
+pub fn delete_model(workspace: &Path, model_id: &str) -> Result<(), String> {
     let model_dir = models_dir(workspace).join(model_id);
     if model_dir.exists() {
         std::fs::remove_dir_all(&model_dir).map_err(|e| e.to_string())?;

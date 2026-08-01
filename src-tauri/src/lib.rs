@@ -80,10 +80,9 @@ pub fn write_atomically(path: &Path, content: &[u8]) -> std::io::Result<()> {
     }
     
     // Rename temp file to target file
-    std::fs::rename(&temp_path, path).map_err(|e| {
+    std::fs::rename(&temp_path, path).inspect_err(|_| {
         // Clean up temp file on failure
         let _ = std::fs::remove_file(&temp_path);
-        e
     })?;
     
     Ok(())
@@ -93,7 +92,7 @@ pub fn get_file_mtime(path: &Path) -> std::io::Result<u64> {
     let metadata = std::fs::metadata(path)?;
     let modified = metadata.modified()?;
     let duration = modified.duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     Ok(duration.as_millis() as u64)
 }
 
@@ -221,11 +220,8 @@ pub(crate) fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<Pat
     }
 
     for component in user_path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                return Err("Path traversal detected: '..' is not allowed".to_string());
-            }
-            _ => {}
+        if component == std::path::Component::ParentDir {
+            return Err("Path traversal detected: '..' is not allowed".to_string());
         }
     }
 
