@@ -990,7 +990,7 @@ async fn generate_completion(
                 let model_id = model_id.ok_or_else(|| "Model ID missing".to_string())?;
                 let state = app.state::<WorkspaceState>();
                 let mut loaded_model_lock = lock!(state.loaded_model);
-                
+
                 let model = match &mut *loaded_model_lock {
                     Some((cached_id, model)) if cached_id == &model_id => model,
                     _ => {
