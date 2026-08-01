@@ -24,6 +24,7 @@ export interface FileNode {
 }
 
 export interface Keybindings {
+  newNote: string;
   save: string;
   togglePreview: string;
   toggleSidebar: string;
@@ -32,7 +33,7 @@ export interface Keybindings {
 }
 
 export interface AppSettings {
-  theme: "sol-dark" | "nord" | "monokai" | "forest" | "sepia" | "light" | "lego";
+  theme: "sol-dark" | "nord" | "monokai" | "forest" | "sepia" | "light" | "lego" | "pink";
   fontFamily: "sans" | "serif" | "mono";
   fontSize: number;
   lineHeight: number;
@@ -52,6 +53,11 @@ export interface AppSettings {
   aiDebugEnabled?: boolean;
   reworkTemperature?: number;
   reworkMaxTokensCap?: number;
+  showCalendar?: boolean;
+  dailyNotesFolder?: string;
+  dailyNotesFormat?: string;
+  weeklyNotesFolder?: string;
+  weeklyNotesFormat?: string;
 }
 
 export interface ModelFile {

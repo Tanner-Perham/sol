@@ -19,9 +19,9 @@ export const matchKeybinding = (e: KeyboardEvent, keybindingStr: string): boolea
   let matchMod = false;
   if (needsMod) {
     if (isMac) {
-      if (hasMeta && !hasCtrl) matchMod = true;
+      if (hasMeta || hasCtrl) matchMod = true;
     } else {
-      if (hasCtrl && !hasMeta) matchMod = true;
+      if (hasCtrl || hasMeta) matchMod = true;
     }
   } else {
     matchMod = true;

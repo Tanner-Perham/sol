@@ -69,6 +69,17 @@ class BulletWidget extends WidgetType {
   }
 }
 
+class FrontmatterDelimiterWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "cm-prose-frontmatter-delimiter-widget";
+    return el;
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 class ImageWidget extends WidgetType {
   constructor(readonly url: string, readonly alt: string) {
     super();
@@ -263,7 +274,48 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
     }
   }
 
+  // Scan for YAML frontmatter at the very beginning of the document
+  const firstLine = state.doc.line(1);
+  let frontmatterEndLine = -1;
+  if (firstLine.text.trim() === "---") {
+    for (let l = 2; l <= state.doc.lines; l++) {
+      if (state.doc.line(l).text.trim() === "---") {
+        frontmatterEndLine = l;
+        break;
+      }
+    }
+  }
+
   const collected: DecSpec[] = [];
+
+  if (frontmatterEndLine > 1) {
+    for (let l = 1; l <= frontmatterEndLine; l++) {
+      const line = state.doc.line(l);
+      const isLineRaw = cursorLines.has(l);
+
+      collected.push({
+        from: line.from,
+        to: line.from,
+        dec: lineClass(
+          l === 1
+            ? "cm-prose-frontmatter first"
+            : l === frontmatterEndLine
+            ? "cm-prose-frontmatter last"
+            : "cm-prose-frontmatter"
+        ),
+        category: 1
+      });
+
+      if (!isLineRaw && (l === 1 || l === frontmatterEndLine)) {
+        collected.push({
+          from: line.from,
+          to: line.to,
+          dec: Decoration.replace({ widget: new FrontmatterDelimiterWidget() }),
+          category: 2
+        });
+      }
+    }
+  }
 
   // Iterate over visible ranges for maximum performance
   for (const { from: rangeFrom, to: rangeTo } of view.visibleRanges) {
@@ -279,6 +331,11 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
         // Skip document root node
         if (name === "Document") return;
 
+        // Skip anything inside frontmatter
+        if (frontmatterEndLine > 1 && from < state.doc.line(frontmatterEndLine).to) {
+          return;
+        }
+
         // Check if node intersects cursor/raw lines
         const nodeStartLine = state.doc.lineAt(from).number;
         const nodeEndLine = state.doc.lineAt(to).number;
@@ -286,6 +343,15 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
         for (let n = nodeStartLine; n <= nodeEndLine; n++) {
           if (cursorLines.has(n)) {
             isRaw = true;
+            break;
+          }
+        }
+
+        // Check if cursor character position intersects node range (for inline elements)
+        let isInlineRaw = false;
+        for (const range of state.selection.ranges) {
+          if (range.from <= to && range.to >= from) {
+            isInlineRaw = true;
             break;
           }
         }
@@ -377,7 +443,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (!isOrdered && !isRaw) {
             let firstChild = node.firstChild;
             while (firstChild) {
-              if (firstChild.name === "ListMarker") {
+              if (firstChild.name === "ListMark") {
                 collected.push({
                   from: firstChild.from,
                   to: firstChild.to,
@@ -437,7 +503,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (firstChild && firstChild.name === "EmphasisMark") {
             markerLen = firstChild.to - firstChild.from;
           }
-          if (!isRaw) {
+          if (!isInlineRaw) {
             collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
             collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
           }
@@ -451,7 +517,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (firstChild && firstChild.name === "EmphasisMark") {
             markerLen = firstChild.to - firstChild.from;
           }
-          if (!isRaw) {
+          if (!isInlineRaw) {
             collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
             collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
           }
@@ -465,7 +531,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (firstChild && firstChild.name === "CodeMark") {
             markerLen = firstChild.to - firstChild.from;
           }
-          if (!isRaw) {
+          if (!isInlineRaw) {
             collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
             collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
           }
@@ -484,7 +550,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
           if (firstChild && firstChild.name === "StrikethroughMark") {
             markerLen = firstChild.to - firstChild.from;
           }
-          if (!isRaw) {
+          if (!isInlineRaw) {
             collected.push({ from: from, to: from + markerLen, dec: REPLACE, category: 2 });
             collected.push({ from: to - markerLen, to: to, dec: REPLACE, category: 2 });
           }
@@ -494,6 +560,44 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
             dec: Decoration.mark({ class: "cm-prose-strike" }),
             category: 3
           });
+        }
+
+        // 9.5 Inline Underline (HTMLTag <u>)
+        else if (name === "HTMLTag") {
+          const tagText = state.doc.sliceString(from, to);
+          if (/^<\s*u\s*>$/i.test(tagText)) {
+            // Find matching </u>
+            let closeNode = null;
+            let sibling = node.nextSibling;
+            while (sibling) {
+              if (sibling.name === "HTMLTag" && /^<\s*\/\s*u\s*>$/i.test(state.doc.sliceString(sibling.from, sibling.to))) {
+                closeNode = sibling;
+                break;
+              }
+              sibling = sibling.nextSibling;
+            }
+
+            if (closeNode) {
+              let isThisInlineRaw = false;
+              for (const range of state.selection.ranges) {
+                if (range.from <= closeNode.to && range.to >= from) {
+                  isThisInlineRaw = true;
+                  break;
+                }
+              }
+
+              if (!isThisInlineRaw) {
+                collected.push({ from: from, to: to, dec: REPLACE, category: 2 });
+                collected.push({ from: closeNode.from, to: closeNode.to, dec: REPLACE, category: 2 });
+              }
+              collected.push({
+                from: to,
+                to: closeNode.from,
+                dec: Decoration.mark({ class: "cm-prose-underline" }),
+                category: 3
+              });
+            }
+          }
         }
 
         // 10. Links and Images
@@ -509,7 +613,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
 
           if (titleNode && targetNode) {
             const url = state.doc.sliceString(targetNode.from, targetNode.to);
-            if (!isRaw) {
+            if (!isInlineRaw) {
               collected.push({ from: from, to: titleNode.from, dec: REPLACE, category: 2 });
               collected.push({ from: titleNode.to, to: to, dec: REPLACE, category: 2 });
             }
@@ -535,7 +639,7 @@ function buildDecorations(view: EditorView, workspacePath: string, markdownFiles
             child = child.nextSibling;
           }
 
-          if (targetNode && !isRaw) {
+          if (targetNode && !isInlineRaw) {
             const url = state.doc.sliceString(targetNode.from, targetNode.to);
             const alt = titleNode ? state.doc.sliceString(titleNode.from, titleNode.to) : "";
             const resolvedUrl = resolveUrl(url, workspacePath);

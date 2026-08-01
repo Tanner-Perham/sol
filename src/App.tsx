@@ -17,7 +17,7 @@ import { computeWordCount, findHeaderLine, threeWayMerge, computeSimpleLineDiff 
 import { Sidebar, VisibleItem } from "./components/Sidebar";
 import { SettingsModal, SettingsTabType } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
-import { EditorPaneComponent, pruneEditorState } from "./components/EditorPane/EditorPane";
+import { EditorPaneComponent, pruneEditorState, renameEditorState, saveEditorState } from "./components/EditorPane/EditorPane";
 import { clearSuggestion } from "./components/EditorPane/ghostTextExtension";
 
 function App() {
@@ -162,6 +162,7 @@ function App() {
   const reloadTreeRef = useRef<any>(null);
   const prevActiveFileRef = useRef<string | null>(null);
   const inputFocusedRef = useRef(false);
+  const skipExpandRef = useRef(false);
   const fileMtimesRef = useRef<Map<string, number>>(new Map());
   const fileBasesRef = useRef<Map<string, string>>(new Map());
   const isSettingsLoadingRef = useRef(false);
@@ -543,6 +544,29 @@ function App() {
     }
   };
 
+  const openPeriodicNote = async (relativePath: string) => {
+    try {
+      skipExpandRef.current = true;
+      let exists = false;
+      try {
+        await invoke("read_markdown_file", { path: relativePath });
+        exists = true;
+      } catch (e) {
+        exists = false;
+      }
+
+      if (!exists) {
+        await invoke("create_markdown_file", { name: relativePath });
+        const tree = await invoke<FileNode[]>("get_file_tree");
+        setFileTree(tree);
+      }
+
+      await openFile(relativePath);
+    } catch (err) {
+      console.error("Failed to open or create periodic note:", err);
+    }
+  };
+
   const openPolicyFile = useCallback(async () => {
     try {
       setShowSettingsModal(false);
@@ -557,6 +581,16 @@ function App() {
   useEffect(() => {
     openPolicyFileRef.current = openPolicyFile;
   }, [openPolicyFile]);
+
+  const openReworkPromptFile = useCallback(async () => {
+    try {
+      setShowSettingsModal(false);
+      const reworkPromptFile = await invoke<string>("open_rework_prompt_file");
+      await openFile(reworkPromptFile);
+    } catch (err) {
+      console.error("Failed to open rework prompt file:", err);
+    }
+  }, [openFile]);
 
   // Close a tab
   const closeTab = async (paneId: PaneId, fileName: string) => {
@@ -630,15 +664,328 @@ function App() {
     }
 
     setLayout(updatedLayout);
+ 
+     const leafIds = getLeafPaneIds(updatedLayout);
+     if (!leafIds.includes(activePaneId)) {
+       const nextActivePaneId = leafIds[0] || "pane-root";
+       setActivePaneId(nextActivePaneId);
+       
+       const nextState = paneStatesRef.current.get(nextActivePaneId) || { isDirty: false, wordCount: 0 };
+       setIsDirty(nextState.isDirty);
+       setWordCount(nextState.wordCount);
+     }
+   };
+ 
+   // Close multiple tabs in a pane
+   const closeTabs = async (paneId: PaneId, fileNamesToClose: string[]) => {
+     const leaf = findLeafNode(layout, paneId);
+     if (!leaf) return;
+ 
+     // 1. Save the active file if it is in the list of files to close, is dirty, and has a view
+     const view = editorViewsRef.current.get(paneId);
+     const paneState = paneStatesRef.current.get(paneId);
+     if (leaf.activeFile && fileNamesToClose.includes(leaf.activeFile) && paneState?.isDirty && view) {
+       const content = view.state.doc.toString();
+       const timeout = saveTimeoutsRef.current.get(leaf.activeFile);
+       if (timeout) {
+         clearTimeout(timeout);
+         saveTimeoutsRef.current.delete(leaf.activeFile);
+       }
+       try {
+         await writeMarkdownFileWithConflictCheck(leaf.activeFile, content);
+       } catch (err) {
+         console.error("Failed to auto-save file on closeTabs", err);
+       }
+     }
+ 
+     // 2. Clear timeouts and prune editor states for all closed files
+     fileNamesToClose.forEach((fileName) => {
+       const timeout = saveTimeoutsRef.current.get(fileName);
+       if (timeout) {
+         clearTimeout(timeout);
+         saveTimeoutsRef.current.delete(fileName);
+       }
+       pruneEditorState(paneId, fileName);
+     });
+ 
+     const newTabs = leaf.tabs.filter((t) => !fileNamesToClose.includes(t));
+ 
+     // 3. Find next active file if current active file is being closed
+     let nextActiveFile = leaf.activeFile;
+     if (leaf.activeFile && fileNamesToClose.includes(leaf.activeFile)) {
+       const closedIdx = leaf.tabs.indexOf(leaf.activeFile);
+       let found = false;
+       for (let i = closedIdx + 1; i < leaf.tabs.length; i++) {
+         if (!fileNamesToClose.includes(leaf.tabs[i])) {
+           nextActiveFile = leaf.tabs[i];
+           found = true;
+           break;
+         }
+       }
+       if (!found) {
+         for (let i = closedIdx - 1; i >= 0; i--) {
+           if (!fileNamesToClose.includes(leaf.tabs[i])) {
+             nextActiveFile = leaf.tabs[i];
+             found = true;
+             break;
+           }
+         }
+       }
+       if (!found) {
+         nextActiveFile = null;
+       }
+     }
+ 
+     const updatePaneInTree = (node: PaneNode): PaneNode => {
+       if (node.type === "leaf") {
+         if (node.id === paneId) {
+           return {
+             ...node,
+             tabs: newTabs,
+             activeFile: nextActiveFile
+           };
+         }
+         return node;
+       }
+       return {
+         ...node,
+         children: node.children.map(updatePaneInTree)
+       };
+     };
+ 
+     let updatedLayout = updatePaneInTree(layout);
+ 
+     if (newTabs.length === 0) {
+       const cleanTree = removePaneFromTree(updatedLayout, paneId);
+       if (cleanTree) {
+         updatedLayout = cleanTree;
+       } else {
+         updatedLayout = {
+           type: "leaf",
+           id: "pane-root",
+           activeFile: null,
+           tabs: []
+         };
+       }
+       editorViewsRef.current.delete(paneId);
+       paneStatesRef.current.delete(paneId);
+     }
+ 
+     setLayout(updatedLayout);
+ 
+     const leafIds = getLeafPaneIds(updatedLayout);
+     if (!leafIds.includes(activePaneId)) {
+       const nextActivePaneId = leafIds[0] || "pane-root";
+       setActivePaneId(nextActivePaneId);
+       
+       const nextState = paneStatesRef.current.get(nextActivePaneId) || { isDirty: false, wordCount: 0 };
+       setIsDirty(nextState.isDirty);
+       setWordCount(nextState.wordCount);
+     }
+   };
 
-    const leafIds = getLeafPaneIds(updatedLayout);
-    if (!leafIds.includes(activePaneId)) {
-      const nextActivePaneId = leafIds[0] || "pane-root";
-      setActivePaneId(nextActivePaneId);
+  // Rename a path inside layout node and migrate states
+  const renamePathInLayout = (node: PaneNode, oldPath: string, newPath: string, isDir: boolean): PaneNode => {
+    const mapPath = (p: string) => {
+      if (isDir) {
+        if (p === oldPath) return newPath;
+        if (p.startsWith(oldPath + "/")) {
+          return newPath + p.slice(oldPath.length);
+        }
+      } else {
+        if (p === oldPath) return newPath;
+      }
+      return p;
+    };
+
+    if (node.type === "leaf") {
+      const newTabs = node.tabs.map(mapPath);
+      const nextActive = node.activeFile ? mapPath(node.activeFile) : null;
       
-      const nextState = paneStatesRef.current.get(nextActivePaneId) || { isDirty: false, wordCount: 0 };
-      setIsDirty(nextState.isDirty);
-      setWordCount(nextState.wordCount);
+      node.tabs.forEach(t => {
+        const mapped = mapPath(t);
+        if (mapped !== t) {
+          renameEditorState(node.id, t, mapped);
+          
+          if (fileMtimesRef.current.has(t)) {
+            fileMtimesRef.current.set(mapped, fileMtimesRef.current.get(t)!);
+            fileMtimesRef.current.delete(t);
+          }
+          if (fileBasesRef.current.has(t)) {
+            fileBasesRef.current.set(mapped, fileBasesRef.current.get(t)!);
+            fileBasesRef.current.delete(t);
+          }
+        }
+      });
+
+      return {
+        ...node,
+        tabs: newTabs,
+        activeFile: nextActive
+      };
+    }
+
+    return {
+      ...node,
+      children: node.children.map(c => renamePathInLayout(c, oldPath, newPath, isDir))
+    };
+  };
+
+  const deleteItem = async (itemPath: string, isDir: boolean) => {
+    const baseName = itemPath.split(/[/\\]/).pop() || itemPath;
+    if (!window.confirm(`Are you sure you want to delete "${baseName}"?${isDir ? " This will delete all contents inside this directory." : ""}`)) {
+      return;
+    }
+
+    try {
+      await invoke("delete_item", { path: itemPath });
+
+      const shouldClose = (tabPath: string) => {
+        if (isDir) {
+          return tabPath === itemPath || tabPath.startsWith(itemPath + "/");
+        } else {
+          return tabPath === itemPath;
+        }
+      };
+
+      const closeTabsForDeleted = (node: PaneNode): PaneNode => {
+        if (node.type === "leaf") {
+          const newTabs = node.tabs.filter(t => !shouldClose(t));
+          let nextActive = node.activeFile;
+          if (node.activeFile && shouldClose(node.activeFile)) {
+            nextActive = newTabs.length > 0 ? newTabs[0] : null;
+            pruneEditorState(node.id, node.activeFile);
+          }
+          return {
+            ...node,
+            tabs: newTabs,
+            activeFile: nextActive
+          };
+        }
+        return {
+          ...node,
+          children: node.children.map(closeTabsForDeleted)
+        };
+      };
+
+      setLayout(prevLayout => closeTabsForDeleted(prevLayout));
+
+      const tree = await invoke<FileNode[]>("get_file_tree");
+      setFileTree(tree);
+    } catch (err) {
+      console.error("Failed to delete item", err);
+    }
+  };
+
+  const renameItem = async (oldPath: string, newName: string, isDir: boolean, isBlur: boolean) => {
+    const parts = oldPath.split("/");
+    
+    // Auto-append .md if renaming a file and they didn't specify an extension
+    let finalNewName = newName;
+    if (!isDir) {
+      const hasExtension = (pathStr: string): boolean => {
+        const dotIndex = pathStr.lastIndexOf('.');
+        return dotIndex > 0 && dotIndex < pathStr.length - 1;
+      };
+      finalNewName = hasExtension(newName) ? newName : `${newName}.md`;
+    }
+
+    parts[parts.length - 1] = finalNewName;
+    const newPath = parts.join("/");
+
+    if (newPath === oldPath) return;
+
+    // 1. Force save all active editor views to the cache to capture current scroll/selection
+    const leafIds = getLeafPaneIds(layout);
+    leafIds.forEach(paneId => {
+      const leaf = findLeafNode(layout, paneId);
+      const view = editorViewsRef.current.get(paneId);
+      if (leaf && leaf.activeFile && view) {
+        saveEditorState(paneId, leaf.activeFile, view);
+      }
+    });
+
+    // 2. Save any dirty files inside oldPath before renaming on disk
+    const shouldSave = (p: string) => {
+      if (isDir) {
+        return p === oldPath || p.startsWith(oldPath + "/");
+      } else {
+        return p === oldPath;
+      }
+    };
+
+    for (const paneId of leafIds) {
+      const leaf = findLeafNode(layout, paneId);
+      if (leaf && leaf.activeFile && shouldSave(leaf.activeFile)) {
+        const view = editorViewsRef.current.get(paneId);
+        const paneState = paneStatesRef.current.get(paneId);
+        if (paneState?.isDirty && view) {
+          const content = view.state.doc.toString();
+          const timeout = saveTimeoutsRef.current.get(leaf.activeFile);
+          if (timeout) {
+            clearTimeout(timeout);
+            saveTimeoutsRef.current.delete(leaf.activeFile);
+          }
+          try {
+            await writeMarkdownFileWithConflictCheck(leaf.activeFile, content);
+          } catch (err) {
+            console.error("Failed to auto-save file on rename", err);
+          }
+        }
+      }
+    }
+
+    try {
+      await invoke("rename_item", { oldPath, newPath });
+
+      // 3. Update expanded paths for folder renames
+      if (isDir) {
+        setExpandedPaths(prev => {
+          const next = new Set<string>();
+          prev.forEach(p => {
+            if (p === oldPath) {
+              next.add(newPath);
+            } else if (p.startsWith(oldPath + "/")) {
+              next.add(newPath + p.slice(oldPath.length));
+            } else {
+              next.add(p);
+            }
+          });
+          return next;
+        });
+      }
+
+      // 4. Migrate active save timeouts to the new path
+      const mapPath = (p: string) => {
+        if (isDir) {
+          if (p === oldPath) return newPath;
+          if (p.startsWith(oldPath + "/")) {
+            return newPath + p.slice(oldPath.length);
+          }
+        } else {
+          if (p === oldPath) return newPath;
+        }
+        return p;
+      };
+
+      saveTimeoutsRef.current.forEach((timeout, p) => {
+        const mapped = mapPath(p);
+        if (mapped !== p) {
+          saveTimeoutsRef.current.set(mapped, timeout);
+          saveTimeoutsRef.current.delete(p);
+        }
+      });
+
+      // 5. Update layout and migrate editor/selection caches
+      setLayout(prevLayout => renamePathInLayout(prevLayout, oldPath, newPath, isDir));
+
+      const tree = await invoke<FileNode[]>("get_file_tree");
+      setFileTree(tree);
+    } catch (err) {
+      console.error("Failed to rename item", err);
+      if (!isBlur) {
+        alert(`Rename failed: ${err}`);
+      }
     }
   };
 
@@ -736,7 +1083,11 @@ function App() {
 
   useEffect(() => {
     if (activeFile) {
-      expandParentsOfFile(activeFile);
+      if (skipExpandRef.current) {
+        skipExpandRef.current = false;
+      } else {
+        expandParentsOfFile(activeFile);
+      }
     }
   }, [activeFile, expandParentsOfFile]);
 
@@ -1178,6 +1529,35 @@ function App() {
     setVimModeName(mode);
   }, []);
 
+  const handleCreateNewNote = useCallback(() => {
+    let targetPath = "";
+    const currentItem = visibleItems[sidebarSelectedIndex];
+    if (currentItem && currentItem.path !== "__creating__") {
+      if (currentItem.isDir) {
+        targetPath = currentItem.path;
+      } else {
+        const lastSlashIdx = currentItem.path.lastIndexOf("/");
+        targetPath = lastSlashIdx !== -1 ? currentItem.path.substring(0, lastSlashIdx) : "";
+      }
+    } else if (activeFileRef.current) {
+      const lastSlashIdx = activeFileRef.current.lastIndexOf("/");
+      targetPath = lastSlashIdx !== -1 ? activeFileRef.current.substring(0, lastSlashIdx) : "";
+    }
+
+    setSidebarOpen(true);
+    setFocusedComponent("sidebar");
+    inputFocusedRef.current = false;
+    setCreatingNode({ type: "file", parentPath: targetPath });
+    setNewInputName("untitled.md");
+    if (targetPath) {
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        next.add(targetPath);
+        return next;
+      });
+    }
+  }, [visibleItems, sidebarSelectedIndex]);
+
   // Refs to avoid stale closures in global keydown listener
   const layoutRef = useRef(layout);
   const activePaneIdRef = useRef(activePaneId);
@@ -1195,6 +1575,7 @@ function App() {
   const pendingHeadersRef = useRef<Map<PaneId, string>>(new Map());
   const settingsRef = useRef(settings);
   const updateSettingsRef = useRef(updateSettings);
+  const handleCreateNewNoteRef = useRef(handleCreateNewNote);
 
   useEffect(() => { layoutRef.current = layout; }, [layout]);
   useEffect(() => { updateSettingsRef.current = updateSettings; }, [updateSettings]);
@@ -1210,9 +1591,17 @@ function App() {
   useEffect(() => { workspacePathRef.current = workspacePath; }, [workspacePath]);
   useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { handleCreateNewNoteRef.current = handleCreateNewNote; }, [handleCreateNewNote]);
 
   // Register Vim custom Ex commands
   useEffect(() => {
+    Vim.defineEx("new", "new", () => {
+      handleCreateNewNoteRef.current();
+    });
+
+    Vim.defineEx("newnote", "newnote", () => {
+      handleCreateNewNoteRef.current();
+    });
     Vim.defineEx("quit", "q", () => {
       const currentActivePaneId = activePaneIdRef.current;
       const leaf = findLeafNode(layoutRef.current, currentActivePaneId);
@@ -1309,6 +1698,14 @@ function App() {
       }
 
       const keybindings = settingsRef.current.keybindings || DEFAULT_KEYBINDINGS;
+
+      // Ctrl+N (mod+n) to create a new note
+      if (matchKeybinding(e, keybindings.newNote) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n" && !e.altKey && !e.shiftKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleCreateNewNoteRef.current();
+        return;
+      }
 
       // Enter prefix mode
       if (matchKeybinding(e, keybindings.prefixMode)) {
@@ -1521,11 +1918,18 @@ function App() {
       return;
     }
 
+    const hasExtension = (pathStr: string): boolean => {
+      const parts = pathStr.split(/[/\\]/);
+      const baseName = parts[parts.length - 1];
+      const dotIndex = baseName.lastIndexOf('.');
+      return dotIndex > 0 && dotIndex < baseName.length - 1;
+    };
+
     const relativePath = creatingNode.parentPath ? `${creatingNode.parentPath}/${name}` : name;
 
     try {
       if (creatingNode.type === "file") {
-        const nameWithExt = relativePath.endsWith(".md") ? relativePath : `${relativePath}.md`;
+        const nameWithExt = hasExtension(relativePath) ? relativePath : `${relativePath}.md`;
         await invoke("create_markdown_file", { name: nameWithExt });
         if (creatingNode.parentPath) {
           setExpandedPaths(prev => {
@@ -1582,6 +1986,7 @@ function App() {
             setFocusedComponent("editor");
           }}
           onCloseTab={closeTab}
+          onCloseTabs={closeTabs}
           onOpenFile={openFile}
           registerView={registerView}
           registerState={registerState}
@@ -1617,88 +2022,95 @@ function App() {
 
   if (!workspacePath) {
     return (
-      <div className="app-container" style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100vh",
-        background: "radial-gradient(circle at center, #1e1e2e 0%, #11111b 100%)",
-        color: "#cdd6f4",
-        fontFamily: "'Outfit', 'Inter', sans-serif"
-      }}>
-        <div style={{
-          maxWidth: "480px",
-          textAlign: "center",
-          padding: "48px 40px",
-          borderRadius: "16px",
-          backgroundColor: "#181825",
-          border: "1px solid #313244",
-          boxShadow: "0 15px 40px rgba(0,0,0,0.5)",
-          backdropFilter: "blur(10px)",
-        }}>
-          <div style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: "80px",
-            height: "80px",
-            borderRadius: "50%",
-            background: "linear-gradient(135deg, #b4befe 0%, #cba6f7 100%)",
-            marginBottom: "24px",
-            boxShadow: "0 8px 24px rgba(180, 190, 254, 0.3)"
-          }}>
-            <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#11111b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-              <polyline points="9 22 9 12 15 12 15 22" />
+      <div className="landing-container fade-in">
+        <header className="app-header">
+          <div className="app-title-group">
+            <svg className="logo-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="12" cy="12" r="5" />
+              <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
+            <span className="app-title">SOL</span>
+            <span className="app-subtitle">no workspace</span>
           </div>
-          <h1 style={{
-            fontSize: "32px",
-            fontWeight: 800,
-            marginBottom: "12px",
-            background: "linear-gradient(to right, #cdd6f4, #bac2de)",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            letterSpacing: "-0.02em"
-          }}>
-            Welcome to Sol
-          </h1>
-          <p style={{
-            color: "#a6adc8",
-            marginBottom: "32px",
-            fontSize: "15px",
-            lineHeight: "1.6",
-            fontWeight: 400
-          }}>
-            A secure, privacy-first markdown vault for your local notes. Organize your thoughts and discover patterns with local AI.
-          </p>
-          <button
-            onClick={changeWorkspace}
-            style={{
-              background: "linear-gradient(135deg, #b4befe 0%, #89b4fa 100%)",
-              color: "#11111b",
-              border: "none",
-              padding: "14px 28px",
-              borderRadius: "8px",
-              fontSize: "16px",
-              fontWeight: 700,
-              cursor: "pointer",
-              transition: "transform 0.2s ease, box-shadow 0.2s ease",
-              boxShadow: "0 4px 15px rgba(137, 180, 250, 0.2)"
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.transform = "scale(1.03)";
-              e.currentTarget.style.boxShadow = "0 6px 20px rgba(137, 180, 250, 0.3)";
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.transform = "scale(1)";
-              e.currentTarget.style.boxShadow = "0 4px 15px rgba(137, 180, 250, 0.2)";
-            }}
-          >
-            Open Workspace Folder
-          </button>
+
+          <div className="app-actions">
+            <button
+              className="btn-header-action"
+              onClick={() => {
+                setShowSettingsModal(true);
+                setActiveSettingsTab("general");
+              }}
+              title="Settings"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px", width: "30px", height: "30px" }}
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <div className="landing-body">
+          <div className="landing-backdrop-glow"></div>
+          <div className="landing-card">
+            <div className="landing-logo-badge">
+              <svg className="landing-sol-logo" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="12" cy="12" r="5" />
+                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+            
+            <h1 className="landing-title">Welcome to Sol</h1>
+            <p className="landing-description">
+              A secure, privacy-first markdown vault for your local notes.
+              Organize your thoughts and discover patterns with local AI.
+            </p>
+
+            <div className="landing-features">
+              <div className="landing-feature-chip">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                </svg>
+                <span>Local & Private</span>
+              </div>
+              <div className="landing-feature-chip">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                </svg>
+                <span>Vim & Split Panes</span>
+              </div>
+              <div className="landing-feature-chip">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <path d="M12 16v-4"></path>
+                  <path d="M12 8h.01"></path>
+                </svg>
+                <span>Local AI Assistant</span>
+              </div>
+            </div>
+
+            <button className="landing-btn-primary" onClick={changeWorkspace}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+              <span>Open Workspace Folder</span>
+            </button>
+          </div>
         </div>
+
+        <SettingsModal
+          showSettingsModal={showSettingsModal}
+          setShowSettingsModal={setShowSettingsModal}
+          activeSettingsTab={activeSettingsTab}
+          setActiveSettingsTab={setActiveSettingsTab}
+          settings={settings}
+          updateSettings={updateSettings}
+          recordingHotkey={recordingHotkey}
+          setRecordingHotkey={setRecordingHotkey}
+          openPolicyFile={openPolicyFile}
+        />
       </div>
     );
   }
@@ -1768,6 +2180,11 @@ function App() {
           activeFile={activeFile}
           handleNewNodeSubmit={handleNewNodeSubmit}
           inputFocusedRef={inputFocusedRef}
+          deleteItem={deleteItem}
+          renameItem={renameItem}
+          fileTree={fileTree}
+          openPeriodicNote={openPeriodicNote}
+          settings={settings}
         />
 
         <main className="app-main">
@@ -1799,6 +2216,7 @@ function App() {
         recordingHotkey={recordingHotkey}
         setRecordingHotkey={setRecordingHotkey}
         openPolicyFile={openPolicyFile}
+        openReworkPromptFile={openReworkPromptFile}
       />
 
       {conflictInfo && (

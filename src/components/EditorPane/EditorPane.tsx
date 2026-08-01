@@ -1,11 +1,25 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { EditorState, Compartment, Transaction } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
-import { defaultKeymap, historyKeymap, history } from "@codemirror/commands";
+import { EditorState, Compartment, Transaction, Prec, RangeSet } from "@codemirror/state";
+import { EditorView, keymap, lineNumbers, GutterMarker, lineNumberMarkers } from "@codemirror/view";
+
+class CursorLineGutterMarker extends GutterMarker {
+  elementClass = "cm-activeLineGutter";
+  constructor(public line: number) {
+    super();
+  }
+  eq(other: CursorLineGutterMarker) {
+    return this.line === other.line;
+  }
+}
+import { defaultKeymap, historyKeymap, history, indentWithTab } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { languages } from "@codemirror/language-data";
+import { syntaxHighlighting } from "@codemirror/language";
+import { classHighlighter } from "@lezer/highlight";
 import { autocompletion } from "@codemirror/autocomplete";
 import { vim, Vim, getCM } from "@replit/codemirror-vim";
+import { Strikethrough } from "@lezer/markdown";
 import { prosePreviewPlugin } from "../../prosePreviewPlugin";
 import { PaneId, AppSettings, FileNode } from "../../types";
 import { customSelectionHighlightPlugin } from "./editorPlugins";
@@ -26,6 +40,7 @@ export interface EditorPaneProps {
   fileBasesRef: React.MutableRefObject<Map<string, string>>;
   onFocus: () => void;
   onCloseTab: (paneId: string, file: string) => void;
+  onCloseTabs: (paneId: string, files: string[]) => void;
   onOpenFile: (file: string) => void;
   registerView: (paneId: string, view: EditorView | null) => void;
   registerState: (paneId: string, isDirty: boolean, wordCount: number) => void;
@@ -54,6 +69,52 @@ export function clearAllEditorStates() {
   fileEditorStates.clear();
 }
 
+export function saveEditorState(paneId: string, file: string, view: EditorView) {
+  const cacheKey = `${paneId}:${file}`;
+  const selection = view.state.selection;
+  const scrollTop = view.scrollDOM ? view.scrollDOM.scrollTop : 0;
+  const scrollLeft = view.scrollDOM ? view.scrollDOM.scrollLeft : 0;
+  editorStates.set(cacheKey, { selection, scrollTop, scrollLeft });
+  fileEditorStates.set(cacheKey, view.state);
+}
+
+export function renameEditorState(paneId: string, oldFile: string, newFile: string) {
+  const oldKey = `${paneId}:${oldFile}`;
+  const newKey = `${paneId}:${newFile}`;
+
+  const state = editorStates.get(oldKey);
+  if (state) {
+    editorStates.set(newKey, state);
+    editorStates.delete(oldKey);
+  }
+
+  const edState = fileEditorStates.get(oldKey);
+  if (edState) {
+    fileEditorStates.set(newKey, edState);
+    fileEditorStates.delete(oldKey);
+  }
+}
+
+const toggleFormatting = (view: EditorView, prefix: string, suffix: string): boolean => {
+  const selection = view.state.selection;
+  const mainRange = selection.main;
+  if (mainRange.empty) {
+    const insertText = prefix + suffix;
+    view.dispatch({
+      changes: { from: mainRange.from, insert: insertText },
+      selection: { anchor: mainRange.from + prefix.length }
+    });
+  } else {
+    const selectedText = view.state.doc.sliceString(mainRange.from, mainRange.to);
+    view.dispatch({
+      changes: { from: mainRange.from, to: mainRange.to, insert: prefix + selectedText + suffix },
+      selection: { anchor: mainRange.from + prefix.length, head: mainRange.from + prefix.length + selectedText.length }
+    });
+  }
+  return true;
+};
+
+
 export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   paneId,
   activeFile,
@@ -67,6 +128,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   fileBasesRef,
   onFocus,
   onCloseTab,
+  onCloseTabs,
   onOpenFile,
   registerView,
   registerState,
@@ -82,6 +144,48 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   useEffect(() => {
     isLocalDirtyRef.current = isLocalDirty;
   }, [isLocalDirty]);
+
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    tab: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleClose = (e: MouseEvent) => {
+      const menuEl = document.getElementById(`context-menu-${paneId}`);
+      if (menuEl && menuEl.contains(e.target as Node)) {
+        return;
+      }
+      setContextMenu(null);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setContextMenu(null);
+      }
+    };
+    window.addEventListener("mousedown", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("contextmenu", handleClose);
+    return () => {
+      window.removeEventListener("mousedown", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("contextmenu", handleClose);
+    };
+  }, [contextMenu, paneId]);
+
+  const handleTabContextMenu = useCallback((e: React.MouseEvent, tab: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      tab
+    });
+  }, []);
 
   const { vimMode, livePreview, lineWrapping, theme } = settings;
 
@@ -125,6 +229,11 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
   // Load content when activeFile changes
   useEffect(() => {
     if (!activeFile) {
+      if (viewRef.current) {
+        viewRef.current.destroy();
+        viewRef.current = null;
+        registerView(paneId, null);
+      }
       setFileData(null);
       setIsLocalDirty(false);
       registerState(paneId, false, 0);
@@ -156,8 +265,48 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
   const buildExtensions = useCallback(() => {
     return [
+      lineNumbers({
+        formatNumber: (lineNo, state) => {
+          const cursorLine = state.doc.lineAt(state.selection.main.head).number;
+          const diff = Math.abs(lineNo - cursorLine);
+          return diff.toString();
+        }
+      }),
+      lineNumberMarkers.compute(["selection"], (state) => {
+        const cursorLine = state.doc.lineAt(state.selection.main.head).number;
+        const linePos = state.doc.line(cursorLine).from;
+        return RangeSet.of([new CursorLineGutterMarker(cursorLine).range(linePos)]);
+      }),
+      Prec.highest(
+        keymap.of([
+          {
+            key: "Mod-b",
+            run: (view) => toggleFormatting(view, "**", "**")
+          },
+          {
+            key: "Mod-i",
+            run: (view) => toggleFormatting(view, "*", "*")
+          },
+          {
+            key: "Mod-u",
+            run: (view) => toggleFormatting(view, "<u>", "</u>")
+          },
+          {
+            key: "Mod-Shift-s",
+            run: (view) => toggleFormatting(view, "~~", "~~")
+          },
+          {
+            key: "Mod-Shift-x",
+            run: (view) => toggleFormatting(view, "~~", "~~")
+          }
+        ])
+      ),
       history(),
       EditorView.inputHandler.of((view, from, to, text) => {
+        const cm = getCM(view);
+        if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {
+          return true; // block input if vim mode is active and not in insert mode
+        }
         if (text === "[") {
           if (from > 0 && view.state.doc.sliceString(from - 1, from) === "[") {
             view.dispatch({
@@ -204,11 +353,13 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
             return false;
           }
         },
+        indentWithTab,
         ...defaultKeymap,
         ...historyKeymap
       ]),
-      markdown(),
-      vimCompartment.of(vimMode ? [vim()] : []),
+      markdown({ codeLanguages: languages, extensions: [Strikethrough] }),
+      syntaxHighlighting(classHighlighter),
+      vimCompartment.of(vimMode ? [Prec.highest(vim())] : []),
       wrapCompartment.of(lineWrapping ? [EditorView.lineWrapping] : []),
       previewCompartment.of(livePreview ? [prosePreviewPlugin(workspacePath, markdownFilesSet)] : []),
       themeCompartment.of(EditorView.theme({
@@ -274,8 +425,9 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 
     let state = fileEditorStates.get(cacheKey);
 
-    if (!state) {
+    if (!state || state.field(activeFileField) !== activeFile) {
       const savedState = editorStates.get(cacheKey);
+      const isNewState = !savedState;
       let selection = undefined;
       if (savedState && savedState.selection) {
         const maxPos = loadedContent.length;
@@ -283,6 +435,10 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         if (savedSel.main && savedSel.main.to <= maxPos) {
           selection = savedSel;
         }
+      } else {
+        const firstLineEnd = loadedContent.indexOf("\n");
+        const pos = firstLineEnd !== -1 ? firstLineEnd : loadedContent.length;
+        selection = { anchor: pos };
       }
 
       state = EditorState.create({
@@ -294,6 +450,18 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
         ]
       });
       fileEditorStates.set(cacheKey, state);
+
+      if (isNewState && vimMode) {
+        setTimeout(() => {
+          const currentView = viewRef.current;
+          if (currentView) {
+            const cm = getCM(currentView);
+            if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {
+              Vim.handleKey(cm, "i", "mapping");
+            }
+          }
+        }, 50);
+      }
     }
 
     let view = viewRef.current;
@@ -490,12 +658,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     }
 
     return () => {
-      if (loadedFile && view) {
-        const selection = view.state.selection;
-        const scrollTop = view.scrollDOM ? view.scrollDOM.scrollTop : 0;
-        const scrollLeft = view.scrollDOM ? view.scrollDOM.scrollLeft : 0;
-        editorStates.set(cacheKey, { selection, scrollTop, scrollLeft });
-        fileEditorStates.set(cacheKey, view.state);
+      if (loadedFile && view && viewRef.current === view) {
+        saveEditorState(paneId, loadedFile, view);
       }
 
       if (view) {
@@ -511,7 +675,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     if (view) {
       view.dispatch({
         effects: [
-          vimCompartment.reconfigure(vimMode ? [vim()] : []),
+          vimCompartment.reconfigure(vimMode ? [Prec.highest(vim())] : []),
           wrapCompartment.reconfigure(lineWrapping ? [EditorView.lineWrapping] : []),
           previewCompartment.reconfigure(livePreview ? [prosePreviewPlugin(workspacePath, markdownFilesSet)] : []),
           themeCompartment.reconfigure(EditorView.theme({
@@ -577,6 +741,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
                     onCloseTab(paneId, tab);
                   }
                 }}
+                onContextMenu={(e) => handleTabContextMenu(e, tab)}
                 title={`${tab} (Alt+${idx + 1})`}
               >
                 <span className="tab-name">{tab.replace(/\.md$/, "")}</span>
@@ -598,9 +763,9 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       )}
       <div className="editor-wrapper" style={{ flex: 1, overflow: "hidden", position: "relative" }} onClick={onFocus}>
         {activeFile ? (
-          <div ref={containerRef} className="editor-inner" style={{ height: "100%" }} />
+          <div ref={containerRef} key="editor-inner" className="editor-inner" style={{ height: "100%" }} />
         ) : (
-          <div className="editor-empty-state">
+          <div key="editor-empty" className="editor-empty-state">
             <svg className="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <polyline points="14 2 14 8 20 8" />
@@ -612,6 +777,81 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           </div>
         )}
       </div>
+
+      {contextMenu && (
+        <div
+          id={`context-menu-${paneId}`}
+          className="tab-context-menu"
+          style={{
+            position: "fixed",
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+            zIndex: 1000
+          }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <div
+            className="tab-context-menu-item"
+            onClick={() => {
+              onCloseTab(paneId, contextMenu.tab);
+              setContextMenu(null);
+            }}
+          >
+            <span>Close</span>
+            <span className="kbd-shortcut" style={{ fontSize: "9px" }}>Alt+W</span>
+          </div>
+          <div
+            className="tab-context-menu-item"
+            onClick={() => {
+              const others = tabs.filter(t => t !== contextMenu.tab);
+              onCloseTabs(paneId, others);
+              setContextMenu(null);
+            }}
+          >
+            <span>Close Others</span>
+          </div>
+          {tabs.indexOf(contextMenu.tab) < tabs.length - 1 && (
+            <div
+              className="tab-context-menu-item"
+              onClick={() => {
+                const tabIdx = tabs.indexOf(contextMenu.tab);
+                const toRight = tabs.slice(tabIdx + 1);
+                onCloseTabs(paneId, toRight);
+                setContextMenu(null);
+              }}
+            >
+              <span>Close to the Right</span>
+            </div>
+          )}
+          {tabs.indexOf(contextMenu.tab) > 0 && (
+            <div
+              className="tab-context-menu-item"
+              onClick={() => {
+                const tabIdx = tabs.indexOf(contextMenu.tab);
+                const toLeft = tabs.slice(0, tabIdx);
+                onCloseTabs(paneId, toLeft);
+                setContextMenu(null);
+              }}
+            >
+              <span>Close to the Left</span>
+            </div>
+          )}
+          <div className="tab-context-menu-separator" />
+          <div
+            className="tab-context-menu-item"
+            onClick={() => {
+              onCloseTabs(paneId, tabs);
+              setContextMenu(null);
+            }}
+          >
+            <span>Close All</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

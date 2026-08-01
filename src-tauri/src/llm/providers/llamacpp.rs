@@ -135,6 +135,7 @@ pub fn check_health(url_str: &str, allow_remote: bool) -> Result<LlamaCppStatus,
 pub fn stream_rework<F>(
     url_str: &str,
     allow_remote: bool,
+    system_prompt: &str,
     instruction: &str,
     selection: &str,
     temperature: f64,
@@ -160,7 +161,7 @@ where
         messages: vec![
             LlamaCppMessage {
                 role: "system".to_string(),
-                content: "You rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations.".to_string(),
+                content: system_prompt.to_string(),
             },
             LlamaCppMessage {
                 role: "user".to_string(),
@@ -482,6 +483,7 @@ mod tests {
             let stats = stream_rework(
                 &server.uri(),
                 true,
+                "system prompt",
                 "make detailed",
                 "original text",
                 0.3,
@@ -522,6 +524,7 @@ mod tests {
             let res = stream_rework(
                 &server.uri(),
                 true,
+                "system prompt",
                 "make detailed",
                 "original text",
                 0.3,

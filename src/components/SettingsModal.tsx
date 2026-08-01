@@ -3,7 +3,7 @@ import { AppSettings, Keybindings } from "../types";
 import { DEFAULT_KEYBINDINGS } from "../constants";
 import { ModelSettings } from "./ModelSettings";
 
-export type SettingsTabType = "general" | "appearance" | "hotkeys" | "models" | "ai";
+export type SettingsTabType = "general" | "appearance" | "hotkeys" | "models" | "ai" | "periodic";
 
 export interface SettingsModalProps {
   showSettingsModal: boolean;
@@ -15,6 +15,7 @@ export interface SettingsModalProps {
   recordingHotkey: keyof Keybindings | null;
   setRecordingHotkey: (hotkey: keyof Keybindings | null) => void;
   openPolicyFile?: () => Promise<void>;
+  openReworkPromptFile?: () => Promise<void>;
 }
 
 const renderShortcutBadges = (shortcutStr: string) => {
@@ -57,7 +58,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   updateSettings,
   recordingHotkey,
   setRecordingHotkey,
-  openPolicyFile
+  openPolicyFile,
+  openReworkPromptFile
 }) => {
   return (
     <div className={`settings-modal-overlay ${showSettingsModal ? "open" : ""}`} onClick={() => setShowSettingsModal(false)}>
@@ -131,6 +133,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </svg>
               AI Settings
             </button>
+            <button
+              className={`settings-tab-btn ${activeSettingsTab === "periodic" ? "active" : ""}`}
+              onClick={() => setActiveSettingsTab("periodic")}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                <line x1="16" y1="2" x2="16" y2="6" />
+                <line x1="8" y1="2" x2="8" y2="6" />
+                <line x1="3" y1="10" x2="21" y2="10" />
+              </svg>
+              Periodic Notes
+            </button>
           </div>
 
           {/* Right Content Area */}
@@ -202,7 +216,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       { id: "forest", name: "Forest Moss", colors: ["#141715", "#87af92", "#e3e8e4"] },
                       { id: "sepia", name: "Sepia", colors: ["#fbf8f3", "#c07a34", "#433422"] },
                       { id: "light", name: "Sol Light", colors: ["#fafafa", "#3b82f6", "#171717"] },
-                      { id: "lego", name: "Lego Block 🧩", colors: ["#0055a5", "#e60012", "#ffffff"] }
+                      { id: "lego", name: "Lego Block 🧩", colors: ["#0055a5", "#e60012", "#ffffff"] },
+                      { id: "pink", name: "Sakura 🌸", colors: ["#1f1418", "#ff758f", "#f8ecee"] }
                     ].map((t) => (
                       <div
                         key={t.id}
@@ -314,6 +329,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                   <div className="keybind-list">
                     {[
+                      { id: "newNote", name: "New Note", desc: "Create a new document in workspace", vim: ":new" },
                       { id: "save", name: "Save Document", desc: "Saves changes in active editor pane", vim: ":w" },
                       { id: "togglePreview", name: "Toggle Live Preview", desc: "Toggle visual rendering style" },
                       { id: "toggleSidebar", name: "Toggle Sidebar Panel", desc: "Show or hide the file tree sidebar" },
@@ -545,7 +561,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <input
                         type="range"
                         min="0"
-                        max="1"
+                        max="1.5"
                         step="0.05"
                         value={settings.completionTopP ?? 0.95}
                         onChange={(e) => updateSettings({ completionTopP: parseFloat(e.target.value) })}
@@ -684,6 +700,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <span className="slider-value">{(settings.reworkMaxTokensCap ?? 512)} tok</span>
                     </div>
                   </div>
+
+                  <div className="settings-control-row">
+                    <div className="settings-control-label">
+                      <span>Rework Prompt File</span>
+                      <span className="settings-control-desc">Customize system instructions for inline rewriting</span>
+                    </div>
+                    {openReworkPromptFile && (
+                      <button
+                        type="button"
+                        className="btn-header-action"
+                        onClick={openReworkPromptFile}
+                        style={{
+                          padding: "6px 12px",
+                          fontSize: "12px",
+                          borderRadius: "6px",
+                          border: "1px solid var(--border)",
+                          background: "var(--bg-light)",
+                          color: "var(--text-normal)",
+                          cursor: "pointer",
+                          fontWeight: 600,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px"
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                          <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4z" />
+                        </svg>
+                        Edit Rework Prompt
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Debug Group */}
@@ -715,6 +764,92 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <span className="switch-slider" />
                     </label>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {activeSettingsTab === "periodic" && (
+              <div className="settings-section" style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
+                <span className="settings-section-title">Periodic Notes & Calendar</span>
+                
+                {/* Show Calendar Widget */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Show Calendar Widget</span>
+                    <span className="settings-control-desc">Display the calendar widget at the bottom of the sidebar</span>
+                  </div>
+                  <label className="settings-switch">
+                    <input
+                      type="checkbox"
+                      checked={settings.showCalendar !== false}
+                      onChange={(e) => updateSettings({ showCalendar: e.target.checked })}
+                    />
+                    <span className="switch-slider" />
+                  </label>
+                </div>
+
+                {/* Daily Notes Folder */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Daily Notes Folder</span>
+                    <span className="settings-control-desc">Directory where daily notes are saved</span>
+                  </div>
+                  <input
+                    type="text"
+                    className="new-node-input"
+                    style={{ maxWidth: "200px" }}
+                    value={settings.dailyNotesFolder ?? "daily"}
+                    onChange={(e) => updateSettings({ dailyNotesFolder: e.target.value })}
+                    placeholder="e.g. daily"
+                  />
+                </div>
+
+                {/* Daily Notes Format */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Daily Notes Format</span>
+                    <span className="settings-control-desc">Date format for daily notes</span>
+                  </div>
+                  <input
+                    type="text"
+                    className="new-node-input"
+                    style={{ maxWidth: "200px" }}
+                    value={settings.dailyNotesFormat ?? "YYYY-MM-DD"}
+                    onChange={(e) => updateSettings({ dailyNotesFormat: e.target.value })}
+                    placeholder="e.g. YYYY-MM-DD"
+                  />
+                </div>
+
+                {/* Weekly Notes Folder */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Weekly Notes Folder</span>
+                    <span className="settings-control-desc">Directory where weekly notes are saved</span>
+                  </div>
+                  <input
+                    type="text"
+                    className="new-node-input"
+                    style={{ maxWidth: "200px" }}
+                    value={settings.weeklyNotesFolder ?? "weekly"}
+                    onChange={(e) => updateSettings({ weeklyNotesFolder: e.target.value })}
+                    placeholder="e.g. weekly"
+                  />
+                </div>
+
+                {/* Weekly Notes Format */}
+                <div className="settings-control-row">
+                  <div className="settings-control-label">
+                    <span>Weekly Notes Format</span>
+                    <span className="settings-control-desc">Format for weekly notes (use WW for ISO week number)</span>
+                  </div>
+                  <input
+                    type="text"
+                    className="new-node-input"
+                    style={{ maxWidth: "200px" }}
+                    value={settings.weeklyNotesFormat ?? "YYYY-[W]WW"}
+                    onChange={(e) => updateSettings({ weeklyNotesFormat: e.target.value })}
+                    placeholder="e.g. YYYY-[W]WW"
+                  />
                 </div>
               </div>
             )}

@@ -1,5 +1,6 @@
-import React, { useRef } from "react";
+import React, { useRef, useState } from "react";
 import { FileNode, AppSettings } from "../types";
+import { CalendarWidget } from "./CalendarWidget";
 
 export interface VisibleItem {
   path: string;
@@ -30,6 +31,11 @@ export interface SidebarProps {
   activeFile: string | null;
   handleNewNodeSubmit: (isBlur?: boolean) => Promise<void>;
   inputFocusedRef: React.MutableRefObject<boolean>;
+  deleteItem: (itemPath: string, isDir: boolean) => Promise<void>;
+  renameItem: (oldPath: string, newName: string, isDir: boolean, isBlur: boolean) => Promise<void>;
+  fileTree: FileNode[];
+  openPeriodicNote: (relativePath: string) => Promise<void>;
+  settings: AppSettings;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -52,9 +58,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
   openFile,
   activeFile,
   handleNewNodeSubmit,
-  inputFocusedRef
+  inputFocusedRef,
+  deleteItem,
+  renameItem,
+  fileTree,
+  openPeriodicNote,
+  settings
 }) => {
   const sidebarVimBufferRef = useRef<string>("");
+  const [renamingNode, setRenamingNode] = useState<{ path: string; name: string; isDir: boolean } | null>(null);
+  const [renameInputName, setRenameInputName] = useState<string>("");
+  const renameInputFocusedRef = useRef(false);
+  const [calendarExpanded, setCalendarExpanded] = useState(true);
+
+  const handleRenameSubmit = async (isBlur = false) => {
+    if (!renamingNode) return;
+    const name = renameInputName.trim();
+    if (!name || name === renamingNode.name) {
+      setRenamingNode(null);
+      return;
+    }
+    const node = renamingNode;
+    setRenamingNode(null);
+    await renameItem(node.path, name, node.isDir, isBlur);
+  };
 
   const getTargetParentPath = (): string => {
     const currentItem = visibleItems[sidebarSelectedIndex];
@@ -68,7 +95,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const handleSidebarKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (creatingNode) return;
+    if (creatingNode || renamingNode) return;
 
     const buffer = sidebarVimBufferRef.current;
 
@@ -308,74 +335,81 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
         {visibleItems.map((item, idx) => {
           const isSelected = idx === sidebarSelectedIndex;
+          const relativeDist = Math.abs(idx - sidebarSelectedIndex);
 
           if (item.path === "__creating__") {
             return (
               <div
                 key="__creating__"
                 className="file-item-creating-wrapper"
-                style={{ paddingLeft: `${8 + item.depth * 16}px` }}
+                style={{ paddingLeft: "8px" }}
               >
-                <span className="file-item-icon-wrapper">
-                  {item.isDir ? (
-                    <svg className="file-item-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                    </svg>
-                  ) : (
-                    <svg className="file-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                      <polyline points="14 2 14 8 20 8" />
-                    </svg>
-                  )}
+                <span className={`sidebar-relative-number ${relativeDist === 0 ? "zero" : ""}`}>
+                  {relativeDist}
                 </span>
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    handleNewNodeSubmit(false);
-                  }}
-                  className="new-node-form"
-                  style={{ flex: 1 }}
-                >
-                  <input
-                    ref={(el) => {
-                      if (el && !inputFocusedRef.current) {
-                        inputFocusedRef.current = true;
-                        el.focus();
-                        const dotIdx = el.value.lastIndexOf(".");
-                        if (dotIdx > 0 && !item.isDir) {
-                          el.setSelectionRange(0, dotIdx);
-                        } else {
-                          el.select();
+                <div className="file-tree-row-content" style={{ paddingLeft: `${item.depth * 16}px` }}>
+                  <span className="file-item-icon-wrapper">
+                    {item.isDir ? (
+                      <svg className="file-item-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                      </svg>
+                    ) : (
+                      <svg className="file-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                        <polyline points="14 2 14 8 20 8" />
+                      </svg>
+                    )}
+                  </span>
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleNewNodeSubmit(false);
+                    }}
+                    className="new-node-form"
+                    style={{ flex: 1 }}
+                  >
+                    <input
+                      ref={(el) => {
+                        if (el && !inputFocusedRef.current) {
+                          inputFocusedRef.current = true;
+                          el.focus();
+                          const dotIdx = el.value.lastIndexOf(".");
+                          if (dotIdx > 0 && !item.isDir) {
+                            el.setSelectionRange(0, dotIdx);
+                          } else {
+                            el.select();
+                          }
                         }
-                      }
-                    }}
-                    className="new-node-input"
-                    value={newInputName}
-                    onChange={(e) => setNewInputName(e.target.value)}
-                    onBlur={() => handleNewNodeSubmit(true)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") {
-                        e.stopPropagation();
-                        inputFocusedRef.current = false;
-                        setCreatingNode(null);
-                        setNewInputName("");
-                      }
-                    }}
-                    placeholder={item.isDir ? "Folder..." : "File.md..."}
-                  />
-                </form>
+                      }}
+                      className="new-node-input"
+                      value={newInputName}
+                      onChange={(e) => setNewInputName(e.target.value)}
+                      onBlur={() => handleNewNodeSubmit(true)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.stopPropagation();
+                          inputFocusedRef.current = false;
+                          setCreatingNode(null);
+                          setNewInputName("");
+                        }
+                      }}
+                      placeholder={item.isDir ? "Folder..." : "File.md..."}
+                    />
+                  </form>
+                </div>
               </div>
             );
           }
 
           const isActive = activeFile === item.path;
           const isExpanded = item.isDir && expandedPaths.has(item.path);
+          const isRenaming = renamingNode && renamingNode.path === item.path;
 
           return (
             <div
               key={item.path}
               className={`file-tree-row ${isActive ? "active" : ""} ${isSelected && focusedComponent === "sidebar" ? "kb-selected" : ""}`}
-              style={{ paddingLeft: `${8 + item.depth * 16}px` }}
+              style={{ paddingLeft: "8px" }}
               onClick={() => {
                 setSidebarSelectedIndex(idx);
                 if (item.isDir) {
@@ -391,85 +425,194 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }
               }}
             >
-              <span className="tree-chevron-wrapper">
-                {item.isDir && (
-                  <svg
-                    className={`tree-chevron ${isExpanded ? "expanded" : ""}`}
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
-                )}
+              <span className={`sidebar-relative-number ${relativeDist === 0 ? "zero" : ""}`}>
+                {relativeDist}
               </span>
-              <span className="file-item-icon-wrapper">
-                {item.isDir ? (
-                  <svg className="file-item-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                  </svg>
-                ) : (
-                  <svg className="file-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                    <polyline points="14 2 14 8 20 8" />
-                  </svg>
-                )}
-              </span>
-              <span className="file-item-name">
-                {item.isDir ? item.name : item.name.replace(/\.md$/, "")}
-              </span>
-              {item.isDir && (
-                <div className="row-actions" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="btn-row-action"
-                    onClick={() => {
-                      inputFocusedRef.current = false;
-                      setCreatingNode({ type: "file", parentPath: item.path });
-                      setNewInputName("untitled.md");
-                      setExpandedPaths(prev => {
-                        const next = new Set(prev);
-                        next.add(item.path);
-                        return next;
-                      });
-                    }}
-                    title="New File inside folder"
-                  >
-                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                      <polyline points="14 2 14 8 20 8" />
-                      <line x1="12" y1="18" x2="12" y2="12" />
-                      <line x1="9" y1="15" x2="15" y2="15" />
+              
+              <div className="file-tree-row-content" style={{ paddingLeft: `${item.depth * 16}px` }}>
+                <span className="tree-chevron-wrapper">
+                  {item.isDir && (
+                    <svg
+                      className={`tree-chevron ${isExpanded ? "expanded" : ""}`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="9 18 15 12 9 6" />
                     </svg>
-                  </button>
-                  <button
-                    className="btn-row-action"
-                    onClick={() => {
-                      inputFocusedRef.current = false;
-                      setCreatingNode({ type: "dir", parentPath: item.path });
-                      setNewInputName("untitled");
-                      setExpandedPaths(prev => {
-                        const next = new Set(prev);
-                        next.add(item.path);
-                        return next;
-                      });
-                    }}
-                    title="New Folder inside folder"
-                  >
-                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  )}
+                </span>
+                
+                <span className="file-item-icon-wrapper">
+                  {item.isDir ? (
+                    <svg className="file-item-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                      <line x1="12" y1="18" x2="12" y2="12" />
-                      <line x1="9" y1="15" x2="15" y2="15" />
                     </svg>
-                  </button>
-                </div>
-              )}
+                  ) : (
+                    <svg className="file-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                  )}
+                </span>
+
+                {isRenaming ? (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleRenameSubmit(false);
+                    }}
+                    className="rename-node-form"
+                    style={{ flex: 1 }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      ref={(el) => {
+                        if (el && !renameInputFocusedRef.current) {
+                          renameInputFocusedRef.current = true;
+                          el.focus();
+                          const dotIdx = el.value.lastIndexOf(".");
+                          if (dotIdx > 0 && !item.isDir) {
+                            el.setSelectionRange(0, dotIdx);
+                          } else {
+                            el.select();
+                          }
+                        }
+                      }}
+                      className="new-node-input"
+                      value={renameInputName}
+                      onChange={(e) => setRenameInputName(e.target.value)}
+                      onBlur={() => handleRenameSubmit(true)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.stopPropagation();
+                          setRenamingNode(null);
+                        }
+                      }}
+                    />
+                  </form>
+                ) : (
+                  <>
+                    <span className="file-item-name">
+                      {item.isDir ? item.name : item.name.replace(/\.md$/, "")}
+                    </span>
+                    
+                    <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+                      {item.isDir && (
+                        <>
+                          <button
+                            className="btn-row-action"
+                            onClick={() => {
+                              inputFocusedRef.current = false;
+                              setCreatingNode({ type: "file", parentPath: item.path });
+                              setNewInputName("untitled.md");
+                              setExpandedPaths(prev => {
+                                const next = new Set(prev);
+                                next.add(item.path);
+                                return next;
+                              });
+                            }}
+                            title="New File inside folder"
+                          >
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                              <polyline points="14 2 14 8 20 8" />
+                              <line x1="12" y1="18" x2="12" y2="12" />
+                              <line x1="9" y1="15" x2="15" y2="15" />
+                            </svg>
+                          </button>
+                          
+                          <button
+                            className="btn-row-action"
+                            onClick={() => {
+                              inputFocusedRef.current = false;
+                              setCreatingNode({ type: "dir", parentPath: item.path });
+                              setNewInputName("untitled");
+                              setExpandedPaths(prev => {
+                                const next = new Set(prev);
+                                next.add(item.path);
+                                return next;
+                              });
+                            }}
+                            title="New Folder inside folder"
+                          >
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                              <line x1="12" y1="18" x2="12" y2="12" />
+                              <line x1="9" y1="15" x2="15" y2="15" />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                      
+                      <button
+                        className="btn-row-action"
+                        onClick={() => {
+                          renameInputFocusedRef.current = false;
+                          setRenamingNode({ path: item.path, name: item.name, isDir: item.isDir });
+                          setRenameInputName(item.name);
+                        }}
+                        title="Rename"
+                      >
+                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                        </svg>
+                      </button>
+                      
+                      <button
+                        className="btn-row-action"
+                        onClick={() => {
+                          deleteItem(item.path, item.isDir);
+                        }}
+                        title="Delete"
+                      >
+                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           );
         })}
       </div>
+
+      {settings.showCalendar !== false && (
+        <>
+          <div
+            className="calendar-toggle-header"
+            onClick={() => setCalendarExpanded(!calendarExpanded)}
+            title="Toggle Calendar Panel"
+          >
+            <span>Calendar</span>
+            <svg
+              className={`calendar-toggle-chevron ${calendarExpanded ? "" : "collapsed"}`}
+              viewBox="0 0 24 24"
+              width="10"
+              height="10"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
+          {calendarExpanded && (
+            <CalendarWidget
+              settings={settings}
+              fileTree={fileTree}
+              openPeriodicNote={openPeriodicNote}
+              activeFile={activeFile}
+            />
+          )}
+        </>
+      )}
     </aside>
   );
 };

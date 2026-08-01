@@ -329,12 +329,23 @@ fn get_workspace_path(state: tauri::State<'_, WorkspaceState>) -> String {
         .unwrap_or_default()
 }
 
+fn has_extension(filename: &str) -> bool {
+    let path = Path::new(filename);
+    if let Some(file_name) = path.file_name() {
+        let name_str = file_name.to_string_lossy();
+        if let Some(dot_idx) = name_str.rfind('.') {
+            return dot_idx > 0 && dot_idx < name_str.len() - 1;
+        }
+    }
+    false
+}
+
 #[tauri::command]
 fn create_markdown_file(
     name: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<String, String> {
-    let name_clean = if name.ends_with(".md") {
+    let name_clean = if has_extension(&name) {
         name
     } else {
         format!("{}.md", name)
@@ -348,7 +359,20 @@ fn create_markdown_file(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    write_atomically(&path, b"").map_err(|e| e.to_string())?;
+
+    let title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    let initial_content = if !title.is_empty() {
+        format!("# {}\n\n", title)
+    } else {
+        String::new()
+    };
+
+    write_atomically(&path, initial_content.as_bytes()).map_err(|e| e.to_string())?;
     path.to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "Failed to convert path to string".to_string())
@@ -373,6 +397,41 @@ fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Re
         return Err("Directory or file already exists".to_string());
     }
     fs::create_dir_all(&full_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_item(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let resolved = resolve_safe_path(workspace, &path)?;
+    if !resolved.exists() {
+        return Err("Item does not exist".to_string());
+    }
+    if resolved.is_dir() {
+        fs::remove_dir_all(&resolved).map_err(|e| e.to_string())?;
+    } else {
+        fs::remove_file(&resolved).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_item(old_path: String, new_path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let resolved_old = resolve_safe_path(workspace, &old_path)?;
+    let resolved_new = resolve_safe_path(workspace, &new_path)?;
+    if !resolved_old.exists() {
+        return Err("Source item does not exist".to_string());
+    }
+    if resolved_new.exists() {
+        return Err("Target item already exists".to_string());
+    }
+    if let Some(parent) = resolved_new.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::rename(&resolved_old, &resolved_new).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -1038,6 +1097,38 @@ fn set_rework_model(
     config.save(workspace)
 }
 
+fn load_rework_prompt(workspace: &Path) -> String {
+    let prompt_path = workspace.join(".sol").join("rework_prompt.md");
+    if prompt_path.exists() {
+        if let Ok(content) = fs::read_to_string(&prompt_path) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    "You rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations. Do not output any thinking or reasoning, reply directly with the rewrite.".to_string()
+}
+
+/// Create/open the rework prompt template file
+#[tauri::command]
+fn open_rework_prompt_file(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<String, String> {
+    let path_lock = lock!(state.path);
+    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let sol_dir = workspace.join(".sol");
+    fs::create_dir_all(&sol_dir).map_err(|e| e.to_string())?;
+    let prompt_path = sol_dir.join("rework_prompt.md");
+    
+    if !prompt_path.exists() {
+        let default_content = "You rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations. Do not output any thinking or reasoning, reply directly with the rewrite.";
+        fs::write(&prompt_path, default_content).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(".sol/rework_prompt.md".to_string())
+}
+
 /// Explicitly cancel the current rework generation
 #[tauri::command]
 fn cancel_rework(state: tauri::State<'_, WorkspaceState>) {
@@ -1090,8 +1181,8 @@ async fn generate_rework(
 
     enum ReworkInput {
         BuiltinPrompt(String),
-        OllamaInput { instruction: String, selection: String },
-        LlamaCppInput { instruction: String, selection: String },
+        OllamaInput { system_prompt: String, instruction: String, selection: String },
+        LlamaCppInput { system_prompt: String, instruction: String, selection: String },
     }
 
     // 2. Resolve workspace and model, checking privacy
@@ -1110,6 +1201,7 @@ async fn generate_rework(
         let ollama_url = config.ollama_url.clone();
         let ollama_model = config.ollama_rework_model.clone();
         let llamacpp_url = config.llamacpp_url.clone();
+        let system_prompt = load_rework_prompt(&workspace);
 
         match backend {
             llm::providers::ReworkBackend::Builtin => {
@@ -1121,7 +1213,8 @@ async fn generate_rework(
                 let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
 
                 let prompt = format!(
-                    "<|im_start|>system\nYou rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations.<|im_end|>\n<|im_start|>user\nInstruction: {}\n\nText:\n{}<|im_end|>\n<|im_start|>assistant\n",
+                    "<|im_start|>system\n{}\n<|im_end|>\n<|im_start|>user\nInstruction: {}\n\nText:\n{}<|im_end|>\n<|im_start|>assistant\n",
+                    system_prompt,
                     sanitized_instruction,
                     sanitized_selection
                 );
@@ -1133,6 +1226,7 @@ async fn generate_rework(
                 let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
                 let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
                 (workspace, backend, allow_remote, ollama_url, Some(model), llamacpp_url, None::<String>, ReworkInput::OllamaInput {
+                    system_prompt,
                     instruction: sanitized_instruction,
                     selection: sanitized_selection,
                 })
@@ -1142,6 +1236,7 @@ async fn generate_rework(
                 let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
                 let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
                 (workspace, backend, allow_remote, ollama_url, None, llamacpp_url.clone(), None::<String>, ReworkInput::LlamaCppInput {
+                    system_prompt,
                     instruction: sanitized_instruction,
                     selection: sanitized_selection,
                 })
@@ -1203,7 +1298,7 @@ async fn generate_rework(
                     Err(e) => Err(e),
                 }
             }
-            ReworkInput::OllamaInput { instruction, selection } => {
+            ReworkInput::OllamaInput { system_prompt, instruction, selection } => {
                 let model_name = ollama_model.ok_or_else(|| "Ollama model missing".to_string())?;
                 eprintln!("[generate_rework] Spawning Ollama thread. url='{}', model='{}'", ollama_url, model_name);
                 let ollama_max_tokens = std::cmp::max(max_tokens, 1024);
@@ -1211,6 +1306,7 @@ async fn generate_rework(
                     &ollama_url,
                     allow_remote,
                     &model_name,
+                    &system_prompt,
                     &instruction,
                     &selection,
                     temperature,
@@ -1243,12 +1339,13 @@ async fn generate_rework(
                     }
                 }
             }
-            ReworkInput::LlamaCppInput { instruction, selection } => {
+            ReworkInput::LlamaCppInput { system_prompt, instruction, selection } => {
                 eprintln!("[generate_rework] Spawning llama.cpp thread. url='{}'", llamacpp_url);
                 let llamacpp_max_tokens = std::cmp::max(max_tokens, 1024);
                 match llm::providers::llamacpp::stream_rework(
                     &llamacpp_url,
                     allow_remote,
+                    &system_prompt,
                     &instruction,
                     &selection,
                     temperature,
@@ -1486,6 +1583,8 @@ pub fn run() {
             create_markdown_file,
             get_file_tree,
             create_directory,
+            delete_item,
+            rename_item,
             change_workspace,
             read_settings,
             write_settings,
@@ -1510,6 +1609,7 @@ pub fn run() {
             generate_rework,
             is_note_allowed,
             open_policy_file,
+            open_rework_prompt_file,
             get_provider_config,
             set_provider_config,
             check_ollama,
