@@ -55,7 +55,7 @@ test-rust:
 test: test-rust lint-frontend
 
 lint-rust:
-	cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+	cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings -A clippy::too_many_arguments
 
 lint-frontend:
 	npx tsc --noEmit

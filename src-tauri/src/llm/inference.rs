@@ -1,16 +1,18 @@
-use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_core::quantized::gguf_file;
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::qwen2::{Config as Qwen2Config, ModelForCausalLM as Qwen2Model};
-use candle_transformers::models::llama::{Llama as LlamaModel, LlamaConfig, Config as LlamaConfigRaw, Cache as LlamaCache};
-use candle_transformers::models::quantized_qwen2::ModelWeights as QuantizedQwen2;
+use candle_transformers::models::llama::{
+    Cache as LlamaCache, Config as LlamaConfigRaw, Llama as LlamaModel, LlamaConfig,
+};
 use candle_transformers::models::quantized_llama::ModelWeights as QuantizedLlama;
+use candle_transformers::models::quantized_qwen2::ModelWeights as QuantizedQwen2;
+use candle_transformers::models::qwen2::{Config as Qwen2Config, ModelForCausalLM as Qwen2Model};
 
-use std::path::{Path, PathBuf};
-use tokenizers::Tokenizer;
+use super::stream::{ProcessResult, StreamPostProcessor};
 use std::collections::{HashMap, HashSet};
-use super::stream::{StreamPostProcessor, ProcessResult};
+use std::path::Path;
+use tokenizers::Tokenizer;
 
 use super::models_dir;
 
@@ -37,8 +39,9 @@ fn ban_ngram_continuations(
                         logits_vec[tok as usize] = f32::NEG_INFINITY;
                     }
                 }
-                return Tensor::from_vec(logits_vec, logits.shape(), logits.device())
-                    .map_err(|e| format!("Tensor creation in ban_ngram_continuations failed: {}", e));
+                return Tensor::from_vec(logits_vec, logits.shape(), logits.device()).map_err(
+                    |e| format!("Tensor creation in ban_ngram_continuations failed: {}", e),
+                );
             }
         }
     }
@@ -101,10 +104,13 @@ fn last_token_logits(logits: &Tensor) -> Result<Tensor, String> {
         2 => logits
             .i((0, ..))
             .map_err(|e| format!("Logits indexing failed: {}", e)),
-        r => Err(format!("Unexpected logits rank {} (shape {:?})", r, logits.shape())),
+        r => Err(format!(
+            "Unexpected logits rank {} (shape {:?})",
+            r,
+            logits.shape()
+        )),
     }
 }
-
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GenerationStats {
@@ -116,7 +122,7 @@ pub struct GenerationStats {
 
 impl LoadedModel {
     /// Load a model from disk
-    pub fn load(workspace: &PathBuf, model_id: &str) -> Result<Self, String> {
+    pub fn load(workspace: &Path, model_id: &str) -> Result<Self, String> {
         let model_dir = models_dir(workspace).join(model_id);
 
         if !model_dir.exists() {
@@ -143,26 +149,29 @@ impl LoadedModel {
             .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
 
         // Check if any GGUF file exists (prioritize quantized models)
-        let gguf_path = std::fs::read_dir(&model_dir)
-            .ok()
-            .and_then(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .find(|entry| {
-                        entry.path().extension()
-                            .and_then(|ext| ext.to_str())
-                            .map(|ext| ext.eq_ignore_ascii_case("gguf"))
-                            .unwrap_or(false)
-                    })
-                    .map(|entry| entry.path())
-            });
+        let gguf_path = std::fs::read_dir(&model_dir).ok().and_then(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .find(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+                        .unwrap_or(false)
+                })
+                .map(|entry| entry.path())
+        });
 
         let use_quantized = gguf_path.is_some();
 
         let (model, eos_token_ids) = if use_quantized {
             // Load quantized GGUF model
             let gguf_file_path = gguf_path.ok_or_else(|| "GGUF file not found".to_string())?;
-            eprintln!("[LLM] Loading quantized GGUF model from {:?}", gguf_file_path);
+            eprintln!(
+                "[LLM] Loading quantized GGUF model from {:?}",
+                gguf_file_path
+            );
 
             let mut file = std::fs::File::open(&gguf_file_path)
                 .map_err(|e| format!("Failed to open GGUF file: {}", e))?;
@@ -171,7 +180,10 @@ impl LoadedModel {
 
             // Read architecture from GGUF metadata
             let arch: String = match gguf_content.metadata.get("general.architecture") {
-                Some(v) => v.to_string().map(|s| s.to_string()).unwrap_or_else(|_| model_type.to_string()),
+                Some(v) => v
+                    .to_string()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| model_type.to_string()),
                 None => {
                     eprintln!("[LLM] No general.architecture in GGUF, falling back to config model_type: {}", model_type);
                     model_type.to_string()
@@ -196,7 +208,10 @@ impl LoadedModel {
                     (Model::QuantizedQwen2(model), eos_ids)
                 }
                 other => {
-                    return Err(format!("Unsupported GGUF architecture: {}. Supported: llama, qwen2", other));
+                    return Err(format!(
+                        "Unsupported GGUF architecture: {}. Supported: llama, qwen2",
+                        other
+                    ));
                 }
             }
         } else {
@@ -283,23 +298,21 @@ impl LoadedModel {
                 .map_err(|e| format!("Unsqueeze failed: {}", e))?;
 
             let logits = match &mut self.model {
-                Model::Qwen2(model) => {
-                    model.forward(&input, pos_offset)
-                        .map_err(|e| format!("Qwen2 forward pass failed: {}", e))?
-                }
+                Model::Qwen2(model) => model
+                    .forward(&input, pos_offset)
+                    .map_err(|e| format!("Qwen2 forward pass failed: {}", e))?,
                 Model::Llama { model, .. } => {
                     let cache = llama_cache.as_mut().ok_or("Llama cache missing")?;
-                    model.forward(&input, pos_offset, cache)
+                    model
+                        .forward(&input, pos_offset, cache)
                         .map_err(|e| format!("Llama forward pass failed: {}", e))?
                 }
-                Model::QuantizedQwen2(model) => {
-                    model.forward(&input, pos_offset)
-                        .map_err(|e| format!("Quantized Qwen2 forward pass failed: {}", e))?
-                }
-                Model::QuantizedLlama(model) => {
-                    model.forward(&input, pos_offset)
-                        .map_err(|e| format!("Quantized Llama forward pass failed: {}", e))?
-                }
+                Model::QuantizedQwen2(model) => model
+                    .forward(&input, pos_offset)
+                    .map_err(|e| format!("Quantized Qwen2 forward pass failed: {}", e))?,
+                Model::QuantizedLlama(model) => model
+                    .forward(&input, pos_offset)
+                    .map_err(|e| format!("Quantized Llama forward pass failed: {}", e))?,
             };
 
             pos_offset += input_slice.len();
@@ -308,8 +321,9 @@ impl LoadedModel {
 
             // Repeat penalty (A2)
             let penalty_tokens = &tokens[tokens.len().saturating_sub(64)..];
-            let logits = candle_transformers::utils::apply_repeat_penalty(&logits, 1.15, penalty_tokens)
-                .map_err(|e| format!("Repeat penalty failed: {}", e))?;
+            let logits =
+                candle_transformers::utils::apply_repeat_penalty(&logits, 1.15, penalty_tokens)
+                    .map_err(|e| format!("Repeat penalty failed: {}", e))?;
 
             // N-gram blocking (A1)
             let logits = if tokens.len() >= 3 {
@@ -430,23 +444,21 @@ impl LoadedModel {
                 .map_err(|e| format!("Unsqueeze failed: {}", e))?;
 
             let logits = match &mut self.model {
-                Model::Qwen2(model) => {
-                    model.forward(&input, pos_offset)
-                        .map_err(|e| format!("Qwen2 forward pass failed: {}", e))?
-                }
+                Model::Qwen2(model) => model
+                    .forward(&input, pos_offset)
+                    .map_err(|e| format!("Qwen2 forward pass failed: {}", e))?,
                 Model::Llama { model, .. } => {
                     let cache = llama_cache.as_mut().ok_or("Llama cache missing")?;
-                    model.forward(&input, pos_offset, cache)
+                    model
+                        .forward(&input, pos_offset, cache)
                         .map_err(|e| format!("Llama forward pass failed: {}", e))?
                 }
-                Model::QuantizedQwen2(model) => {
-                    model.forward(&input, pos_offset)
-                        .map_err(|e| format!("Quantized Qwen2 forward pass failed: {}", e))?
-                }
-                Model::QuantizedLlama(model) => {
-                    model.forward(&input, pos_offset)
-                        .map_err(|e| format!("Quantized Llama forward pass failed: {}", e))?
-                }
+                Model::QuantizedQwen2(model) => model
+                    .forward(&input, pos_offset)
+                    .map_err(|e| format!("Quantized Qwen2 forward pass failed: {}", e))?,
+                Model::QuantizedLlama(model) => model
+                    .forward(&input, pos_offset)
+                    .map_err(|e| format!("Quantized Llama forward pass failed: {}", e))?,
             };
 
             pos_offset += input_slice.len();
@@ -455,8 +467,9 @@ impl LoadedModel {
 
             // Repeat penalty (A2)
             let penalty_tokens = &tokens[tokens.len().saturating_sub(64)..];
-            let logits = candle_transformers::utils::apply_repeat_penalty(&logits, 1.15, penalty_tokens)
-                .map_err(|e| format!("Repeat penalty failed: {}", e))?;
+            let logits =
+                candle_transformers::utils::apply_repeat_penalty(&logits, 1.15, penalty_tokens)
+                    .map_err(|e| format!("Repeat penalty failed: {}", e))?;
 
             // N-gram blocking (A1)
             let logits = if tokens.len() >= 3 {
@@ -529,9 +542,7 @@ impl LoadedModel {
             };
             eprintln!(
                 "[LLM] decode: {} tokens in {:?} ({:.1} tok/s)",
-                tokens_decoded,
-                decode_duration,
-                tok_per_s
+                tokens_decoded, decode_duration, tok_per_s
             );
         }
 
@@ -549,7 +560,6 @@ pub fn generate_topic_name(
     model: &mut LoadedModel,
     note_snippets: &[String],
 ) -> Result<String, String> {
-
     // Build prompt
     let combined_snippets = note_snippets
         .iter()
@@ -627,7 +637,10 @@ mod tests {
     fn last_token_logits_rank3() {
         let dev = Device::Cpu;
         // (batch=1, seq=3, vocab=4); last position = [8,9,10,11]
-        let t = Tensor::arange(0f32, 12., &dev).unwrap().reshape((1, 3, 4)).unwrap();
+        let t = Tensor::arange(0f32, 12., &dev)
+            .unwrap()
+            .reshape((1, 3, 4))
+            .unwrap();
         let out = last_token_logits(&t).unwrap();
         assert_eq!(out.dims(), &[4]);
         assert_eq!(out.to_vec1::<f32>().unwrap(), vec![8., 9., 10., 11.]);
@@ -637,7 +650,10 @@ mod tests {
     fn last_token_logits_rank2() {
         let dev = Device::Cpu;
         // (batch=1, vocab=4)
-        let t = Tensor::arange(0f32, 4., &dev).unwrap().reshape((1, 4)).unwrap();
+        let t = Tensor::arange(0f32, 4., &dev)
+            .unwrap()
+            .reshape((1, 4))
+            .unwrap();
         let out = last_token_logits(&t).unwrap();
         assert_eq!(out.dims(), &[4]);
         assert_eq!(out.to_vec1::<f32>().unwrap(), vec![0., 1., 2., 3.]);
@@ -701,7 +717,7 @@ mod tests {
         // Test logits banning
         // Vocabulary size 6: 0..5
         let logits = Tensor::new(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &dev).unwrap();
-        
+
         // Context: last 3 are [1, 2, 3] -> should ban 4
         let banned = ban_ngram_continuations(&logits, Some([1, 2, 3]), &index).unwrap();
         let banned_vec = banned.to_vec1::<f32>().unwrap();

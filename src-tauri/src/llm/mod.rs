@@ -1,13 +1,13 @@
+pub mod context;
 pub mod download;
 pub mod inference;
-pub mod registry;
-pub mod context;
-pub mod stream;
 pub mod providers;
+pub mod registry;
+pub mod stream;
 
-use serde::{Deserialize, Serialize};
 use providers::{CompletionBackend, ReworkBackend};
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelFile {
@@ -65,10 +65,18 @@ fn default_llamacpp_url() -> String {
     "http://localhost:8080".to_string()
 }
 
-fn default_dry_multiplier() -> f32 { 0.8 }
-fn default_dry_base() -> f32 { 1.75 }
-fn default_dry_allowed_length() -> u32 { 2 }
-fn default_dry_penalty_last_n() -> i32 { -1 }
+fn default_dry_multiplier() -> f32 {
+    0.8
+}
+fn default_dry_base() -> f32 {
+    1.75
+}
+fn default_dry_allowed_length() -> u32 {
+    2
+}
+fn default_dry_penalty_last_n() -> i32 {
+    -1
+}
 
 /// LLM configuration stored in settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,7 +141,7 @@ impl Default for LlmConfig {
 }
 
 impl LlmConfig {
-    pub fn load(workspace: &PathBuf) -> Self {
+    pub fn load(workspace: &Path) -> Self {
         let config_path = workspace.join(".sol").join("llm_config.json");
         if config_path.exists() {
             if let Ok(data) = std::fs::read_to_string(&config_path) {
@@ -145,7 +153,7 @@ impl LlmConfig {
         Self::default()
     }
 
-    pub fn save(&self, workspace: &PathBuf) -> Result<(), String> {
+    pub fn save(&self, workspace: &Path) -> Result<(), String> {
         let sol_dir = workspace.join(".sol");
         std::fs::create_dir_all(&sol_dir).map_err(|e| e.to_string())?;
         let config_path = sol_dir.join("llm_config.json");
@@ -155,12 +163,12 @@ impl LlmConfig {
 }
 
 /// Get the models directory
-pub fn models_dir(workspace: &PathBuf) -> PathBuf {
+pub fn models_dir(workspace: &Path) -> PathBuf {
     workspace.join(".sol").join("models")
 }
 
 /// Check if a model is downloaded
-pub fn is_model_downloaded(workspace: &PathBuf, model_id: &str) -> bool {
+pub fn is_model_downloaded(workspace: &Path, model_id: &str) -> bool {
     let model_dir = models_dir(workspace).join(model_id);
     if !model_dir.exists() {
         return false;

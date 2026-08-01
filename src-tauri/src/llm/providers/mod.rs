@@ -1,8 +1,8 @@
-pub mod ollama;
 pub mod llamacpp;
+pub mod ollama;
 
-use serde::{Deserialize, Serialize};
 use reqwest::Url;
+use serde::{Deserialize, Serialize};
 
 /// IMPORTANT ARCHITECTURAL INVARIANT:
 /// StreamPostProcessor (defined in llm/stream.rs) is the new "reload" annotation.
@@ -29,26 +29,26 @@ pub enum ReworkBackend {
 /// Validate if the URL is correct and handles loopback policy.
 pub fn validate_provider_url(url_str: &str, allow_remote: bool) -> Result<Url, String> {
     let url = Url::parse(url_str).map_err(|e| format!("Invalid URL: {}", e))?;
-    
+
     // Check scheme is http or https
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err("URL scheme must be http or https".to_string());
     }
 
     if !allow_remote {
-        let host = url.host_str().ok_or_else(|| "URL has no host".to_string())?;
-        
+        let host = url
+            .host_str()
+            .ok_or_else(|| "URL has no host".to_string())?;
+
         // Loopback forms
-        let is_loopback = host == "localhost" 
-            || host == "127.0.0.1" 
-            || host == "[::1]" 
-            || host == "::1";
-            
+        let is_loopback =
+            host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1";
+
         if !is_loopback {
             return Err("Only loopback URLs (localhost, 127.0.0.1, [::1]) are allowed unless remote endpoints are explicitly enabled".to_string());
         }
     }
-    
+
     Ok(url)
 }
 
@@ -67,9 +67,16 @@ pub fn map_provider_error(err: &str, backend: &str, model_name: Option<&str>) ->
             "LlamaCpp" => "llama-server is not running.".to_string(),
             _ => err.to_string(),
         }
-    } else if backend == "Ollama" && (lower.contains("not found") || lower.contains("does not exist") || lower.contains("404")) {
+    } else if backend == "Ollama"
+        && (lower.contains("not found")
+            || lower.contains("does not exist")
+            || lower.contains("404"))
+    {
         let name = model_name.unwrap_or("selected model");
-        format!("Model '{}' is not available. Pull it with `ollama pull {}`.", name, name)
+        format!(
+            "Model '{}' is not available. Pull it with `ollama pull {}`.",
+            name, name
+        )
     } else if backend == "LlamaCpp" && (lower.contains("loading") || lower.contains("503")) {
         "llama-server is still loading the model. Try again in a moment.".to_string()
     } else {
@@ -97,7 +104,11 @@ mod tests {
             "Ollama is not running. Start it with `ollama serve`."
         );
         assert_eq!(
-            map_provider_error("Failed to connect to llama.cpp server: connect error", "LlamaCpp", None),
+            map_provider_error(
+                "Failed to connect to llama.cpp server: connect error",
+                "LlamaCpp",
+                None
+            ),
             "llama-server is not running."
         );
         assert_eq!(

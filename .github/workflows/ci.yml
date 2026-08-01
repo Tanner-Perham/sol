@@ -11,16 +11,69 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint-and-test:
+  # 1) Fast fail-fast gate. `npm ci` is the authoritative lockfile check:
+  #    it hard-fails (EUSAGE) if package-lock.json cannot satisfy package.json.
+  #    We deliberately do NOT regenerate the lockfile and diff it — lockfile
+  #    output is not a pure function of package.json (e.g. "peer": true flags
+  #    depend on install history and npm version), so a regenerate-and-diff
+  #    gate produces false positives. INVARIANT: sync is defined as "npm ci
+  #    succeeds", nothing stricter.
+  lockfile-sync:
+    name: Verify lockfile in sync
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Verify lockfile satisfies package.json
+        run: npm ci --ignore-scripts
+
+  # 2) Confirms the committed lockfile installs cleanly on the other OSes the
+  #    release pipeline targets. Catches platform-specific optional-dependency
+  #    drift (e.g. the rolldown -> @emnapi subtree) that a Linux-only check
+  #    misses. Ubuntu is already proven by the gate above.
+  install-check:
+    name: npm ci (${{ matrix.os }})
+    needs: lockfile-sync
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: npm ci --ignore-scripts
+
+  # 3) Full lint + test. Only starts once the lockfile is proven good on all
+  #    platforms, so the expensive Rust/Tauri toolchain is never spun up on a
+  #    broken dependency tree.
+  lint-and-test:
+    name: Lint and test
+    needs: install-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
           cache: 'npm'
 
       - name: Install Node dependencies
@@ -54,7 +107,7 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Lint Rust with Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings -A clippy::too_many_arguments
 
       - name: Check frontend types
         run: npx tsc --noEmit

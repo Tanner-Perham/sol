@@ -1,10 +1,9 @@
-
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
-use sha2::{Sha256, Digest};
 
 use super::{models_dir, registry};
 
@@ -64,7 +63,7 @@ fn hf_download_url(repo_id: &str, filename: &str) -> String {
 
 /// Download a model from HuggingFace Hub using direct HTTP requests
 pub fn download_model(
-    workspace: &PathBuf,
+    workspace: &Path,
     model_id: &str,
     app_handle: &tauri::AppHandle,
     download_state: &SharedDownloadState,
@@ -79,7 +78,7 @@ pub fn download_model(
             let state = lock!(download_state);
             *state.paused.get(model_id).unwrap_or(&false)
         };
-        
+
         if was_cancelled {
             let _ = app_handle.emit(
                 "model-download-progress",
@@ -128,7 +127,7 @@ pub fn download_model(
 }
 
 fn download_model_inner(
-    workspace: &PathBuf,
+    workspace: &Path,
     model_id: &str,
     app_handle: &tauri::AppHandle,
     download_state: &SharedDownloadState,
@@ -198,7 +197,10 @@ fn download_model_inner(
         }
 
         if file_ok {
-            println!("[LLM] File {} already exists and is valid, skipping", file_name);
+            println!(
+                "[LLM] File {} already exists and is valid, skipping",
+                file_name
+            );
             continue;
         }
 
@@ -213,7 +215,7 @@ fn download_model_inner(
         // Range resume logic
         let mut downloaded: u64 = 0;
         let mut open_options = std::fs::OpenOptions::new();
-        
+
         if part_path.exists() {
             if let Ok(metadata) = std::fs::metadata(&part_path) {
                 downloaded = metadata.len();
@@ -223,7 +225,9 @@ fn download_model_inner(
         let response = if downloaded > 0 {
             // Try sending a Range request
             let range_header = format!("bytes={}-", downloaded);
-            let req = client.get(&url).header(reqwest::header::RANGE, range_header);
+            let req = client
+                .get(&url)
+                .header(reqwest::header::RANGE, range_header);
             match req.send() {
                 Ok(resp) if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT => {
                     println!("[LLM] Resuming download from byte {}", downloaded);
@@ -232,7 +236,9 @@ fn download_model_inner(
                 }
                 _ => {
                     // Fallback: download from scratch
-                    println!("[LLM] Range request not supported or failed, downloading from scratch");
+                    println!(
+                        "[LLM] Range request not supported or failed, downloading from scratch"
+                    );
                     downloaded = 0;
                     open_options.write(true).truncate(true).create(true);
                     client.get(&url).send().map_err(|e| {
@@ -258,7 +264,8 @@ fn download_model_inner(
         let total_size = response.content_length().unwrap_or(0) + downloaded;
 
         // Open/create the file
-        let mut output_file = open_options.open(&part_path)
+        let mut output_file = open_options
+            .open(&part_path)
             .map_err(|e| format!("Failed to open file {}.part: {}", file_name, e))?;
 
         let mut last_emit_time = std::time::Instant::now();
@@ -318,46 +325,49 @@ fn download_model_inner(
             }
         }
 
-        output_file
-            .flush()
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&part_path);
-                format!("Failed to flush file: {}", e)
-            })?;
+        output_file.flush().map_err(|e| {
+            let _ = std::fs::remove_file(&part_path);
+            format!("Failed to flush file: {}", e)
+        })?;
         drop(output_file);
 
         // Verify size
-        let metadata = std::fs::metadata(&part_path)
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&part_path);
-                format!("Failed to read metadata of downloaded file: {}", e)
-            })?;
+        let metadata = std::fs::metadata(&part_path).map_err(|e| {
+            let _ = std::fs::remove_file(&part_path);
+            format!("Failed to read metadata of downloaded file: {}", e)
+        })?;
         if metadata.len() != file.size {
             let _ = std::fs::remove_file(&part_path);
-            return Err(format!("Downloaded file size mismatch for {}: expected {}, got {}", file_name, file.size, metadata.len()));
+            return Err(format!(
+                "Downloaded file size mismatch for {}: expected {}, got {}",
+                file_name,
+                file.size,
+                metadata.len()
+            ));
         }
 
         // Verify SHA-256 if expected
         if let Some(ref expected_sha) = file.sha256 {
             println!("[LLM] Verifying SHA-256 for {}...", file_name);
-            let computed_sha = compute_sha256(&part_path)
-                .map_err(|e| {
-                    let _ = std::fs::remove_file(&part_path);
-                    format!("Failed to compute SHA-256 for {}: {}", file_name, e)
-                })?;
+            let computed_sha = compute_sha256(&part_path).map_err(|e| {
+                let _ = std::fs::remove_file(&part_path);
+                format!("Failed to compute SHA-256 for {}: {}", file_name, e)
+            })?;
             if computed_sha != *expected_sha {
                 let _ = std::fs::remove_file(&part_path);
-                return Err(format!("SHA-256 checksum mismatch for {}: expected {}, got {}", file_name, expected_sha, computed_sha));
+                return Err(format!(
+                    "SHA-256 checksum mismatch for {}: expected {}, got {}",
+                    file_name, expected_sha, computed_sha
+                ));
             }
             println!("[LLM] SHA-256 verification successful!");
         }
 
         // Rename .part to final file
-        std::fs::rename(&part_path, &dest_path)
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&part_path);
-                format!("Failed to rename part file to final destination: {}", e)
-            })?;
+        std::fs::rename(&part_path, &dest_path).map_err(|e| {
+            let _ = std::fs::remove_file(&part_path);
+            format!("Failed to rename part file to final destination: {}", e)
+        })?;
 
         println!("[LLM] File {} complete ({} bytes)", file_name, downloaded);
     }
@@ -401,7 +411,7 @@ pub fn resume_download(model_id: &str, download_state: &SharedDownloadState) {
 }
 
 /// Delete a downloaded model
-pub fn delete_model(workspace: &PathBuf, model_id: &str) -> Result<(), String> {
+pub fn delete_model(workspace: &Path, model_id: &str) -> Result<(), String> {
     let model_dir = models_dir(workspace).join(model_id);
     if model_dir.exists() {
         std::fs::remove_dir_all(&model_dir).map_err(|e| e.to_string())?;
