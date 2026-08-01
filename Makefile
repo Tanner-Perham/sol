@@ -1,4 +1,4 @@
-.PHONY: help install dev dev-frontend build build-frontend run test test-rust lint lint-rust lint-frontend format clean
+.PHONY: help install dev dev-frontend build build-frontend pacman run test test-rust lint lint-rust lint-frontend format clean
 
 # Default target when running just 'make'
 .DEFAULT_GOAL := help
@@ -16,6 +16,7 @@ help:
 	@echo "Build & Release Targets:"
 	@echo "  build           Build the Tauri application bundle (production release)"
 	@echo "  build-frontend  Build only the Vite frontend assets"
+	@echo "  pacman          Build Arch Linux pacman package (.pkg.tar.zst)"
 	@echo "  run             Run the release build with WebKit workarounds"
 	@echo ""
   	@echo "Test & Quality Targets:"
@@ -43,6 +44,9 @@ dev-frontend:
 build:
 	NO_STRIP=1 npm run tauri build
 
+pacman:
+	python3 scripts/build-pacman.py
+
 run:
 	WEBKIT_DISABLE_DMABUF_RENDERER=1 ./src-tauri/target/release/sol
 
@@ -66,5 +70,5 @@ format:
 	cargo fmt --manifest-path src-tauri/Cargo.toml
 
 clean:
-	rm -rf dist/ dist-ssr/
+	rm -rf dist/ dist-ssr/ packaging/
 	cargo clean --manifest-path src-tauri/Cargo.toml
