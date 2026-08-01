@@ -28,14 +28,18 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
+      # Reads .nvmrc so CI and release always build on the same Node version.
+      # A hardcoded version here previously let the two pipelines diverge.
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version-file: '.nvmrc'
           cache: 'npm'
 
+      # npm ci doubles as the lockfile-sync gate: it fails hard if
+      # package-lock.json cannot satisfy package.json.
       - name: Install Node dependencies
         run: npm ci
 

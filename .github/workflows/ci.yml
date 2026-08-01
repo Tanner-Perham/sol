@@ -11,46 +11,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 1) Fast fail-fast gate. Proves package.json and package-lock.json agree
-  #    before any matrix or Rust toolchain spins up. Runs in seconds.
+  # 1) Fast fail-fast gate. `npm ci` is the authoritative lockfile check:
+  #    it hard-fails (EUSAGE) if package-lock.json cannot satisfy package.json.
+  #    We deliberately do NOT regenerate the lockfile and diff it — lockfile
+  #    output is not a pure function of package.json (e.g. "peer": true flags
+  #    depend on install history and npm version), so a regenerate-and-diff
+  #    gate produces false positives. INVARIANT: sync is defined as "npm ci
+  #    succeeds", nothing stricter.
   lockfile-sync:
     name: Verify lockfile in sync
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
 
-      - name: Regenerate lockfile and fail on drift
-        run: |
-          npm install --package-lock-only --ignore-scripts
-          if ! git diff --exit-code package-lock.json; then
-            echo "::error::package-lock.json is out of sync with package.json. Run 'npm install' locally and commit the updated lockfile."
-            exit 1
-          fi
+      - name: Verify lockfile satisfies package.json
+        run: npm ci --ignore-scripts
 
-  # 2) Confirms the COMMITTED lockfile installs cleanly on every OS the
+  # 2) Confirms the committed lockfile installs cleanly on the other OSes the
   #    release pipeline targets. Catches platform-specific optional-dependency
-  #    drift (e.g. the rolldown -> @emnapi subtree) that a Linux-only check misses.
+  #    drift (e.g. the rolldown -> @emnapi subtree) that a Linux-only check
+  #    misses. Ubuntu is already proven by the gate above.
   install-check:
     name: npm ci (${{ matrix.os }})
     needs: lockfile-sync
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -58,19 +59,19 @@ jobs:
       - name: Install Node dependencies
         run: npm ci --ignore-scripts
 
-  # 3) The existing full lint + test job. Only starts once the lockfile is
-  #    proven good on all platforms, so the expensive Rust/Tauri build is
-  #    never wasted on a broken dependency tree.
+  # 3) Full lint + test. Only starts once the lockfile is proven good on all
+  #    platforms, so the expensive Rust/Tauri toolchain is never spun up on a
+  #    broken dependency tree.
   lint-and-test:
     name: Lint and test
     needs: install-check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
