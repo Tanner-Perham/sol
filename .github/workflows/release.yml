@@ -69,6 +69,7 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Build Tauri app
+        id: tauri
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,3 +80,16 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Build pacman package
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          python3 scripts/build-pacman.py
+
+      - name: Upload Pacman package to Release
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APP_VERSION="${{ steps.tauri.outputs.appVersion }}"
+          gh release upload "v${APP_VERSION}" packaging/*.pkg.tar.zst --clobber
