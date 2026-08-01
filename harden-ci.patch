@@ -1,0 +1,96 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 41715e6..c6c6c91 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -11,7 +11,59 @@ concurrency:
+   cancel-in-progress: true
+ 
+ jobs:
++  # 1) Fast fail-fast gate. Proves package.json and package-lock.json agree
++  #    before any matrix or Rust toolchain spins up. Runs in seconds.
++  lockfile-sync:
++    name: Verify lockfile in sync
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout repository
++        uses: actions/checkout@v4
++
++      - name: Setup Node.js
++        uses: actions/setup-node@v4
++        with:
++          node-version-file: '.nvmrc'
++          cache: 'npm'
++
++      - name: Regenerate lockfile and fail on drift
++        run: |
++          npm install --package-lock-only --ignore-scripts
++          if ! git diff --exit-code package-lock.json; then
++            echo "::error::package-lock.json is out of sync with package.json. Run 'npm install' locally and commit the updated lockfile."
++            exit 1
++          fi
++
++  # 2) Confirms the COMMITTED lockfile installs cleanly on every OS the
++  #    release pipeline targets. Catches platform-specific optional-dependency
++  #    drift (e.g. the rolldown -> @emnapi subtree) that a Linux-only check misses.
++  install-check:
++    name: npm ci (${{ matrix.os }})
++    needs: lockfile-sync
++    strategy:
++      fail-fast: false
++      matrix:
++        os: [ubuntu-latest, macos-latest, windows-latest]
++    runs-on: ${{ matrix.os }}
++    steps:
++      - name: Checkout repository
++        uses: actions/checkout@v4
++
++      - name: Setup Node.js
++        uses: actions/setup-node@v4
++        with:
++          node-version-file: '.nvmrc'
++          cache: 'npm'
++
++      - name: Install Node dependencies
++        run: npm ci --ignore-scripts
++
++  # 3) The existing full lint + test job. Only starts once the lockfile is
++  #    proven good on all platforms, so the expensive Rust/Tauri build is
++  #    never wasted on a broken dependency tree.
+   lint-and-test:
++    name: Lint and test
++    needs: install-check
+     runs-on: ubuntu-latest
+     steps:
+       - name: Checkout repository
+@@ -20,7 +72,7 @@ jobs:
+       - name: Setup Node.js
+         uses: actions/setup-node@v4
+         with:
+-          node-version: 20
++          node-version-file: '.nvmrc'
+           cache: 'npm'
+ 
+       - name: Install Node dependencies
+diff --git a/.nvmrc b/.nvmrc
+new file mode 100644
+index 0000000..d4b7699
+--- /dev/null
++++ b/.nvmrc
+@@ -0,0 +1 @@
++20.18.1
+diff --git a/package.json b/package.json
+index e1364ba..7d3249d 100644
+--- a/package.json
++++ b/package.json
+@@ -3,6 +3,11 @@
+   "private": true,
+   "version": "0.1.0",
+   "type": "module",
++  "packageManager": "npm@10.9.2",
++  "engines": {
++    "node": ">=20.18 <21",
++    "npm": ">=10.8"
++  },
+   "scripts": {
+     "dev": "vite",
+     "build": "tsc && vite build",
