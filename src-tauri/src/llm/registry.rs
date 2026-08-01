@@ -1,4 +1,4 @@
-use super::{ModelInfo, ModelFile};
+use super::{ModelFile, ModelInfo};
 
 /// Get the list of available models
 pub fn get_available_models() -> Vec<ModelInfo> {

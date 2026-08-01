@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
-use std::collections::HashMap;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 pub struct PolicyEngine {
     workspace: PathBuf,
@@ -78,9 +78,10 @@ impl PolicyEngine {
         // 2. Check folder/path rules from .solai
         if let Some(ref gitignore) = self.gitignore {
             let is_dir = false;
-            let relative_path = resolved_path.strip_prefix(&self.workspace)
+            let relative_path = resolved_path
+                .strip_prefix(&self.workspace)
                 .unwrap_or(resolved_path);
-            
+
             let m = gitignore.matched_path_or_any_parents(relative_path, is_dir);
             if m.is_ignore() {
                 return false;
@@ -99,10 +100,10 @@ pub fn parse_frontmatter_ai(content: &str) -> Option<bool> {
     if !normalized.starts_with("---") {
         return None;
     }
-    
+
     let mut lines = normalized.lines();
     lines.next(); // Skip "---"
-    
+
     for line in lines {
         let trimmed = line.trim();
         if trimmed == "---" {

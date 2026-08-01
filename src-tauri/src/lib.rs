@@ -6,11 +6,11 @@ macro_rules! lock {
 }
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::collections::HashSet;
-use std::io::Write;
 use tauri::{Emitter, Manager};
 
 mod llm;
@@ -55,22 +55,23 @@ fn get_saved_workspace(app: &tauri::AppHandle) -> Option<PathBuf> {
 
 pub fn write_atomically(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Path has no parent directory")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Path has no parent directory",
+        )
     })?;
-    
+
     // Generate a temporary file name in the same directory
     let temp_name = format!(
         ".{}.tmp-{}",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("temp"),
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("temp"),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     );
     let temp_path = parent.join(temp_name);
-    
+
     // Write content to temp file
     {
         let mut file = std::fs::File::create(&temp_path)?;
@@ -78,20 +79,21 @@ pub fn write_atomically(path: &Path, content: &[u8]) -> std::io::Result<()> {
         file.flush()?;
         file.sync_all()?;
     }
-    
+
     // Rename temp file to target file
     std::fs::rename(&temp_path, path).inspect_err(|_| {
         // Clean up temp file on failure
         let _ = std::fs::remove_file(&temp_path);
     })?;
-    
+
     Ok(())
 }
 
 pub fn get_file_mtime(path: &Path) -> std::io::Result<u64> {
     let metadata = std::fs::metadata(path)?;
     let modified = metadata.modified()?;
-    let duration = modified.duration_since(std::time::UNIX_EPOCH)
+    let duration = modified
+        .duration_since(std::time::UNIX_EPOCH)
         .map_err(std::io::Error::other)?;
     Ok(duration.as_millis() as u64)
 }
@@ -120,8 +122,8 @@ fn save_workspace(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
         "last_workspace".to_string(),
         serde_json::Value::String(path.to_string_lossy().into_owned()),
     );
-    let content = serde_json::to_string_pretty(&serde_json::Value::Object(map))
-        .map_err(|e| e.to_string())?;
+    let content =
+        serde_json::to_string_pretty(&serde_json::Value::Object(map)).map_err(|e| e.to_string())?;
     write_atomically(&config_file, content.as_bytes()).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -226,7 +228,7 @@ pub(crate) fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<Pat
     }
 
     let joined = workspace.join(user_path);
-    
+
     // Find the closest existing ancestor
     let mut ancestor = joined.as_path();
     let mut remaining = Vec::new();
@@ -240,20 +242,20 @@ pub(crate) fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<Pat
             break;
         }
     }
-    
+
     // Canonicalize the ancestor (which exists)
     let canonical_ancestor = std::fs::canonicalize(ancestor)
         .map_err(|e| format!("Failed to canonicalize ancestor path: {}", e))?;
-    
+
     // Canonicalize the workspace path to compare
     let canonical_workspace = std::fs::canonicalize(workspace)
         .map_err(|e| format!("Failed to canonicalize workspace path: {}", e))?;
-        
+
     // Check if the canonicalized ancestor starts with the canonicalized workspace
     if !canonical_ancestor.starts_with(&canonical_workspace) {
         return Err("Path traversal detected: path is outside the workspace".to_string());
     }
-    
+
     // Reconstruct the full canonical path by joining the remaining components onto the canonical ancestor
     let mut final_path = canonical_ancestor;
     for part in remaining.into_iter().rev() {
@@ -267,7 +269,7 @@ pub(crate) fn resolve_safe_path(workspace: &Path, user_path: &str) -> Result<Pat
         }
         final_path.push(part);
     }
-    
+
     Ok(final_path)
 }
 
@@ -278,9 +280,14 @@ struct ReadFileResponse {
 }
 
 #[tauri::command]
-fn read_markdown_file(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<ReadFileResponse, String> {
+fn read_markdown_file(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<ReadFileResponse, String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let resolved = resolve_safe_path(workspace, &path)?;
     let content = fs::read_to_string(&resolved).map_err(|e| e.to_string())?;
     let mtime = get_file_mtime(&resolved).unwrap_or(0);
@@ -295,9 +302,11 @@ fn write_markdown_file(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<u64, String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let resolved = resolve_safe_path(workspace, &path)?;
-    
+
     if resolved.exists() {
         if let Some(expected) = expected_mtime {
             let actual = get_file_mtime(&resolved).map_err(|e| e.to_string())?;
@@ -306,7 +315,7 @@ fn write_markdown_file(
             }
         }
     }
-    
+
     write_atomically(&resolved, content.as_bytes()).map_err(|e| e.to_string())?;
     let new_mtime = get_file_mtime(&resolved).map_err(|e| e.to_string())?;
     Ok(new_mtime)
@@ -319,7 +328,11 @@ fn get_workspace_path(state: tauri::State<'_, WorkspaceState>) -> String {
         .map(|p| {
             let s = p.to_string_lossy().into_owned();
             #[cfg(target_os = "windows")]
-            let s = if s.starts_with(r"\\?\") { s[4..].to_string() } else { s };
+            let s = if s.starts_with(r"\\?\") {
+                s[4..].to_string()
+            } else {
+                s
+            };
             s.replace('\\', "/")
         })
         .unwrap_or_default()
@@ -347,7 +360,9 @@ fn create_markdown_file(
         format!("{}.md", name)
     };
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let path = resolve_safe_path(workspace, &name_clean)?;
     if path.exists() {
         return Err("File already exists".to_string());
@@ -387,7 +402,9 @@ fn get_file_tree(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<FileNode
 #[tauri::command]
 fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let full_path = resolve_safe_path(workspace, &path)?;
     if full_path.exists() {
         return Err("Directory or file already exists".to_string());
@@ -398,7 +415,9 @@ fn create_directory(path: String, state: tauri::State<'_, WorkspaceState>) -> Re
 #[tauri::command]
 fn delete_item(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let resolved = resolve_safe_path(workspace, &path)?;
     if !resolved.exists() {
         return Err("Item does not exist".to_string());
@@ -412,9 +431,15 @@ fn delete_item(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<
 }
 
 #[tauri::command]
-fn rename_item(old_path: String, new_path: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+fn rename_item(
+    old_path: String,
+    new_path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let resolved_old = resolve_safe_path(workspace, &old_path)?;
     let resolved_new = resolve_safe_path(workspace, &new_path)?;
     if !resolved_old.exists() {
@@ -468,7 +493,7 @@ async fn change_workspace(
 
     if let Some(old) = old_path {
         let _ = app.asset_protocol_scope().forbid_directory(&old, true);
-        
+
         let mut watcher_lock = lock!(state.watcher);
         if let Some(ref mut watcher) = *watcher_lock {
             let _ = watcher.unwatch(&old);
@@ -516,7 +541,7 @@ async fn change_workspace(
         watcher
             .watch(&new_path, RecursiveMode::Recursive)
             .map_err(|e| e.to_string())?;
-            
+
         *watcher_lock = Some(watcher);
     }
 
@@ -527,7 +552,11 @@ async fn change_workspace(
         workspace_path: {
             let s = new_path.to_string_lossy().into_owned();
             #[cfg(target_os = "windows")]
-            let s = if s.starts_with(r"\\?\") { s[4..].to_string() } else { s };
+            let s = if s.starts_with(r"\\?\") {
+                s[4..].to_string()
+            } else {
+                s
+            };
             s.replace('\\', "/")
         },
         tree,
@@ -544,14 +573,14 @@ fn read_settings(state: tauri::State<'_, WorkspaceState>) -> Result<String, Stri
             return Ok("{}".to_string());
         }
         let content = fs::read_to_string(&settings_file).map_err(|e| e.to_string())?;
-        
+
         // Validate JSON
         if let Err(e) = serde_json::from_str::<serde_json::Value>(&content) {
             let backup_file = settings_dir.join("settings.json.corrupt");
             let _ = fs::rename(&settings_file, &backup_file);
             return Err(format!("Settings file was corrupt and has been backed up to settings.json.corrupt. Error: {}", e));
         }
-        
+
         Ok(content)
     } else {
         Ok("{}".to_string())
@@ -606,7 +635,12 @@ fn get_models(state: tauri::State<'_, WorkspaceState>) -> Vec<ModelWithStatus> {
                 ModelStatus::NotDownloaded
             };
 
-            ModelWithStatus { info, status, is_completion_active, is_rework_active }
+            ModelWithStatus {
+                info,
+                status,
+                is_completion_active,
+                is_rework_active,
+            }
         })
         .collect()
 }
@@ -627,7 +661,9 @@ fn set_active_model(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
 
     if !llm::is_model_downloaded(workspace, &model_id) {
         return Err("Model not downloaded".to_string());
@@ -658,7 +694,10 @@ fn start_model_download(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?
+        .clone();
     let download_state = state.download_state.clone();
 
     // Check and set in_flight atomically
@@ -724,7 +763,9 @@ fn cancel_model_download(model_id: String, state: tauri::State<'_, WorkspaceStat
 #[tauri::command]
 fn delete_model(model_id: String, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
 
     // If this was the active model or active completion model, clear it
     let mut config = LlmConfig::load(workspace);
@@ -756,7 +797,10 @@ async fn generate_topic_name(
 ) -> Result<String, String> {
     let (workspace, model_id) = {
         let path_lock = lock!(state.path);
-        let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
+        let workspace = path_lock
+            .as_ref()
+            .ok_or_else(|| "No active workspace".to_string())?
+            .clone();
         let config = LlmConfig::load(&workspace);
         let model_id = config.active_model_id.ok_or("No model selected")?;
         (workspace, model_id)
@@ -877,8 +921,11 @@ async fn generate_completion(
     // 2. Resolve workspace, completion backend and model, checking privacy rules first
     let (workspace, backend, model_id, config, assembled_context) = {
         let path_lock = lock!(state.path);
-        let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
-        
+        let workspace = path_lock
+            .as_ref()
+            .ok_or_else(|| "No active workspace".to_string())?
+            .clone();
+
         let resolved = resolve_safe_path(&workspace, &params.path)?;
         if !is_ai_allowed(&state, &workspace, &resolved) {
             return Err("AI context is disabled for this file by privacy policy".to_string());
@@ -886,10 +933,12 @@ async fn generate_completion(
 
         let config = LlmConfig::load(&workspace);
         let backend = config.completion_backend.clone();
-        
+
         let model_id = match backend {
             llm::providers::CompletionBackend::Builtin => {
-                let id = config.completion_model_id.as_ref()
+                let id = config
+                    .completion_model_id
+                    .as_ref()
                     .or(config.active_model_id.as_ref())
                     .ok_or_else(|| "No model selected for completion".to_string())?
                     .clone();
@@ -898,7 +947,14 @@ async fn generate_completion(
             llm::providers::CompletionBackend::LlamaCpp => None,
         };
 
-        let assembled = llm::context::assemble_context(&workspace, &resolved, &params.text, params.cursor_offset, &state, &params.context);
+        let assembled = llm::context::assemble_context(
+            &workspace,
+            &resolved,
+            &params.text,
+            params.cursor_offset,
+            &state,
+            &params.context,
+        );
         (workspace, backend, model_id, config, assembled)
     };
 
@@ -907,11 +963,15 @@ async fn generate_completion(
         request_id: request_id.clone(),
         prefix_from: assembled_context.prefix_range_utf16.0,
         prefix_to: assembled_context.prefix_range_utf16.1,
-        linked: assembled_context.linked.iter().map(|meta| LinkedMetaDto {
-            title: meta.title.clone(),
-            path: meta.path.clone(),
-            chars_used: meta.chars_used,
-        }).collect(),
+        linked: assembled_context
+            .linked
+            .iter()
+            .map(|meta| LinkedMetaDto {
+                title: meta.title.clone(),
+                path: meta.path.clone(),
+                chars_used: meta.chars_used,
+            })
+            .collect(),
         prompt_tokens_est: assembled_context.prompt_token_estimate,
     };
     let _ = channel.send(context_msg);
@@ -1055,7 +1115,9 @@ fn set_completion_model(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
 
     if !llm::is_model_downloaded(workspace, &model_id) {
         return Err("Model not downloaded".to_string());
@@ -1082,7 +1144,9 @@ fn set_rework_model(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
 
     if !llm::is_model_downloaded(workspace, &model_id) {
         return Err("Model not downloaded".to_string());
@@ -1108,20 +1172,20 @@ fn load_rework_prompt(workspace: &Path) -> String {
 
 /// Create/open the rework prompt template file
 #[tauri::command]
-fn open_rework_prompt_file(
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<String, String> {
+fn open_rework_prompt_file(state: tauri::State<'_, WorkspaceState>) -> Result<String, String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let sol_dir = workspace.join(".sol");
     fs::create_dir_all(&sol_dir).map_err(|e| e.to_string())?;
     let prompt_path = sol_dir.join("rework_prompt.md");
-    
+
     if !prompt_path.exists() {
         let default_content = "You rewrite text. Reply with ONLY the rewritten text — no preamble, no quotes, no explanations. Do not output any thinking or reasoning, reply directly with the rewrite.";
         write_atomically(&prompt_path, default_content.as_bytes()).map_err(|e| e.to_string())?;
     }
-    
+
     Ok(".sol/rework_prompt.md".to_string())
 }
 
@@ -1154,7 +1218,10 @@ async fn generate_rework(
     channel: tauri::ipc::Channel<CompletionChunk>,
     app: tauri::AppHandle,
 ) -> Result<ReworkStatsResponse, String> {
-    eprintln!("[generate_rework] Entry: request_id={} path={} instruction={}", request_id, params.path, params.instruction);
+    eprintln!(
+        "[generate_rework] Entry: request_id={} path={} instruction={}",
+        request_id, params.path, params.instruction
+    );
     let state = app.state::<WorkspaceState>();
 
     // 1. Cancel active completion and any existing rework
@@ -1177,15 +1244,35 @@ async fn generate_rework(
 
     enum ReworkInput {
         BuiltinPrompt(String),
-        OllamaInput { system_prompt: String, instruction: String, selection: String },
-        LlamaCppInput { system_prompt: String, instruction: String, selection: String },
+        OllamaInput {
+            system_prompt: String,
+            instruction: String,
+            selection: String,
+        },
+        LlamaCppInput {
+            system_prompt: String,
+            instruction: String,
+            selection: String,
+        },
     }
 
     // 2. Resolve workspace and model, checking privacy
-    let (workspace, _backend, allow_remote, ollama_url, ollama_model, llamacpp_url, model_id, prompt_or_input) = {
+    let (
+        workspace,
+        _backend,
+        allow_remote,
+        ollama_url,
+        ollama_model,
+        llamacpp_url,
+        model_id,
+        prompt_or_input,
+    ) = {
         let path_lock = lock!(state.path);
-        let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?.clone();
-        
+        let workspace = path_lock
+            .as_ref()
+            .ok_or_else(|| "No active workspace".to_string())?
+            .clone();
+
         let resolved = resolve_safe_path(&workspace, &params.path)?;
         if !is_ai_allowed(&state, &workspace, &resolved) {
             return Err("AI context is disabled for this file by privacy policy".to_string());
@@ -1201,7 +1288,8 @@ async fn generate_rework(
 
         match backend {
             llm::providers::ReworkBackend::Builtin => {
-                let model_id = config.rework_model_id
+                let model_id = config
+                    .rework_model_id
                     .or(config.active_model_id)
                     .ok_or_else(|| "No model selected for rework".to_string())?;
 
@@ -1214,28 +1302,61 @@ async fn generate_rework(
                     sanitized_instruction,
                     sanitized_selection
                 );
-                (workspace, backend, allow_remote, ollama_url, ollama_model, llamacpp_url, Some(model_id), ReworkInput::BuiltinPrompt(prompt))
+                (
+                    workspace,
+                    backend,
+                    allow_remote,
+                    ollama_url,
+                    ollama_model,
+                    llamacpp_url,
+                    Some(model_id),
+                    ReworkInput::BuiltinPrompt(prompt),
+                )
             }
             llm::providers::ReworkBackend::Ollama => {
                 eprintln!("[generate_rework] Ollama backend selected. url='{}', model={:?}, allow_remote={}", ollama_url, ollama_model, allow_remote);
-                let model = ollama_model.clone().ok_or_else(|| "No Ollama model selected for rework. Please select one in Settings.".to_string())?;
+                let model = ollama_model.clone().ok_or_else(|| {
+                    "No Ollama model selected for rework. Please select one in Settings."
+                        .to_string()
+                })?;
                 let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
                 let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
-                (workspace, backend, allow_remote, ollama_url, Some(model), llamacpp_url, None::<String>, ReworkInput::OllamaInput {
-                    system_prompt,
-                    instruction: sanitized_instruction,
-                    selection: sanitized_selection,
-                })
+                (
+                    workspace,
+                    backend,
+                    allow_remote,
+                    ollama_url,
+                    Some(model),
+                    llamacpp_url,
+                    None::<String>,
+                    ReworkInput::OllamaInput {
+                        system_prompt,
+                        instruction: sanitized_instruction,
+                        selection: sanitized_selection,
+                    },
+                )
             }
             llm::providers::ReworkBackend::LlamaCpp => {
-                eprintln!("[generate_rework] llama.cpp backend selected. url='{}', allow_remote={}", llamacpp_url, allow_remote);
+                eprintln!(
+                    "[generate_rework] llama.cpp backend selected. url='{}', allow_remote={}",
+                    llamacpp_url, allow_remote
+                );
                 let sanitized_instruction = llm::context::sanitize_prompt_text(&params.instruction);
                 let sanitized_selection = llm::context::sanitize_prompt_text(&params.selection);
-                (workspace, backend, allow_remote, ollama_url, None, llamacpp_url.clone(), None::<String>, ReworkInput::LlamaCppInput {
-                    system_prompt,
-                    instruction: sanitized_instruction,
-                    selection: sanitized_selection,
-                })
+                (
+                    workspace,
+                    backend,
+                    allow_remote,
+                    ollama_url,
+                    None,
+                    llamacpp_url.clone(),
+                    None::<String>,
+                    ReworkInput::LlamaCppInput {
+                        system_prompt,
+                        instruction: sanitized_instruction,
+                        selection: sanitized_selection,
+                    },
+                )
             }
         }
     };
@@ -1254,14 +1375,15 @@ async fn generate_rework(
                 let model_id = model_id.ok_or_else(|| "Model ID missing".to_string())?;
                 let state = app.state::<WorkspaceState>();
                 let mut loaded_model_lock = lock!(state.loaded_model);
-                
+
                 let model = match &mut *loaded_model_lock {
                     Some((cached_id, model)) if cached_id == &model_id => model,
                     _ => {
-                        let new_model = match llm::inference::LoadedModel::load(&workspace, &model_id) {
-                            Ok(m) => m,
-                            Err(e) => return Err(format!("Failed to load model: {}", e)),
-                        };
+                        let new_model =
+                            match llm::inference::LoadedModel::load(&workspace, &model_id) {
+                                Ok(m) => m,
+                                Err(e) => return Err(format!("Failed to load model: {}", e)),
+                            };
                         *loaded_model_lock = Some((model_id.clone(), new_model));
                         &mut loaded_model_lock.as_mut().unwrap().1
                     }
@@ -1282,7 +1404,7 @@ async fn generate_rework(
                             token: token.to_string(),
                         };
                         channel_clone.send(chunk).map_err(|e| e.to_string())
-                    }
+                    },
                 ) {
                     Ok(stats) => Ok(ReworkStatsResponse {
                         prefill_ms: stats.prefill_ms,
@@ -1294,9 +1416,16 @@ async fn generate_rework(
                     Err(e) => Err(e),
                 }
             }
-            ReworkInput::OllamaInput { system_prompt, instruction, selection } => {
+            ReworkInput::OllamaInput {
+                system_prompt,
+                instruction,
+                selection,
+            } => {
                 let model_name = ollama_model.ok_or_else(|| "Ollama model missing".to_string())?;
-                eprintln!("[generate_rework] Spawning Ollama thread. url='{}', model='{}'", ollama_url, model_name);
+                eprintln!(
+                    "[generate_rework] Spawning Ollama thread. url='{}', model='{}'",
+                    ollama_url, model_name
+                );
                 let ollama_max_tokens = std::cmp::max(max_tokens, 1024);
                 match llm::providers::ollama::stream_rework(
                     &ollama_url,
@@ -1317,7 +1446,7 @@ async fn generate_rework(
                             token: token.to_string(),
                         };
                         channel_clone.send(chunk).map_err(|e| e.to_string())
-                    }
+                    },
                 ) {
                     Ok(stats) => {
                         eprintln!("[generate_rework] Spawning Ollama thread finished.");
@@ -1330,13 +1459,21 @@ async fn generate_rework(
                         })
                     }
                     Err(e) => {
-                        let mapped = llm::providers::map_provider_error(&e, "Ollama", Some(&model_name));
+                        let mapped =
+                            llm::providers::map_provider_error(&e, "Ollama", Some(&model_name));
                         Err(mapped)
                     }
                 }
             }
-            ReworkInput::LlamaCppInput { system_prompt, instruction, selection } => {
-                eprintln!("[generate_rework] Spawning llama.cpp thread. url='{}'", llamacpp_url);
+            ReworkInput::LlamaCppInput {
+                system_prompt,
+                instruction,
+                selection,
+            } => {
+                eprintln!(
+                    "[generate_rework] Spawning llama.cpp thread. url='{}'",
+                    llamacpp_url
+                );
                 let llamacpp_max_tokens = std::cmp::max(max_tokens, 1024);
                 match llm::providers::llamacpp::stream_rework(
                     &llamacpp_url,
@@ -1356,7 +1493,7 @@ async fn generate_rework(
                             token: token.to_string(),
                         };
                         channel_clone.send(chunk).map_err(|e| e.to_string())
-                    }
+                    },
                 ) {
                     Ok(stats) => {
                         eprintln!("[generate_rework] Spawning llama.cpp thread finished.");
@@ -1382,12 +1519,11 @@ async fn generate_rework(
 
 /// Check if AI features are allowed for a note
 #[tauri::command]
-fn is_note_allowed(
-    path: String,
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<bool, String> {
+fn is_note_allowed(path: String, state: tauri::State<'_, WorkspaceState>) -> Result<bool, String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let resolved = resolve_safe_path(workspace, &path)?;
     Ok(is_ai_allowed(&state, workspace, &resolved))
 }
@@ -1403,11 +1539,11 @@ pub struct ProviderConfig {
 }
 
 #[tauri::command]
-fn get_provider_config(
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<ProviderConfig, String> {
+fn get_provider_config(state: tauri::State<'_, WorkspaceState>) -> Result<ProviderConfig, String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let config = LlmConfig::load(workspace);
     Ok(ProviderConfig {
         completion_backend: config.completion_backend,
@@ -1425,7 +1561,9 @@ fn set_provider_config(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
 
     // Validate URLs
     llm::providers::validate_provider_url(&config.ollama_url, config.allow_remote_endpoints)
@@ -1458,10 +1596,7 @@ async fn check_ollama(
 }
 
 #[tauri::command]
-async fn list_ollama_models(
-    url: String,
-    allow_remote: bool,
-) -> Result<Vec<String>, String> {
+async fn list_ollama_models(url: String, allow_remote: bool) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         llm::providers::ollama::list_models(&url, allow_remote)
     })
@@ -1483,13 +1618,13 @@ async fn check_llamacpp(
 
 /// Create/open the AI policy file
 #[tauri::command]
-fn open_policy_file(
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<String, String> {
+fn open_policy_file(state: tauri::State<'_, WorkspaceState>) -> Result<String, String> {
     let path_lock = lock!(state.path);
-    let workspace = path_lock.as_ref().ok_or_else(|| "No active workspace".to_string())?;
+    let workspace = path_lock
+        .as_ref()
+        .ok_or_else(|| "No active workspace".to_string())?;
     let solai_path = workspace.join(".solai");
-    
+
     if !solai_path.exists() {
         let default_content = b"# Sol AI Policy Configuration File\n\
 # Use standard gitignore-like patterns to exclude notes and folders from AI context (embeddings, completions, etc.).\n\
@@ -1499,7 +1634,7 @@ fn open_policy_file(
 # secret.md\n";
         std::fs::write(&solai_path, default_content).map_err(|e| e.to_string())?;
     }
-    
+
     Ok(".solai".to_string())
 }
 
@@ -1514,8 +1649,8 @@ pub fn run() {
             let (path, watcher) = if let Some(p) = saved_path {
                 let p_clone = p.clone();
                 let app_handle_clone = app_handle.clone();
-                let mut watcher =
-                    notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                let mut watcher = notify::recommended_watcher(
+                    move |res: Result<notify::Event, notify::Error>| {
                         if let Ok(event) = res {
                             // Invalidate policy cache
                             let state = app_handle_clone.state::<WorkspaceState>();
@@ -1540,11 +1675,12 @@ pub fn run() {
                                 }
                             }
                             if !modified_paths.is_empty() {
-                                  let _ = app_handle_clone.emit("workspace-changed", modified_paths);
+                                let _ = app_handle_clone.emit("workspace-changed", modified_paths);
                             }
                         }
-                    })
-                    .map_err(|e| e.to_string())?;
+                    },
+                )
+                .map_err(|e| e.to_string())?;
 
                 watcher
                     .watch(&p, RecursiveMode::Recursive)
@@ -1623,35 +1759,53 @@ mod tests {
     #[test]
     fn test_write_atomically() {
         let temp_dir = std::env::temp_dir();
-        let file_path = temp_dir.join(format!("test_atomic_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        
+        let file_path = temp_dir.join(format!(
+            "test_atomic_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
         let content = b"hello atomic write";
         let res = write_atomically(&file_path, content);
         assert!(res.is_ok());
-        
+
         let read = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(read, "hello atomic write");
-        
+
         let _ = std::fs::remove_file(&file_path);
     }
 
     #[test]
     fn test_get_file_mtime() {
         let temp_dir = std::env::temp_dir();
-        let file_path = temp_dir.join(format!("test_mtime_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        
+        let file_path = temp_dir.join(format!(
+            "test_mtime_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
         std::fs::write(&file_path, "hello").unwrap();
         let mtime = get_file_mtime(&file_path);
         assert!(mtime.is_ok());
         assert!(mtime.unwrap() > 0);
-        
+
         let _ = std::fs::remove_file(&file_path);
     }
 
     #[test]
     fn test_resolve_safe_path() {
         let temp_dir = std::env::temp_dir();
-        let unique_dir = temp_dir.join(format!("sol_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let unique_dir = temp_dir.join(format!(
+            "sol_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&unique_dir).unwrap();
         let workspace = std::fs::canonicalize(&unique_dir).unwrap();
 
@@ -1677,20 +1831,26 @@ mod tests {
         assert!(res.is_err());
 
         // 5. Symlinks pointing outside workspace
-        let outside_dir = temp_dir.join(format!("sol_outside_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let outside_dir = temp_dir.join(format!(
+            "sol_outside_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&outside_dir).unwrap();
-        
+
         let link_path = workspace.join("link");
         #[cfg(unix)]
         let link_created = std::os::unix::fs::symlink(&outside_dir, &link_path).is_ok();
         #[cfg(windows)]
         let link_created = std::os::windows::fs::symlink_dir(&outside_dir, &link_path).is_ok();
-        
+
         if link_created {
             let res = resolve_safe_path(&workspace, "link/x.md");
             assert!(res.is_err());
         }
-        
+
         let _ = std::fs::remove_dir_all(&outside_dir);
         let _ = std::fs::remove_dir_all(&workspace);
     }
@@ -1698,7 +1858,13 @@ mod tests {
     #[test]
     fn test_llm_config_serde() {
         let temp_dir = std::env::temp_dir();
-        let unique_dir = temp_dir.join(format!("sol_config_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let unique_dir = temp_dir.join(format!(
+            "sol_config_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&unique_dir).unwrap();
         let workspace = std::fs::canonicalize(&unique_dir).unwrap();
 
@@ -1718,7 +1884,10 @@ mod tests {
         let loaded = LlmConfig::load(&workspace);
         assert_eq!(loaded.active_model_id, Some("qwen2-0.5b".to_string()));
         assert_eq!(loaded.completion_model_id, Some("qwen2.5-0.5b".to_string()));
-        assert_eq!(loaded.downloaded_models, vec!["qwen2-0.5b".to_string(), "qwen2.5-0.5b".to_string()]);
+        assert_eq!(
+            loaded.downloaded_models,
+            vec!["qwen2-0.5b".to_string(), "qwen2.5-0.5b".to_string()]
+        );
 
         // Test loading legacy config without completion_model_id
         let legacy_json = r#"{
@@ -1730,9 +1899,15 @@ mod tests {
         std::fs::write(sol_dir.join("llm_config.json"), legacy_json).unwrap();
 
         let loaded_legacy = LlmConfig::load(&workspace);
-        assert_eq!(loaded_legacy.active_model_id, Some("qwen2-0.5b".to_string()));
+        assert_eq!(
+            loaded_legacy.active_model_id,
+            Some("qwen2-0.5b".to_string())
+        );
         assert!(loaded_legacy.completion_model_id.is_none());
-        assert_eq!(loaded_legacy.downloaded_models, vec!["qwen2-0.5b".to_string()]);
+        assert_eq!(
+            loaded_legacy.downloaded_models,
+            vec!["qwen2-0.5b".to_string()]
+        );
 
         let _ = std::fs::remove_dir_all(&workspace);
     }
@@ -1740,7 +1915,13 @@ mod tests {
     #[test]
     fn test_policy_engine() {
         let temp_dir = std::env::temp_dir();
-        let unique_dir = temp_dir.join(format!("sol_policy_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let unique_dir = temp_dir.join(format!(
+            "sol_policy_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&unique_dir).unwrap();
         let workspace = std::fs::canonicalize(&unique_dir).unwrap();
 
@@ -1821,20 +2002,20 @@ mod tests {
     #[test]
     fn test_provider_config_validation() {
         use llm::providers::validate_provider_url;
-        
+
         // Loopback URLs when remote is not allowed
         assert!(validate_provider_url("http://localhost:11434", false).is_ok());
         assert!(validate_provider_url("http://127.0.0.1:8080", false).is_ok());
         assert!(validate_provider_url("http://[::1]:8080", false).is_ok());
-        
+
         // Non-loopback URLs when remote is not allowed
         assert!(validate_provider_url("http://192.168.1.50:11434", false).is_err());
         assert!(validate_provider_url("http://example.com/api", false).is_err());
-        
+
         // Remote URLs allowed
         assert!(validate_provider_url("http://192.168.1.50:11434", true).is_ok());
         assert!(validate_provider_url("https://example.com/api", true).is_ok());
-        
+
         // Invalid schemes
         assert!(validate_provider_url("ftp://localhost:21", true).is_err());
         assert!(validate_provider_url("invalid-url", true).is_err());

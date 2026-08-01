@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize};
-use reqwest::blocking::Client;
-use std::time::Duration;
-use std::io::{BufRead, BufReader};
-use std::sync::atomic::AtomicBool;
 use super::validate_provider_url;
 use crate::llm::inference::GenerationStats;
+use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader};
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct LlamaCppStatus {
@@ -58,14 +58,14 @@ struct LlamaCppPropsSettings {
 /// Query llama.cpp server health and properties to check availability and loaded model name.
 pub fn check_health(url_str: &str, allow_remote: bool) -> Result<LlamaCppStatus, String> {
     let url = validate_provider_url(url_str, allow_remote)?;
-    
+
     // 1. Query /health
     let health_url = url.join("health").map_err(|e| e.to_string())?;
     let client = Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
         .map_err(|e| e.to_string())?;
-        
+
     let resp = match client.get(health_url).send() {
         Ok(r) => r,
         Err(e) => {
@@ -77,9 +77,12 @@ pub fn check_health(url_str: &str, allow_remote: bool) -> Result<LlamaCppStatus,
             });
         }
     };
-    
+
     if !resp.status().is_success() {
-        let err_msg = format!("llama.cpp server health check returned HTTP {}", resp.status());
+        let err_msg = format!(
+            "llama.cpp server health check returned HTTP {}",
+            resp.status()
+        );
         let mapped = super::map_provider_error(&err_msg, "LlamaCpp", None);
         return Ok(LlamaCppStatus {
             available: false,
@@ -103,7 +106,10 @@ pub fn check_health(url_str: &str, allow_remote: bool) -> Result<LlamaCppStatus,
     };
 
     if !props_resp.status().is_success() {
-        let err_msg = format!("Server is online, but model properties check returned HTTP {}", props_resp.status());
+        let err_msg = format!(
+            "Server is online, but model properties check returned HTTP {}",
+            props_resp.status()
+        );
         let mapped = super::map_provider_error(&err_msg, "LlamaCpp", None);
         return Ok(LlamaCppStatus {
             available: true,
@@ -187,7 +193,10 @@ where
     let status = response.status();
     if !status.is_success() {
         let err_body = response.text().unwrap_or_default();
-        return Err(format!("llama.cpp returned error: HTTP {} - {}", status, err_body));
+        return Err(format!(
+            "llama.cpp returned error: HTTP {} - {}",
+            status, err_body
+        ));
     }
 
     let start_time = std::time::Instant::now();
@@ -198,7 +207,8 @@ where
 
     loop {
         line_bytes.clear();
-        let num_bytes = reader.read_until(b'\n', &mut line_bytes)
+        let num_bytes = reader
+            .read_until(b'\n', &mut line_bytes)
             .map_err(|e| format!("Failed to read stream: {}", e))?;
         if num_bytes == 0 {
             break; // EOF
@@ -228,7 +238,10 @@ where
         let chunk: LlamaCppChunk = match serde_json::from_str(data) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[Llama.cpp Client] Failed to parse JSON chunk: {} data={:?}", e, data);
+                eprintln!(
+                    "[Llama.cpp Client] Failed to parse JSON chunk: {} data={:?}",
+                    e, data
+                );
                 continue;
             }
         };
@@ -300,7 +313,7 @@ pub fn stream_completion<F>(
 where
     F: FnMut(&str) -> Result<(), String>,
 {
-    use crate::llm::stream::{StreamPostProcessor, ProcessResult};
+    use crate::llm::stream::{ProcessResult, StreamPostProcessor};
 
     let url = validate_provider_url(url_str, allow_remote)?;
     let completion_url = url.join("completion").map_err(|e| e.to_string())?;
@@ -337,7 +350,10 @@ where
     let status = response.status();
     if !status.is_success() {
         let err_body = response.text().unwrap_or_default();
-        return Err(format!("llama.cpp completion returned error: HTTP {} - {}", status, err_body));
+        return Err(format!(
+            "llama.cpp completion returned error: HTTP {} - {}",
+            status, err_body
+        ));
     }
 
     let start_time = std::time::Instant::now();
@@ -349,7 +365,8 @@ where
 
     loop {
         line_bytes.clear();
-        let num_bytes = reader.read_until(b'\n', &mut line_bytes)
+        let num_bytes = reader
+            .read_until(b'\n', &mut line_bytes)
             .map_err(|e| format!("Failed to read stream: {}", e))?;
         if num_bytes == 0 {
             break; // EOF
@@ -374,7 +391,10 @@ where
         let chunk: LlamaCppCompletionChunk = match serde_json::from_str(data) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[Llama.cpp Completion] Failed to parse JSON chunk: {} data={:?}", e, data);
+                eprintln!(
+                    "[Llama.cpp Completion] Failed to parse JSON chunk: {} data={:?}",
+                    e, data
+                );
                 continue;
             }
         };
@@ -418,16 +438,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::{MockServer, Mock, ResponseTemplate};
-    use wiremock::matchers::{method, path};
     use std::sync::Arc;
     use std::sync::Mutex as StdMutex;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_check_health_ok() {
         tauri::async_runtime::block_on(async {
             let server = MockServer::start().await;
-            
+
             Mock::given(method("GET"))
                 .and(path("/health"))
                 .respond_with(ResponseTemplate::new(200))
@@ -446,7 +466,10 @@ mod tests {
 
             let status = check_health(&server.uri(), true).unwrap();
             assert!(status.available);
-            assert_eq!(status.model, Some("meta-llama-3-8b-instruct.Q4_K_M.gguf".to_string()));
+            assert_eq!(
+                status.model,
+                Some("meta-llama-3-8b-instruct.Q4_K_M.gguf".to_string())
+            );
             assert!(status.error.is_none());
         });
     }
@@ -470,15 +493,17 @@ mod tests {
 
             Mock::given(method("POST"))
                 .and(path("/v1/chat/completions"))
-                .respond_with(ResponseTemplate::new(200)
-                    .set_body_string(full_body)
-                    .insert_header("content-type", "text/event-stream"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(full_body)
+                        .insert_header("content-type", "text/event-stream"),
+                )
                 .mount(&server)
                 .await;
 
             let cancel = AtomicBool::new(false);
             let tokens = Arc::new(StdMutex::new(Vec::new()));
-            
+
             let tokens_clone = tokens.clone();
             let stats = stream_rework(
                 &server.uri(),
@@ -494,8 +519,9 @@ mod tests {
                 move |tok| {
                     tokens_clone.lock().unwrap().push(tok.to_string());
                     Ok(())
-                }
-            ).unwrap();
+                },
+            )
+            .unwrap();
 
             assert_eq!(stats.decode_tokens, 2);
             let accumulated = tokens.lock().unwrap().join("");
@@ -514,9 +540,11 @@ mod tests {
 
             Mock::given(method("POST"))
                 .and(path("/v1/chat/completions"))
-                .respond_with(ResponseTemplate::new(200)
-                    .set_body_string(full_body)
-                    .insert_header("content-type", "text/event-stream"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(full_body)
+                        .insert_header("content-type", "text/event-stream"),
+                )
                 .mount(&server)
                 .await;
 
@@ -532,7 +560,7 @@ mod tests {
                 42,
                 128,
                 &cancel,
-                |_tok| Ok(())
+                |_tok| Ok(()),
             );
 
             assert!(res.is_err());
@@ -552,15 +580,17 @@ mod tests {
 
             Mock::given(method("POST"))
                 .and(path("/completion"))
-                .respond_with(ResponseTemplate::new(200)
-                    .set_body_string(full_body)
-                    .insert_header("content-type", "text/event-stream"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(full_body)
+                        .insert_header("content-type", "text/event-stream"),
+                )
                 .mount(&server)
                 .await;
 
             let cancel = AtomicBool::new(false);
             let tokens = Arc::new(StdMutex::new(Vec::new()));
-            
+
             let tokens_clone = tokens.clone();
             let stats = stream_completion(
                 &server.uri(),
@@ -579,8 +609,9 @@ mod tests {
                 move |tok| {
                     tokens_clone.lock().unwrap().push(tok.to_string());
                     Ok(())
-                }
-            ).unwrap();
+                },
+            )
+            .unwrap();
 
             assert_eq!(stats.decode_tokens, 2);
             let accumulated = tokens.lock().unwrap().join("");
@@ -598,9 +629,11 @@ mod tests {
 
             Mock::given(method("POST"))
                 .and(path("/completion"))
-                .respond_with(ResponseTemplate::new(200)
-                    .set_body_string(full_body)
-                    .insert_header("content-type", "text/event-stream"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(full_body)
+                        .insert_header("content-type", "text/event-stream"),
+                )
                 .mount(&server)
                 .await;
 
@@ -619,7 +652,7 @@ mod tests {
                 -1,
                 &["\n".to_string()],
                 &cancel,
-                |_tok| Ok(())
+                |_tok| Ok(()),
             );
 
             assert!(res.is_err());

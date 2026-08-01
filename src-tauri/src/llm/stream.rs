@@ -1,8 +1,8 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessResult {
-    Emit(String),   // clean delta to send as Token
-    Stop(String),   // final delta (may be empty), generation should halt
-    Continue,       // nothing to emit yet
+    Emit(String), // clean delta to send as Token
+    Stop(String), // final delta (may be empty), generation should halt
+    Continue,     // nothing to emit yet
 }
 
 pub struct StreamPostProcessor {
@@ -42,7 +42,7 @@ impl StreamPostProcessor {
             let mut start_search = 0;
             while let Some(relative_idx) = current_text[start_search..].find(stop_seq) {
                 let idx = start_search + relative_idx;
-                
+
                 if stop_seq == "." && !is_sentence_end_period(current_text, idx) {
                     start_search = idx + stop_seq.len();
                     continue;
@@ -60,11 +60,7 @@ impl StreamPostProcessor {
         }
 
         if let Some((idx, len, stop_seq)) = earliest_stop {
-            let include_len = if stop_seq == "." {
-                len
-            } else {
-                0
-            };
+            let include_len = if stop_seq == "." { len } else { 0 };
             let final_text = &current_text[..idx + include_len];
             if final_text.len() > self.emitted_len {
                 let new_part = &final_text[self.emitted_len..];
@@ -120,9 +116,9 @@ fn is_sentence_end_period(text: &str, idx: usize) -> bool {
     // 4. Check against common abbreviations
     let lower_word = word.to_lowercase();
     let common_abbrevs = [
-        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "vs", "ie", "eg", "etc", 
-        "al", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
-        "st", "rd", "th", "ave", "blvd", "co", "corp", "inc", "ltd", "approx", "ca"
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "vs", "ie", "eg", "etc", "al", "jan", "feb",
+        "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec", "st", "rd", "th", "ave",
+        "blvd", "co", "corp", "inc", "ltd", "approx", "ca",
     ];
     if common_abbrevs.contains(&lower_word.as_str()) {
         return false;
@@ -139,8 +135,14 @@ mod tests {
     fn test_is_sentence_end_period() {
         // End of sentence
         assert!(is_sentence_end_period("Hello world.", 11));
-        assert!(is_sentence_end_period("This is a sentence. And another.", 18));
-        assert!(is_sentence_end_period("This is a sentence. And another.", 31));
+        assert!(is_sentence_end_period(
+            "This is a sentence. And another.",
+            18
+        ));
+        assert!(is_sentence_end_period(
+            "This is a sentence. And another.",
+            31
+        ));
 
         // Ellipsis / multiple dots
         assert!(!is_sentence_end_period("Wait...", 4));
@@ -151,7 +153,7 @@ mod tests {
         assert!(!is_sentence_end_period("U.S.A.", 1));
         assert!(!is_sentence_end_period("U.S.A.", 3));
         assert!(!is_sentence_end_period("U.S.A.", 5));
-        
+
         // Abbreviations
         assert!(!is_sentence_end_period("Mr. Smith", 2));
         assert!(!is_sentence_end_period("i.e. something", 3));
@@ -161,14 +163,17 @@ mod tests {
     #[test]
     fn test_leading_whitespace_trim() {
         let mut processor = StreamPostProcessor::new(vec!["\n".to_string()]);
-        
+
         // Feeding initial newlines/whitespace
         assert_eq!(processor.push("\n"), ProcessResult::Continue);
         assert_eq!(processor.push("   "), ProcessResult::Continue);
-        
+
         // Emitting actual text
-        assert_eq!(processor.push("Hello"), ProcessResult::Emit("Hello".to_string()));
-        
+        assert_eq!(
+            processor.push("Hello"),
+            ProcessResult::Emit("Hello".to_string())
+        );
+
         // Stop sequence check
         assert_eq!(processor.push("\n"), ProcessResult::Stop("".to_string()));
     }
@@ -176,39 +181,51 @@ mod tests {
     #[test]
     fn test_period_heuristic() {
         let mut processor = StreamPostProcessor::new(vec![".".to_string()]);
-        
+
         // Mr. shouldn't trigger period stop
         assert_eq!(processor.push("Mr"), ProcessResult::Emit("Mr".to_string()));
         assert_eq!(processor.push("."), ProcessResult::Emit(".".to_string()));
-        
+
         // Space
         assert_eq!(processor.push(" "), ProcessResult::Emit(" ".to_string()));
-        
+
         // Smith. should trigger period stop
-        assert_eq!(processor.push("Smith"), ProcessResult::Emit("Smith".to_string()));
+        assert_eq!(
+            processor.push("Smith"),
+            ProcessResult::Emit("Smith".to_string())
+        );
         assert_eq!(processor.push("."), ProcessResult::Stop(".".to_string()));
     }
 
     #[test]
     fn test_stop_at_mid_word_boundary() {
         let mut processor = StreamPostProcessor::new(vec!["stop".to_string()]);
-        
-        assert_eq!(processor.push("hel"), ProcessResult::Emit("hel".to_string()));
-        assert_eq!(processor.push("lost"), ProcessResult::Emit("lost".to_string()));
+
+        assert_eq!(
+            processor.push("hel"),
+            ProcessResult::Emit("hel".to_string())
+        );
+        assert_eq!(
+            processor.push("lost"),
+            ProcessResult::Emit("lost".to_string())
+        );
         assert_eq!(processor.push("op"), ProcessResult::Stop("".to_string()));
     }
 
     #[test]
     fn test_stop_sequence_at_position_0() {
         let mut processor = StreamPostProcessor::new(vec!["stop".to_string()]);
-        
+
         assert_eq!(processor.push("stop"), ProcessResult::Stop("".to_string()));
     }
 
     #[test]
     fn test_multiple_overlapping_stop_sequences() {
         let mut processor = StreamPostProcessor::new(vec!["stop".to_string(), "top".to_string()]);
-        
-        assert_eq!(processor.push("astop"), ProcessResult::Stop("a".to_string()));
+
+        assert_eq!(
+            processor.push("astop"),
+            ProcessResult::Stop("a".to_string())
+        );
     }
 }

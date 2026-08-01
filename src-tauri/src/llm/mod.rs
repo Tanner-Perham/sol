@@ -1,12 +1,12 @@
+pub mod context;
 pub mod download;
 pub mod inference;
-pub mod registry;
-pub mod context;
-pub mod stream;
 pub mod providers;
+pub mod registry;
+pub mod stream;
 
-use serde::{Deserialize, Serialize};
 use providers::{CompletionBackend, ReworkBackend};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,10 +65,18 @@ fn default_llamacpp_url() -> String {
     "http://localhost:8080".to_string()
 }
 
-fn default_dry_multiplier() -> f32 { 0.8 }
-fn default_dry_base() -> f32 { 1.75 }
-fn default_dry_allowed_length() -> u32 { 2 }
-fn default_dry_penalty_last_n() -> i32 { -1 }
+fn default_dry_multiplier() -> f32 {
+    0.8
+}
+fn default_dry_base() -> f32 {
+    1.75
+}
+fn default_dry_allowed_length() -> u32 {
+    2
+}
+fn default_dry_penalty_last_n() -> i32 {
+    -1
+}
 
 /// LLM configuration stored in settings
 #[derive(Debug, Clone, Serialize, Deserialize)]

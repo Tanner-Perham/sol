@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
 use regex::Regex;
+use std::path::{Path, PathBuf};
 
 pub fn extract_wikilinks(text: &str) -> Vec<String> {
     let mut links = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    
+
     // Match optional '!' followed by [[target]] or [[target|alias]]
     // Group 1 is the '!' prefix (if present)
     // Group 2 is the target name
@@ -55,7 +55,10 @@ pub fn resolve_link_target(workspace: &Path, current_note: &Path, target: &str) 
     }
 
     let mut target_str = clean_target.to_string();
-    if !target_str.contains('.') && !target_str.starts_with("http://") && !target_str.starts_with("https://") {
+    if !target_str.contains('.')
+        && !target_str.starts_with("http://")
+        && !target_str.starts_with("https://")
+    {
         target_str.push_str(".md");
     }
 
@@ -63,7 +66,9 @@ pub fn resolve_link_target(workspace: &Path, current_note: &Path, target: &str) 
     if let Some(parent) = current_note.parent() {
         if let Ok(rel_to_workspace) = parent.strip_prefix(workspace) {
             let relative_target = rel_to_workspace.join(&target_str);
-            if let Ok(path) = crate::resolve_safe_path(workspace, &relative_target.to_string_lossy()) {
+            if let Ok(path) =
+                crate::resolve_safe_path(workspace, &relative_target.to_string_lossy())
+            {
                 if path.exists() && path.is_file() {
                     return Some(path);
                 }
@@ -197,7 +202,10 @@ pub fn assemble_context(
     let sanitized_prefix = sanitize_prompt_text(prefix);
     let char_count = sanitized_prefix.chars().count();
     let truncated_prefix: String = if char_count > options.prefix_chars {
-        sanitized_prefix.chars().skip(char_count - options.prefix_chars).collect()
+        sanitized_prefix
+            .chars()
+            .skip(char_count - options.prefix_chars)
+            .collect()
     } else {
         sanitized_prefix
     };
@@ -211,11 +219,11 @@ pub fn assemble_context(
 
     // 2. Extract outbound links from the full buffer_text
     let targets = extract_wikilinks(buffer_text);
-    
+
     // 3. Resolve and gate linked notes
     let mut linked_excerpts = Vec::new();
     let mut linked_count = 0;
-    
+
     for target in targets {
         if linked_count >= options.max_linked_notes {
             break;
@@ -233,24 +241,28 @@ pub fn assemble_context(
 
                     // Take up to excerpt_chars characters
                     let excerpt: String = sanitized.chars().take(options.excerpt_chars).collect();
-                    
+
                     let normalized_excerpt = normalize_for_dedup(&excerpt);
-                    if !normalized_excerpt.is_empty() && normalized_prefix.contains(&normalized_excerpt) {
+                    if !normalized_excerpt.is_empty()
+                        && normalized_prefix.contains(&normalized_excerpt)
+                    {
                         // Excerpt substantially appears in prefix, skip it
                         continue;
                     }
 
-                    let title = resolved_path.file_stem()
+                    let title = resolved_path
+                        .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| target.clone());
 
-                    let rel_path = resolved_path.strip_prefix(workspace)
+                    let rel_path = resolved_path
+                        .strip_prefix(workspace)
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_else(|_| resolved_path.to_string_lossy().to_string());
-                    
+
                     let excerpt_str = format!("<!-- Reference: {} -->\n{}\n", title, excerpt);
                     let chars_used = excerpt.chars().count();
-                    
+
                     linked_excerpts.push(LinkedExcerpt {
                         title,
                         path: rel_path,
@@ -262,7 +274,7 @@ pub fn assemble_context(
             }
         }
     }
-    
+
     // 4. Combine everything
     let mut final_prompt = String::new();
     for excerpt in &linked_excerpts {
@@ -276,11 +288,14 @@ pub fn assemble_context(
     AssembledContext {
         prompt: final_prompt,
         prefix_range_utf16: (prefix_from_utf16, prefix_to_utf16),
-        linked: linked_excerpts.into_iter().map(|le| LinkedExcerptMeta {
-            title: le.title,
-            path: le.path,
-            chars_used: le.chars_used,
-        }).collect(),
+        linked: linked_excerpts
+            .into_iter()
+            .map(|le| LinkedExcerptMeta {
+                title: le.title,
+                path: le.path,
+                chars_used: le.chars_used,
+            })
+            .collect(),
         prompt_token_estimate,
     }
 }
@@ -347,7 +362,13 @@ mod tests {
     #[test]
     fn test_assemble_context() {
         let temp_dir = std::env::temp_dir();
-        let unique_dir = temp_dir.join(format!("sol_context_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let unique_dir = temp_dir.join(format!(
+            "sol_context_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&unique_dir).unwrap();
         let workspace = std::fs::canonicalize(&unique_dir).unwrap();
 
@@ -375,14 +396,21 @@ mod tests {
         };
 
         let cursor_offset = current_body.find("Here is the cursor").unwrap();
-        let assembled = assemble_context(&workspace, &current_note, current_body, cursor_offset, &state, &ContextOptions::default());
+        let assembled = assemble_context(
+            &workspace,
+            &current_note,
+            current_body,
+            cursor_offset,
+            &state,
+            &ContextOptions::default(),
+        );
 
         // Assert prompt contains Note A's content and does NOT contain Note B's content (due to ai: false)
         assert!(assembled.prompt.contains("Content of note A"));
         assert!(!assembled.prompt.contains("Content of note B"));
         assert!(assembled.prompt.contains("This is a note linking to"));
         assert!(assembled.prompt.contains("<!-- Reference: Note A -->"));
-        
+
         // Assert telemetry fields are filled
         assert_eq!(assembled.prefix_range_utf16.1, cursor_offset);
         assert_eq!(assembled.linked.len(), 1);
@@ -402,7 +430,13 @@ mod tests {
     #[test]
     fn test_context_excerpt_deduplication() {
         let temp_dir = std::env::temp_dir();
-        let unique_dir = temp_dir.join(format!("sol_dedup_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let unique_dir = temp_dir.join(format!(
+            "sol_dedup_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&unique_dir).unwrap();
         let workspace = std::fs::canonicalize(&unique_dir).unwrap();
 
@@ -412,7 +446,11 @@ mod tests {
 
         // Create linked note B (its content won't appear in the prefix)
         let note_b = workspace.join("Note B.md");
-        std::fs::write(&note_b, "---\nai: true\n---\nContent of Note B is completely unique").unwrap();
+        std::fs::write(
+            &note_b,
+            "---\nai: true\n---\nContent of Note B is completely unique",
+        )
+        .unwrap();
 
         let current_note = workspace.join("Current.md");
         let current_body = "We already have hello this is Note A content here in the prefix. And we link to [[Note A]] and [[Note B]]. cursor here";
@@ -429,15 +467,26 @@ mod tests {
         };
 
         let cursor_offset = current_body.find("cursor here").unwrap();
-        let assembled = assemble_context(&workspace, &current_note, current_body, cursor_offset, &state, &ContextOptions::default());
+        let assembled = assemble_context(
+            &workspace,
+            &current_note,
+            current_body,
+            cursor_offset,
+            &state,
+            &ContextOptions::default(),
+        );
 
         // Note A should be skipped because its content is already in the prefix
         assert!(!assembled.prompt.contains("<!-- Reference: Note A -->"));
-        assert!(!assembled.prompt.contains("Hello this is Note A content\n\n")); // Only one copy of Note A content should exist (in the prefix)
-        
+        assert!(!assembled
+            .prompt
+            .contains("Hello this is Note A content\n\n")); // Only one copy of Note A content should exist (in the prefix)
+
         // Note B should be included because it is not in the prefix
         assert!(assembled.prompt.contains("<!-- Reference: Note B -->"));
-        assert!(assembled.prompt.contains("Content of Note B is completely unique"));
+        assert!(assembled
+            .prompt
+            .contains("Content of Note B is completely unique"));
 
         let _ = std::fs::remove_dir_all(&workspace);
     }
