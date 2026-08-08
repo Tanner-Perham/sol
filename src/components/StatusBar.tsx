@@ -20,6 +20,8 @@ export interface StatusBarProps {
     tokPerS?: number;
     backend?: string;
   } | null;
+  bottomTrayOpen: boolean;
+  onToggleBottomTray: () => void;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
@@ -33,10 +35,34 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   aiStatus,
   completionEnabled,
   aiDebugEnabled,
-  aiDebugInfo
+  aiDebugInfo,
+  bottomTrayOpen,
+  onToggleBottomTray
 }) => {
   return (
     <footer className="app-status-bar">
+      <button
+        className={`status-bar-arrow-btn ${bottomTrayOpen ? "open" : "closed"}`}
+        onClick={onToggleBottomTray}
+        title={bottomTrayOpen ? "Collapse Bottom Panel (Ctrl+`)" : "Expand Bottom Panel (Ctrl+`)"}
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            transform: bottomTrayOpen ? "rotate(180deg)" : "rotate(0deg)",
+            transition: "transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)"
+          }}
+        >
+          <polyline points="18 15 12 9 6 15" />
+        </svg>
+      </button>
       <div className="status-section">
         <span className="status-filename">{activeFile || "No file open"}</span>
         {isDirty && <span className="status-dirty-dot" title="Unsaved changes" />}

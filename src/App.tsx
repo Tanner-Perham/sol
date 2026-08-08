@@ -19,6 +19,7 @@ import { SettingsModal, SettingsTabType } from "./components/SettingsModal";
 import { StatusBar } from "./components/StatusBar";
 import { EditorPaneComponent, pruneEditorState, renameEditorState, saveEditorState } from "./components/EditorPane/EditorPane";
 import { clearSuggestion } from "./components/EditorPane/ghostTextExtension";
+import { RightTray, BottomTray } from "./components/Trays";
 
 function App() {
   const [workspacePath, setWorkspacePath] = useState("");
@@ -53,6 +54,135 @@ function App() {
   const [vimModeName, setVimModeName] = useState("NORMAL");
   const [focusedComponent, setFocusedComponent] = useState<"editor" | "sidebar">("editor");
   const [sidebarSelectedIndex, setSidebarSelectedIndex] = useState(0);
+
+  // Bottom and Right Tray States & Persistence
+  const [bottomTrayOpen, setBottomTrayOpen] = useState(() => {
+    return localStorage.getItem("sol_bottom_tray_open") === "true";
+  });
+  const [rightTrayOpen, setRightTrayOpen] = useState(() => {
+    return localStorage.getItem("sol_right_tray_open") === "true";
+  });
+  const [bottomTrayHeight, setBottomTrayHeight] = useState(() => {
+    const saved = localStorage.getItem("sol_bottom_tray_height");
+    return saved ? parseInt(saved, 10) : 200;
+  });
+  const [rightTrayWidth, setRightTrayWidth] = useState(() => {
+    const saved = localStorage.getItem("sol_right_tray_width");
+    return saved ? parseInt(saved, 10) : 260;
+  });
+  const [activeContent, setActiveContent] = useState("");
+  const [activeBottomTab, setActiveBottomTab] = useState<"console" | "ai" | "scratchpad">("console");
+  const [activeRightTab, setActiveRightTab] = useState<"outline" | "info">("outline");
+  const [scratchpadContent, setScratchpadContent] = useState(() => {
+    return localStorage.getItem("sol_scratchpad_content") || "";
+  });
+
+  interface LogEntry {
+    id: string;
+    time: string;
+    text: string;
+    type: "info" | "success" | "warn" | "error";
+  }
+  const [consoleLogs, setConsoleLogs] = useState<LogEntry[]>([
+    { id: "init", time: new Date().toLocaleTimeString(), text: "Sol initialized.", type: "info" }
+  ]);
+
+  const addConsoleLog = useCallback((text: string, type: "info" | "success" | "warn" | "error" = "info") => {
+    setConsoleLogs(prev => [
+      ...prev,
+      { id: Math.random().toString(), time: new Date().toLocaleTimeString(), text, type }
+    ].slice(-100));
+  }, []);
+
+  const toggleBottomTray = useCallback(() => {
+    setBottomTrayOpen(prev => !prev);
+  }, []);
+
+  const scrollToHeader = useCallback((headerText: string) => {
+    if (!activePaneIdRef.current) return;
+    const view = editorViewsRef.current.get(activePaneIdRef.current);
+    if (view) {
+      view.focus();
+      const lineNum = findHeaderLine(view.state.doc, headerText);
+      if (lineNum !== null) {
+        const line = view.state.doc.line(lineNum);
+        view.dispatch({
+          selection: { anchor: line.from },
+          scrollIntoView: true
+        });
+      }
+    }
+  }, []);
+
+  // Sync state changes to localStorage
+  useEffect(() => {
+    localStorage.setItem("sol_bottom_tray_open", bottomTrayOpen ? "true" : "false");
+  }, [bottomTrayOpen]);
+
+  useEffect(() => {
+    localStorage.setItem("sol_right_tray_open", rightTrayOpen ? "true" : "false");
+  }, [rightTrayOpen]);
+
+  useEffect(() => {
+    localStorage.setItem("sol_bottom_tray_height", bottomTrayHeight.toString());
+  }, [bottomTrayHeight]);
+
+  useEffect(() => {
+    localStorage.setItem("sol_right_tray_width", rightTrayWidth.toString());
+  }, [rightTrayWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("sol_scratchpad_content", scratchpadContent);
+  }, [scratchpadContent]);
+
+  // Handle Bottom Tray Resize Dragging
+  const [isBottomTrayResizing, setIsBottomTrayResizing] = useState(false);
+  const handleBottomTrayMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsBottomTrayResizing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isBottomTrayResizing) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      const bottomLimit = window.innerHeight - 32;
+      const newHeight = Math.max(100, Math.min(500, bottomLimit - e.clientY));
+      setBottomTrayHeight(newHeight);
+    };
+    const handleMouseUp = () => {
+      setIsBottomTrayResizing(false);
+    };
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isBottomTrayResizing]);
+
+  // Handle Right Tray Resize Dragging
+  const [isRightTrayResizing, setIsRightTrayResizing] = useState(false);
+  const handleRightTrayMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsRightTrayResizing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isRightTrayResizing) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = Math.max(180, Math.min(500, window.innerWidth - e.clientX));
+      setRightTrayWidth(newWidth);
+    };
+    const handleMouseUp = () => {
+      setIsRightTrayResizing(false);
+    };
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isRightTrayResizing]);
 
   const updateSettings = useCallback(async (newSettings: Partial<AppSettings>) => {
     if (newSettings.completionEnabled === false) {
@@ -191,6 +321,26 @@ function App() {
     checkFileAiStatus(activeFile);
   }, [activeFile, checkFileAiStatus]);
 
+  useEffect(() => {
+    if (!activeFile) {
+      setActiveContent("");
+      return;
+    }
+    const view = activePaneId ? editorViewsRef.current.get(activePaneId) : null;
+    if (view) {
+      setActiveContent(view.state.doc.toString());
+    } else {
+      invoke<{ content: string; mtime: number }>("read_markdown_file", { path: activeFile })
+        .then((res) => {
+          setActiveContent(res.content);
+        })
+        .catch((err) => {
+          console.error("Error pre-reading active file", err);
+          setActiveContent("");
+        });
+    }
+  }, [activeFile, activePaneId]);
+
 
   useEffect(() => {
     return () => {
@@ -216,6 +366,7 @@ function App() {
     } catch (err: any) {
       if (err === "conflict") {
         console.log(`Conflict detected for ${relativePath}`);
+        addConsoleLog(`Conflict detected for ${relativePath}`, "warn");
         let diskRes;
         try {
           diskRes = await invoke<{ content: string; mtime: number }>("read_markdown_file", { path: relativePath });
@@ -229,6 +380,7 @@ function App() {
         const mergeRes = threeWayMerge(baseContent, content, diskRes.content);
         if (mergeRes.success) {
           console.log(`Auto-merged external changes successfully for ${relativePath}`);
+          addConsoleLog(`Auto-merged external changes successfully for ${relativePath}`, "success");
           try {
             const newMtime = await invoke<number>("write_markdown_file", {
               path: relativePath,
@@ -466,6 +618,8 @@ function App() {
     const hashIdx = fileName.indexOf("#");
     const relativePath = hashIdx !== -1 ? fileName.substring(0, hashIdx) : fileName;
     const header = hashIdx !== -1 ? fileName.substring(hashIdx + 1) : null;
+
+    addConsoleLog(`Opening note: ${relativePath}${header ? ` at #${header}` : ""}`, "info");
 
     if (leaf.activeFile === relativePath) {
       // Just focus it and scroll to header if present
@@ -1471,6 +1625,10 @@ function App() {
     const leaf = findLeafNode(currentLayout, paneId);
     if (!leaf || !leaf.activeFile) return;
 
+    if (paneId === activePaneIdRef.current) {
+      setActiveContent(content);
+    }
+
     const fileName = leaf.activeFile;
 
     // 1. Sync content in-memory to all other panes displaying this file
@@ -1508,6 +1666,7 @@ function App() {
       saveTimeoutsRef.current.delete(fileName);
       const success = await writeMarkdownFileWithConflictCheck(fileName, content);
       if (success) {
+        addConsoleLog(`Auto-saved note: ${fileName}`, "success");
         // Auto-save completed: Mark all panes displaying this file as clean
         const latestLayout = layoutRef.current;
         const latestLeafIds = getLeafPaneIds(latestLayout);
@@ -1523,7 +1682,7 @@ function App() {
       }
     }, 300);
     saveTimeoutsRef.current.set(fileName, fileTimeout);
-  }, [workspacePath, writeMarkdownFileWithConflictCheck]);
+  }, [workspacePath, writeMarkdownFileWithConflictCheck, addConsoleLog]);
 
   const onVimModeChange = useCallback((mode: string) => {
     setVimModeName(mode);
@@ -1722,6 +1881,14 @@ function App() {
       if (matchKeybinding(e, keybindings.save)) {
         e.preventDefault();
         saveFileRef.current();
+        return;
+      }
+
+      // Ctrl+` or Ctrl+Backquote to toggle bottom tray
+      if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && (e.key === "`" || e.code === "Backquote")) {
+        e.preventDefault();
+        e.stopPropagation();
+        setBottomTrayOpen(prev => !prev);
         return;
       }
 
@@ -2142,6 +2309,19 @@ function App() {
             </svg>
           </button>
           <button
+            className={`btn-header-action ${rightTrayOpen ? "active" : ""}`}
+            onClick={() => {
+              setRightTrayOpen(prev => !prev);
+            }}
+            title="Toggle Inspector Panel"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "6px", width: "30px", height: "30px" }}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <line x1="16" y1="3" x2="16" y2="21"/>
+            </svg>
+          </button>
+          <button
             className="btn-header-action"
             onClick={() => {
               setShowSettingsModal(true);
@@ -2188,8 +2368,35 @@ function App() {
         />
 
         <main className="app-main">
-          {renderPaneNode(layout)}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            {renderPaneNode(layout)}
+          </div>
+          <BottomTray
+            isOpen={bottomTrayOpen}
+            height={bottomTrayHeight}
+            activeTab={activeBottomTab}
+            setActiveTab={setActiveBottomTab}
+            logs={consoleLogs}
+            aiDebugInfo={aiDebugInfo}
+            scratchpadContent={scratchpadContent}
+            setScratchpadContent={setScratchpadContent}
+            onClose={() => setBottomTrayOpen(false)}
+            onResizeMouseDown={handleBottomTrayMouseDown}
+          />
         </main>
+
+        <RightTray
+          isOpen={rightTrayOpen}
+          width={rightTrayWidth}
+          activeTab={activeRightTab}
+          setActiveTab={setActiveRightTab}
+          activeFile={activeFile}
+          content={activeContent}
+          wordCount={wordCount}
+          onClose={() => setRightTrayOpen(false)}
+          onResizeMouseDown={handleRightTrayMouseDown}
+          scrollToHeader={scrollToHeader}
+        />
       </div>
 
       <StatusBar
@@ -2204,6 +2411,8 @@ function App() {
         completionEnabled={settings.completionEnabled !== false}
         aiDebugEnabled={settings.aiDebugEnabled}
         aiDebugInfo={aiDebugInfo}
+        bottomTrayOpen={bottomTrayOpen}
+        onToggleBottomTray={toggleBottomTray}
       />
 
       <SettingsModal
