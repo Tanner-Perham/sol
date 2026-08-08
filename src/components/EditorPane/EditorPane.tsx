@@ -24,7 +24,7 @@ import { prosePreviewPlugin } from "../../prosePreviewPlugin";
 import { PaneId, AppSettings, FileNode } from "../../types";
 import { customSelectionHighlightPlugin } from "./editorPlugins";
 import { ghostTextExtension } from "./ghostTextExtension";
-import { reworkExtension, activeFileField } from "./reworkExtension";
+import { reworkExtension, activeFileField, openReworkCommand } from "./reworkExtension";
 import { findHeaderLine, computeWordCount, wikiCompletionSource } from "../../utils/editorUtils";
 
 export interface EditorPaneProps {
@@ -151,7 +151,9 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     visible: boolean;
     x: number;
     y: number;
-    tab: string;
+    tab?: string;
+    type: "tab" | "editor";
+    hasSelection?: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -185,7 +187,27 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
       visible: true,
       x: e.clientX,
       y: e.clientY,
-      tab
+      tab,
+      type: "tab"
+    });
+  }, []);
+
+  const handleEditorContextMenu = useCallback((e: React.MouseEvent) => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const mainRange = view.state.selection.main;
+    const hasSelection = !mainRange.empty;
+
+    setContextMenu({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      type: "editor",
+      hasSelection
     });
   }, []);
 
@@ -781,7 +803,7 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
           })}
         </div>
       )}
-      <div className="editor-wrapper" style={{ flex: 1, overflow: "hidden", position: "relative" }} onClick={onFocus}>
+      <div className="editor-wrapper" style={{ flex: 1, overflow: "hidden", position: "relative" }} onClick={onFocus} onContextMenu={handleEditorContextMenu}>
         {activeFile ? (
           <div ref={containerRef} key="editor-inner" className="editor-inner" style={{ height: "100%" }} />
         ) : (
@@ -814,62 +836,170 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
             e.stopPropagation();
           }}
         >
-          <div
-            className="tab-context-menu-item"
-            onClick={() => {
-              onCloseTab(paneId, contextMenu.tab);
-              setContextMenu(null);
-            }}
-          >
-            <span>Close</span>
-            <span className="kbd-shortcut" style={{ fontSize: "9px" }}>Alt+W</span>
-          </div>
-          <div
-            className="tab-context-menu-item"
-            onClick={() => {
-              const others = tabs.filter(t => t !== contextMenu.tab);
-              onCloseTabs(paneId, others);
-              setContextMenu(null);
-            }}
-          >
-            <span>Close Others</span>
-          </div>
-          {tabs.indexOf(contextMenu.tab) < tabs.length - 1 && (
-            <div
-              className="tab-context-menu-item"
-              onClick={() => {
-                const tabIdx = tabs.indexOf(contextMenu.tab);
-                const toRight = tabs.slice(tabIdx + 1);
-                onCloseTabs(paneId, toRight);
-                setContextMenu(null);
-              }}
-            >
-              <span>Close to the Right</span>
-            </div>
-          )}
-          {tabs.indexOf(contextMenu.tab) > 0 && (
-            <div
-              className="tab-context-menu-item"
-              onClick={() => {
-                const tabIdx = tabs.indexOf(contextMenu.tab);
-                const toLeft = tabs.slice(0, tabIdx);
-                onCloseTabs(paneId, toLeft);
-                setContextMenu(null);
-              }}
-            >
-              <span>Close to the Left</span>
-            </div>
-          )}
-          <div className="tab-context-menu-separator" />
-          <div
-            className="tab-context-menu-item"
-            onClick={() => {
-              onCloseTabs(paneId, tabs);
-              setContextMenu(null);
-            }}
-          >
-            <span>Close All</span>
-          </div>
+          {contextMenu.type === "tab" && contextMenu.tab ? (
+            <>
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  onCloseTab(paneId, contextMenu.tab!);
+                  setContextMenu(null);
+                }}
+              >
+                <span>Close</span>
+                <span className="kbd-shortcut" style={{ fontSize: "9px" }}>Alt+W</span>
+              </div>
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  const others = tabs.filter(t => t !== contextMenu.tab);
+                  onCloseTabs(paneId, others);
+                  setContextMenu(null);
+                }}
+              >
+                <span>Close Others</span>
+              </div>
+              {tabs.indexOf(contextMenu.tab) < tabs.length - 1 && (
+                <div
+                  className="tab-context-menu-item"
+                  onClick={() => {
+                    const tabIdx = tabs.indexOf(contextMenu.tab!);
+                    const toRight = tabs.slice(tabIdx + 1);
+                    onCloseTabs(paneId, toRight);
+                    setContextMenu(null);
+                  }}
+                >
+                  <span>Close to the Right</span>
+                </div>
+              )}
+              {tabs.indexOf(contextMenu.tab) > 0 && (
+                <div
+                  className="tab-context-menu-item"
+                  onClick={() => {
+                    const tabIdx = tabs.indexOf(contextMenu.tab!);
+                    const toLeft = tabs.slice(0, tabIdx);
+                    onCloseTabs(paneId, toLeft);
+                    setContextMenu(null);
+                  }}
+                >
+                  <span>Close to the Left</span>
+                </div>
+              )}
+              <div className="tab-context-menu-separator" />
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  onCloseTabs(paneId, tabs);
+                  setContextMenu(null);
+                }}
+              >
+                <span>Close All</span>
+              </div>
+            </>
+          ) : contextMenu.type === "editor" ? (
+            <>
+              <div
+                className={`tab-context-menu-item ${!contextMenu.hasSelection ? "disabled" : ""}`}
+                style={{
+                  opacity: !contextMenu.hasSelection ? 0.4 : 1,
+                  pointerEvents: !contextMenu.hasSelection ? "none" : "auto",
+                  cursor: !contextMenu.hasSelection ? "not-allowed" : "pointer"
+                }}
+                onClick={() => {
+                  const view = viewRef.current;
+                  if (view && contextMenu.hasSelection) {
+                    openReworkCommand(view);
+                  }
+                  setContextMenu(null);
+                }}
+              >
+                <span>Rework Selection</span>
+                <span className="kbd-shortcut" style={{ fontSize: "9px" }}>Alt+K</span>
+              </div>
+              <div className="tab-context-menu-separator" />
+              <div
+                className={`tab-context-menu-item ${!contextMenu.hasSelection ? "disabled" : ""}`}
+                style={{
+                  opacity: !contextMenu.hasSelection ? 0.4 : 1,
+                  pointerEvents: !contextMenu.hasSelection ? "none" : "auto",
+                  cursor: !contextMenu.hasSelection ? "not-allowed" : "pointer"
+                }}
+                onClick={() => {
+                  const view = viewRef.current;
+                  if (!view || !contextMenu.hasSelection) return;
+                  const mainRange = view.state.selection.main;
+                  if (mainRange.empty) return;
+                  const text = view.state.doc.sliceString(mainRange.from, mainRange.to);
+                  navigator.clipboard.writeText(text)
+                    .then(() => {
+                      view.dispatch({
+                        changes: { from: mainRange.from, to: mainRange.to, insert: "" },
+                        selection: { anchor: mainRange.from }
+                      });
+                    })
+                    .catch(err => console.error(err));
+                  setContextMenu(null);
+                }}
+              >
+                <span>Cut</span>
+                <span className="kbd-shortcut" style={{ fontSize: "9px" }}>Ctrl+X</span>
+              </div>
+              <div
+                className={`tab-context-menu-item ${!contextMenu.hasSelection ? "disabled" : ""}`}
+                style={{
+                  opacity: !contextMenu.hasSelection ? 0.4 : 1,
+                  pointerEvents: !contextMenu.hasSelection ? "none" : "auto",
+                  cursor: !contextMenu.hasSelection ? "not-allowed" : "pointer"
+                }}
+                onClick={() => {
+                  const view = viewRef.current;
+                  if (!view || !contextMenu.hasSelection) return;
+                  const mainRange = view.state.selection.main;
+                  if (mainRange.empty) return;
+                  const text = view.state.doc.sliceString(mainRange.from, mainRange.to);
+                  navigator.clipboard.writeText(text).catch(err => console.error(err));
+                  setContextMenu(null);
+                }}
+              >
+                <span>Copy</span>
+                <span className="kbd-shortcut" style={{ fontSize: "9px" }}>Ctrl+C</span>
+              </div>
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  const view = viewRef.current;
+                  if (!view) return;
+                  navigator.clipboard.readText()
+                    .then((text) => {
+                      const mainRange = view.state.selection.main;
+                      view.dispatch({
+                        changes: { from: mainRange.from, to: mainRange.to, insert: text },
+                        selection: { anchor: mainRange.from + text.length }
+                      });
+                    })
+                    .catch(err => console.error(err));
+                  setContextMenu(null);
+                }}
+              >
+                <span>Paste</span>
+                <span className="kbd-shortcut" style={{ fontSize: "9px" }}>Ctrl+V</span>
+              </div>
+              <div className="tab-context-menu-separator" />
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  const view = viewRef.current;
+                  if (!view) return;
+                  view.dispatch({
+                    selection: { anchor: 0, head: view.state.doc.length }
+                  });
+                  setContextMenu(null);
+                }}
+              >
+                <span>Select All</span>
+                <span className="kbd-shortcut" style={{ fontSize: "9px" }}>Ctrl+A</span>
+              </div>
+            </>
+          ) : null}
         </div>
       )}
     </div>
