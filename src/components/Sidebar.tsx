@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import { FileNode, AppSettings } from "../types";
 import { CalendarWidget } from "./CalendarWidget";
 
@@ -72,6 +72,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [renameInputName, setRenameInputName] = useState<string>("");
   const renameInputFocusedRef = useRef(false);
   const [calendarExpanded, setCalendarExpanded] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem("sidebarWidth");
+    return saved ? parseInt(saved, 10) : 260;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = Math.max(180, Math.min(600, e.clientX));
+      setSidebarWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    localStorage.setItem("sidebarWidth", sidebarWidth.toString());
+  }, [sidebarWidth]);
+
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
     x: number;
@@ -307,7 +343,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   return (
-    <aside className={`app-sidebar ${sidebarOpen ? "" : "collapsed"}`}>
+    <aside
+      className={`app-sidebar ${sidebarOpen ? "" : "collapsed"}`}
+      style={{
+        width: sidebarOpen ? `${sidebarWidth}px` : undefined,
+        transition: isResizing ? "none" : undefined
+      }}
+    >
       <div className="sidebar-header">
         <span className="sidebar-title">Documents</span>
         <div className="sidebar-header-actions">
@@ -781,6 +823,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
       )}
+
+      <div
+        className={`sidebar-resizer ${isResizing ? "resizing" : ""}`}
+        onMouseDown={handleMouseDown}
+      />
     </aside>
   );
 };

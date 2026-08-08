@@ -388,8 +388,25 @@ body,
 
 .app-sidebar.collapsed {
   width: 0;
-  transform: translateX(-260px);
+  transform: translateX(-100%);
   border-right-color: transparent;
+}
+
+/* Sidebar Resizer */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  z-index: 10;
+  transition: background-color 0.2s;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer.resizing {
+  background-color: var(--accent);
 }
 
 /* Sidebar Header */
