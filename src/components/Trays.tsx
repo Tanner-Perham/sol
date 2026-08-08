@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, useEffect } from "react";
 
 interface RightTrayProps {
   isOpen: boolean;
@@ -207,6 +207,32 @@ export const BottomTray: React.FC<BottomTrayProps> = ({
   onClose,
   onResizeMouseDown
 }) => {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const handleCursorTrack = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const target = e.currentTarget;
+    localStorage.setItem("sol_scratchpad_sel_start", target.selectionStart.toString());
+    localStorage.setItem("sol_scratchpad_sel_end", target.selectionEnd.toString());
+  };
+
+  useEffect(() => {
+    if (isOpen && activeTab === "scratchpad") {
+      const timer = setTimeout(() => {
+        const textarea = textareaRef.current;
+        if (textarea) {
+          const start = parseInt(localStorage.getItem("sol_scratchpad_sel_start") || "0", 10);
+          const end = parseInt(localStorage.getItem("sol_scratchpad_sel_end") || "0", 10);
+          textarea.focus();
+          const textLen = textarea.value.length;
+          if (start <= textLen && end <= textLen) {
+            textarea.setSelectionRange(start, end);
+          }
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [isOpen, activeTab]);
+
   if (!isOpen) return null;
 
   return (
@@ -316,9 +342,16 @@ export const BottomTray: React.FC<BottomTrayProps> = ({
         ) : (
           <div className="scratchpad-tab">
             <textarea
+              ref={textareaRef}
               className="scratchpad-textarea"
               value={scratchpadContent}
-              onChange={(e) => setScratchpadContent(e.target.value)}
+              onChange={(e) => {
+                setScratchpadContent(e.target.value);
+                handleCursorTrack(e);
+              }}
+              onKeyUp={handleCursorTrack}
+              onMouseUp={handleCursorTrack}
+              onSelect={handleCursorTrack}
               placeholder="Type your transient ideas here... This persistent scratchpad is saved automatically in this workspace."
             />
           </div>

@@ -184,6 +184,21 @@ function App() {
     };
   }, [isRightTrayResizing]);
 
+  const prevBottomTrayOpenRef = useRef(bottomTrayOpen);
+
+  useEffect(() => {
+    if (prevBottomTrayOpenRef.current && !bottomTrayOpen) {
+      if (activePaneId) {
+        const view = editorViewsRef.current.get(activePaneId);
+        if (view) {
+          view.focus();
+          setFocusedComponent("editor");
+        }
+      }
+    }
+    prevBottomTrayOpenRef.current = bottomTrayOpen;
+  }, [bottomTrayOpen, activePaneId]);
+
 
 
   const updateSettings = useCallback(async (newSettings: Partial<AppSettings>) => {
