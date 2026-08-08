@@ -138,6 +138,8 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const lastScrollTimeRef = useRef<number>(0);
+  const frameRequestedRef = useRef<boolean>(false);
   const [fileData, setFileData] = useState<{ file: string; content: string } | null>(null);
   const [isLocalDirty, setIsLocalDirty] = useState(false);
   const isLocalDirtyRef = useRef(isLocalDirty);
@@ -539,13 +541,31 @@ export const EditorPaneComponent: React.FC<EditorPaneProps> = ({
     const handleDocumentKeyDown = (e: KeyboardEvent) => {
       if (!view || !view.hasFocus || isReplayingBlockInsert) return;
 
+      const cm = getCM(view);
+
+      // Scroll overrun prevention for j/k in Vim normal/visual mode
+      const isNormalModeVim = cm && cm.state && cm.state.vim && !cm.state.vim.insertMode;
+      if (isNormalModeVim && (e.key === "j" || e.key === "k")) {
+        if (e.repeat) {
+          const now = performance.now();
+          if (frameRequestedRef.current || now - lastScrollTimeRef.current < 20) {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+          }
+          frameRequestedRef.current = true;
+          lastScrollTimeRef.current = now;
+          requestAnimationFrame(() => {
+            frameRequestedRef.current = false;
+          });
+        }
+      }
+
       const isCtrlV = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && !e.altKey && !e.shiftKey;
       const isCtrlQ = e.ctrlKey && e.key.toLowerCase() === 'q' && !e.altKey && !e.shiftKey && !e.metaKey;
       const isShiftI = e.shiftKey && e.key === 'I';
       const isEscape = e.key === 'Escape';
       const isX = e.key === 'x' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
-
-      const cm = getCM(view);
 
       if (isCtrlV || isCtrlQ) {
         if (cm && cm.state && cm.state.vim && !cm.state.vim.insertMode) {

@@ -66,6 +66,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   settings
 }) => {
   const sidebarVimBufferRef = useRef<string>("");
+  const lastScrollTimeRef = useRef<number>(0);
+  const frameRequestedRef = useRef<boolean>(false);
   const [renamingNode, setRenamingNode] = useState<{ path: string; name: string; isDir: boolean } | null>(null);
   const [renameInputName, setRenameInputName] = useState<string>("");
   const renameInputFocusedRef = useRef(false);
@@ -96,6 +98,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const handleSidebarKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (creatingNode || renamingNode) return;
+
+    if (e.repeat && (e.key === "j" || e.key === "k" || e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      const now = performance.now();
+      if (frameRequestedRef.current || now - lastScrollTimeRef.current < 20) {
+        e.preventDefault();
+        return;
+      }
+      frameRequestedRef.current = true;
+      lastScrollTimeRef.current = now;
+      requestAnimationFrame(() => {
+        frameRequestedRef.current = false;
+      });
+    }
 
     const buffer = sidebarVimBufferRef.current;
 
