@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { FileNode, AppSettings } from "../types";
 import { CalendarWidget } from "./CalendarWidget";
 
@@ -72,6 +72,51 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [renameInputName, setRenameInputName] = useState<string>("");
   const renameInputFocusedRef = useRef(false);
   const [calendarExpanded, setCalendarExpanded] = useState(true);
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    itemPath: string;
+    isDir: boolean;
+    name: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleClose = (e: MouseEvent) => {
+      const menuEl = document.getElementById("sidebar-context-menu");
+      if (menuEl && menuEl.contains(e.target as Node)) {
+        return;
+      }
+      setContextMenu(null);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setContextMenu(null);
+      }
+    };
+    window.addEventListener("mousedown", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("contextmenu", handleClose);
+    return () => {
+      window.removeEventListener("mousedown", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("contextmenu", handleClose);
+    };
+  }, [contextMenu]);
+
+  const handleFileListContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      itemPath: "",
+      isDir: true,
+      name: "Workspace"
+    });
+  };
 
   const handleRenameSubmit = async (isBlur = false) => {
     if (!renamingNode) return;
@@ -342,6 +387,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         tabIndex={0}
         onKeyDown={handleSidebarKeyDown}
         onFocus={() => setFocusedComponent("sidebar")}
+        onContextMenu={handleFileListContextMenu}
       >
         {visibleItems.length === 0 && !creatingNode && (
           <div className="file-list-empty">
@@ -425,6 +471,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
               key={item.path}
               className={`file-tree-row ${isActive ? "active" : ""} ${isSelected && focusedComponent === "sidebar" ? "kb-selected" : ""}`}
               style={{ paddingLeft: "8px" }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setContextMenu({
+                  visible: true,
+                  x: e.clientX,
+                  y: e.clientY,
+                  itemPath: item.path,
+                  isDir: item.isDir,
+                  name: item.name
+                });
+              }}
               onClick={() => {
                 setSidebarSelectedIndex(idx);
                 if (item.isDir) {
@@ -627,6 +685,101 @@ export const Sidebar: React.FC<SidebarProps> = ({
             />
           )}
         </>
+      )}
+
+      {contextMenu && (
+        <div
+          id="sidebar-context-menu"
+          className="tab-context-menu"
+          style={{
+            position: "fixed",
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+            zIndex: 1000
+          }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          {contextMenu.isDir ? (
+            <>
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  inputFocusedRef.current = false;
+                  setCreatingNode({ type: "file", parentPath: contextMenu.itemPath });
+                  setNewInputName("untitled.md");
+                  setExpandedPaths(prev => {
+                    const next = new Set(prev);
+                    next.add(contextMenu.itemPath);
+                    return next;
+                  });
+                  setContextMenu(null);
+                }}
+              >
+                <span>New File</span>
+              </div>
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  inputFocusedRef.current = false;
+                  setCreatingNode({ type: "dir", parentPath: contextMenu.itemPath });
+                  setNewInputName("untitled");
+                  setExpandedPaths(prev => {
+                    const next = new Set(prev);
+                    next.add(contextMenu.itemPath);
+                    return next;
+                  });
+                  setContextMenu(null);
+                }}
+              >
+                <span>New Folder</span>
+              </div>
+              {contextMenu.itemPath !== "" && <div className="tab-context-menu-separator" />}
+            </>
+          ) : (
+            <>
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  openFile(contextMenu.itemPath);
+                  setFocusedComponent("editor");
+                  setContextMenu(null);
+                }}
+              >
+                <span>Open File</span>
+              </div>
+              <div className="tab-context-menu-separator" />
+            </>
+          )}
+          {contextMenu.itemPath !== "" && (
+            <>
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  renameInputFocusedRef.current = false;
+                  setRenamingNode({ path: contextMenu.itemPath, name: contextMenu.name, isDir: contextMenu.isDir });
+                  setRenameInputName(contextMenu.name);
+                  setContextMenu(null);
+                }}
+              >
+                <span>Rename</span>
+              </div>
+              <div
+                className="tab-context-menu-item"
+                onClick={() => {
+                  deleteItem(contextMenu.itemPath, contextMenu.isDir);
+                  setContextMenu(null);
+                }}
+                style={{ color: "var(--red, #f87171)" }}
+              >
+                <span>Delete</span>
+              </div>
+            </>
+          )}
+        </div>
       )}
     </aside>
   );
