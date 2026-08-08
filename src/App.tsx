@@ -184,6 +184,8 @@ function App() {
     };
   }, [isRightTrayResizing]);
 
+
+
   const updateSettings = useCallback(async (newSettings: Partial<AppSettings>) => {
     if (newSettings.completionEnabled === false) {
       invoke("cancel_completion").catch(() => {});
@@ -1884,8 +1886,10 @@ function App() {
         return;
       }
 
-      // Ctrl+` or Ctrl+Backquote to toggle bottom tray
-      if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && (e.key === "`" || e.code === "Backquote")) {
+      // Ctrl+` or Ctrl+Backquote or Ctrl+' to toggle bottom tray
+      const isBacktick = e.key === "`" || e.code === "Backquote" || e.keyCode === 192 || e.key === "Dead";
+      const isSingleQuote = e.key === "'" || e.code === "Quote" || e.keyCode === 222;
+      if (e.ctrlKey && (isBacktick || isSingleQuote)) {
         e.preventDefault();
         e.stopPropagation();
         setBottomTrayOpen(prev => !prev);
